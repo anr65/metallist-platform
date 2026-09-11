@@ -1,0 +1,3 @@
+interface:
+  display_name: "Metallist Registry Import"
+  short_description: "Build auditable XLSX and message imports"

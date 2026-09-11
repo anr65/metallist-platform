@@ -1,0 +1,3 @@
+interface:
+  display_name: "Metallist Ledger"
+  short_description: "Protect ledger and financial invariants"

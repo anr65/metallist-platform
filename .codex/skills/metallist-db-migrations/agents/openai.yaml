@@ -1,0 +1,3 @@
+interface:
+  display_name: "Metallist Db Migrations"
+  short_description: "Create safe PostgreSQL migrations"

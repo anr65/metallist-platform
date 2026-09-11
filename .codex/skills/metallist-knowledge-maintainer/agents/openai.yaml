@@ -1,0 +1,3 @@
+interface:
+  display_name: "Metallist Knowledge Maintainer"
+  short_description: "Maintain the Metallist docs source of truth"

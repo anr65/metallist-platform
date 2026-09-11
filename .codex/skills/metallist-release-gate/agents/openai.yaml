@@ -1,0 +1,3 @@
+interface:
+  display_name: "Metallist Release Gate"
+  short_description: "Make evidence-backed release decisions"
