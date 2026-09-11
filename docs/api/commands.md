@@ -1,6 +1,6 @@
 # Команды приложения
 
-Статус: проект  
+Статус: проект
 Дата: 2026-09-11
 
 Web, Telegram и import workers вызывают одинаковые application commands.
