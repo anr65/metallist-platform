@@ -12,6 +12,8 @@ Web, Telegram и import workers вызывают одинаковые applicatio
 - `SetCardLimit`
 - `CreateMaterialBatch`
 - `UploadRegistry`
+- `SetRegistryOneOffRate` (проектное имя: главный администратор назначает и подтверждает разовую ставку уже загруженному реестру до подтверждения поступлений; обновляет preview, не ledger)
+- `PreviewRegistryManualRateCorrection` и `ConfirmRegistryManualRateCorrection` (проектные имена: исправление ручной ставки уже подтверждённого реестра; первая команда показывает финансовую разницу и баланс до/после без postings, вторая после явного подтверждения главного администратора создаёт связанные корректирующие postings)
 - `ApproveRegistry`
 - `ApplyRegistry`
 - `ConfirmMerchantFunding`
@@ -20,9 +22,13 @@ Web, Telegram и import workers вызывают одинаковые applicatio
 - `CreateCashHandover`
 - `ConfirmCashHandover`
 - `RecordMerchantRepayment`
+- `ConfirmCashSurplusResolution` (проектное имя: главный администратор классифицирует подтверждённый излишек; для денег мерчанта переводит невыясненное обязательство в отдельный долг этому мерчанту, не списывая наличные)
+- `ConfirmMerchantSurplusReturn` (проектное имя: подтверждает отдельную фактическую выдачу найденных денег мерчанту; списывает наличные и погашает только долг по связанному излишку, не обычную кредиторку по реестрам)
 - `RecordExpense`
 - `ApproveExpense`
 - `AccrueCommission`
+- `PreviewRetroactiveTariffRecalculation` (проектный command; без публикации ledger)
+- `ConfirmRetroactiveTariffRecalculation` (проектный command; явное подтверждение главным администратором и корректирующие postings)
 - `RecordAdminInjection`
 - `RecordCardTransfer`
 - `ReverseEvent`

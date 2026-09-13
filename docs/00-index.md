@@ -33,12 +33,14 @@
 - [Целевой процесс](to-be/target-process.md)
 - [Жизненные циклы операций](to-be/operation-lifecycle.md)
 - [Модель доступа](to-be/permissions.md)
+- [Карты и лимиты пополнений](to-be/cards-and-limits.md)
 
 ### Управленческий учёт
 
 - [Принципы](accounting/principles.md)
 - [План счетов](accounting/chart-of-accounts.md)
 - [Правила проводок](accounting/posting-rules.md)
+- [Изменение тарифа задним числом](accounting/retroactive-tariff-recalculation.md)
 - [Начальные остатки](accounting/opening-balances.md)
 - [Сверка](accounting/reconciliation.md)
 
@@ -60,9 +62,11 @@
 
 - [Окружения](operations/environments.md)
 - [Развёртывание](operations/deployment.md)
+- [Первая демонстрационная версия](operations/demo-v1.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
 - [Границы доверия](security/trust-boundaries.md)
+- [Аудит операций](security/audit-log.md)
 
 ### Проверка качества
 
