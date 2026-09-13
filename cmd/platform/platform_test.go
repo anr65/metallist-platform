@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/xuri/excelize/v2"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -98,6 +99,58 @@ func TestMoneyExact(t *testing.T) {
 	v, e := amount("49,39")
 	if e != nil || v != 4939 {
 		t.Fatal(v, e)
+	}
+}
+func TestLoginAndPasswordRotation(t *testing.T) {
+	a := testApp(t)
+	u, _, _, _ := fixtures(t, a)
+	oldPassword := "synthetic-first-password-2026"
+	newPassword := "synthetic-second-password-2026"
+	hash, e := bcrypt.GenerateFromPassword([]byte(oldPassword), bcrypt.MinCost)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.db.Exec("UPDATE users SET password_hash=$1 WHERE id=$2", string(hash), u.ID); e != nil {
+		t.Fatal(e)
+	}
+	login := func(password string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(M{"login": u.Login, "password": password})
+		w := httptest.NewRecorder()
+		a.login(w, httptest.NewRequest("POST", "/login", bytes.NewReader(body)))
+		return w
+	}
+	if w := login("wrong-password"); w.Code != 401 {
+		t.Fatal("incorrect password accepted", w.Code)
+	}
+	w := login(oldPassword)
+	if w.Code != 200 || len(w.Result().Cookies()) != 1 {
+		t.Fatal("login failed", w.Code, w.Body.String())
+	}
+	cookie := w.Result().Cookies()[0]
+	if !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatal("session cookie insecure")
+	}
+	me := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/me", nil)
+	r.AddCookie(cookie)
+	a.auth(a.me)(me, r)
+	if me.Code != 200 {
+		t.Fatal("session rejected", me.Code)
+	}
+	changeBody, _ := json.Marshal(M{"current": oldPassword, "new": newPassword})
+	changed := httptest.NewRecorder()
+	r = httptest.NewRequest("POST", "/api/password", bytes.NewReader(changeBody))
+	r.AddCookie(cookie)
+	a.changePassword(changed, r, u)
+	if changed.Code != 200 {
+		t.Fatal("password change failed", changed.Code, changed.Body.String())
+	}
+	me = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", "/api/me", nil)
+	r.AddCookie(cookie)
+	a.auth(a.me)(me, r)
+	if me.Code != 401 || login(oldPassword).Code != 401 || login(newPassword).Code != 200 {
+		t.Fatal("password rotation did not invalidate old access")
 	}
 }
 func TestLedgerInvariantAndImmutability(t *testing.T) {
