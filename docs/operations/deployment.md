@@ -1,18 +1,23 @@
 # Развёртывание
 
-Статус: проект
-Дата: 2026-09-11
+Статус: демонстрационное окружение запущено; production не создан
+Дата: 2026-09-13
 
 ## Текущее состояние
 
 - GitHub repository: `anr65/metallist-platform`;
 - сервер доступен по ключу пользователю `deploy`;
-- Caddy выдаёт сертификат и временный ответ на `https://metallcash.work`;
-- ports 80/443 готовы для reverse proxy;
-- repository на сервер ещё не подключён;
-- приложения и БД ещё нет.
+- Caddy обслуживает `https://metallcash.work` и проксирует приложение на `127.0.0.1:8080`;
+- `metallist-demo.service` работает из `/opt/metallist-platform/current`, точная версия — commit ветки `demo-v1`;
+- PostgreSQL содержит отдельную `metallist_demo` исключительно с синтетическими данными; приложение подключено отдельной малопривилегированной ролью;
+- перед первичным применением схемы был создан backup `metallist_demo_before_initial_20260913T191223Z.dump` и успешно восстановлен в отдельную `metallist_demo_restore_test`;
+- отдельная локальная одноразовая база `metallist_platform_test` используется для автоматических проверок. Демо-БД не используется для тестовых сбросов и экспериментов с миграциями.
 
-## Предлагаемый deployment flow
+## Текущий demo deployment flow
+
+Код из `demo-v1` собирается на VPS из точного commit SHA в отдельный каталог release, после чего атомарно обновляется ссылка `/opt/metallist-platform/current` и перезапускается systemd-сервис. Схема не мигрирует при обновлении приложения. Конфигурация и секреты находятся вне Git, в `/etc/metallist-platform/`. Перед изменением схемы `metallist_demo` требуется новая точная проверка цели, разрешение и проверенное восстановление свежей копии.
+
+## Предлагаемый production flow
 
 1. Pull request проходит CI.
 2. Merge в `main` создаёт immutable application image.
@@ -23,11 +28,8 @@
 
 ## Ближайшие инфраструктурные задачи
 
-- создать серверный GitHub deploy key или CI deployment identity;
-- выбрать container runtime;
-- создать staging PostgreSQL без публичного порта;
-- подключить Caddy как reverse proxy к приложению;
-- настроить health endpoint;
+- создать CI deployment identity и pipeline;
+- определить production PostgreSQL и отдельную конфигурацию;
 - настроить offsite backups;
 - добавить monitoring и alerting;
 - определить production environment.
