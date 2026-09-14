@@ -101,6 +101,31 @@ func TestMoneyExact(t *testing.T) {
 		t.Fatal(v, e)
 	}
 }
+func TestDashboardScriptAllowedByCSP(t *testing.T) {
+	a := &App{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", a.ui)
+	mux.HandleFunc("/assets/app.js", a.javascript)
+	h := secureHeaders(mux)
+
+	page := httptest.NewRecorder()
+	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK {
+		t.Fatal(page.Code)
+	}
+	if !strings.Contains(page.Header().Get("Content-Security-Policy"), "script-src 'self'") {
+		t.Fatal("same-origin scripts are not allowed")
+	}
+	if !strings.Contains(page.Body.String(), `<script src="/assets/app.js" defer></script>`) || strings.Contains(page.Body.String(), "<script>") || strings.Contains(page.Body.String(), "onclick=") {
+		t.Fatal("page uses blocked inline JavaScript")
+	}
+
+	script := httptest.NewRecorder()
+	h.ServeHTTP(script, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if script.Code != http.StatusOK || !strings.HasPrefix(script.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(script.Body.String(), "$('#loginForm').onsubmit=") || !strings.Contains(script.Body.String(), "$('#logoutButton').onclick=logout") {
+		t.Fatal("dashboard script is unavailable")
+	}
+}
 func TestLoginAndPasswordRotation(t *testing.T) {
 	a := testApp(t)
 	u, _, _, _ := fixtures(t, a)

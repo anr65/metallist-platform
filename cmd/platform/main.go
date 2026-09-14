@@ -213,6 +213,7 @@ func main() {
 	mux.HandleFunc("/api/report/approve", app.auth(app.approveReport))
 	mux.HandleFunc("/api/audit", app.auth(app.audit))
 	mux.HandleFunc("/telegram/webhook", app.telegram)
+	mux.HandleFunc("/assets/app.js", app.javascript)
 	mux.HandleFunc("/", app.ui)
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
@@ -226,7 +227,7 @@ func secureHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && r.URL.Path != "/login" && r.URL.Path != "/telegram/webhook" {
 			if r.Header.Get("X-CSRF") != "1" {
 				fail(w, 403, errors.New("CSRF header required"))
@@ -437,6 +438,15 @@ func (a *App) ui(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(indexHTML))
+}
+func (a *App) javascript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		fail(w, http.StatusMethodNotAllowed, errors.New("method"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(appJS))
 }
 func safeFilename(s string) string { return filepath.Base(strings.ReplaceAll(s, "\\", "/")) }
 
