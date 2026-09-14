@@ -158,14 +158,17 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	result := M{}
-	specs := map[string]string{"merchants": "SELECT id,code,name,active FROM merchants ORDER BY name", "banks": "SELECT id,code,name FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status FROM cards c JOIN banks b ON b.id=c.bank_id ORDER BY b.name,c.mask", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active FROM users ORDER BY name"}
+	specs := map[string]string{"merchants": "SELECT id,code,name,active FROM merchants ORDER BY name", "banks": "SELECT id,code,name FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status FROM cards c JOIN banks b ON b.id=c.bank_id ORDER BY b.name,c.mask", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id FROM users ORDER BY name"}
 	for name, q := range specs {
+		if u.Role == "collector" && name != "cards" {
+			continue
+		}
 		if name == "users" && u.Role != "sysadmin" && u.Role != "chief" {
 			continue
 		}
 		var rows *sql.Rows
 		var e error
-		if name == "cards" && u.Role == "operator" {
+		if name == "cards" && (u.Role == "operator" || u.Role == "collector") {
 			rows, e = a.db.Query("SELECT c.id,b.name,c.owner_label,c.mask,c.status FROM cards c JOIN banks b ON b.id=c.bank_id JOIN card_assignments x ON x.card_id=c.id WHERE x.user_id=$1 ORDER BY b.name,c.mask", u.ID)
 		} else {
 			rows, e = a.db.Query(q)
@@ -245,7 +248,7 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		}
 	case "user":
 		role := str(m, "role")
-		if role != "operator" && role != "accountant" && role != "auditor" {
+		if role != "operator" && role != "collector" && role != "accountant" && role != "auditor" {
 			e = errors.New("invalid role")
 		} else {
 			pass := token()
@@ -282,17 +285,28 @@ func (a *App) linkTelegram(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("нужен числовой Telegram ID"))
 		return
 	}
-	res, e := a.db.Exec("UPDATE users SET telegram_id=$1 WHERE id=$2 AND active", tid, str(m, "user_id"))
+	custodian := str(m, "custodian_id")
+	if custodian == "" {
+		fail(w, 400, errors.New("укажите ответственного за наличные"))
+		return
+	}
+	res, e := a.db.Exec("UPDATE users SET telegram_id=$1,custodian_id=$2 FROM custodians c WHERE users.id=$3 AND users.active AND c.id=$2 AND c.active AND ((users.role='collector' AND c.kind='collector') OR (users.role='chief' AND c.kind='chief'))", tid, custodian, str(m, "user_id"))
 	if e != nil {
 		fail(w, 409, e)
 		return
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		fail(w, 404, errors.New("пользователь не найден"))
+		fail(w, 400, errors.New("свяжите активного сборщика или главного администратора с соответствующим ответственным за наличные"))
 		return
 	}
-	a.logAudit(u.ID, "web", "telegram_link", "user", str(m, "user_id"), "success", "", M{"telegram_id": tid})
+	a.logAudit(u.ID, "web", "telegram_link", "user", str(m, "user_id"), "success", "", M{"telegram_id": tid, "custodian_id": custodian})
+	if telegramToken() != "" {
+		var role string
+		if a.db.QueryRow("SELECT role FROM users WHERE id=$1", str(m, "user_id")).Scan(&role) == nil {
+			_ = a.telegramSetCommands(tid, role)
+		}
+	}
 	respond(w, 200, M{"linked": true})
 }
 func bcryptHash(p string) (string, error) {
@@ -359,7 +373,7 @@ func (a *App) assignCard(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, e)
 		return
 	}
-	res, e := a.db.Exec("INSERT INTO card_assignments(user_id,card_id,assigned_by) SELECT u.id,c.id,$3 FROM users u,cards c WHERE u.id=$1 AND u.role='operator' AND u.active AND c.id=$2 AND c.status='active' ON CONFLICT DO NOTHING", str(m, "user_id"), str(m, "card_id"), u.ID)
+	res, e := a.db.Exec("INSERT INTO card_assignments(user_id,card_id,assigned_by) SELECT u.id,c.id,$3 FROM users u,cards c WHERE u.id=$1 AND u.role IN ('operator','collector') AND u.active AND c.id=$2 AND c.status='active' ON CONFLICT DO NOTHING", str(m, "user_id"), str(m, "card_id"), u.ID)
 	if e != nil {
 		fail(w, 409, e)
 		return
@@ -373,7 +387,7 @@ func (a *App) assignCard(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, M{"assigned": true})
 }
 func (a *App) cardAllowed(u User, card string) bool {
-	if u.Role != "operator" {
+	if u.Role != "operator" && u.Role != "collector" {
 		return true
 	}
 	var ok bool

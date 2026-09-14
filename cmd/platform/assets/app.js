@@ -19,7 +19,7 @@ const option = (items, label) => (items || []).map(item => `<option value="${esc
 const entityName = (items, id, fallback = 'Не указано') => (items || []).find(item => item.id === id)?.name || fallback;
 const cardName = id => (state.catalog.cards || []).find(card => card.id === id)?.mask || 'Карта не найдена';
 const custodianName = id => entityName(state.catalog.custodians, id, 'Ответственный не найден');
-const roleNames = {chief:'Главный администратор',operator:'Операционист',accountant:'Бухгалтер',sysadmin:'Системный администратор',auditor:'Аудитор'};
+const roleNames = {chief:'Главный администратор',operator:'Операционист',collector:'Сборщик',accountant:'Бухгалтер',sysadmin:'Системный администратор',auditor:'Аудитор'};
 const statusNames = {draft:'Черновик',preview:'Ожидает подтверждения',posted:'Подтверждено',reversed:'Сторнировано',rejected:'Отклонено'};
 const kindNames = {withdrawal:'Снятие с карты',handover:'Передача наличных',repayment:'Возврат мерчанту',expense:'Расход',injection:'Внесение собственных средств',shortage:'Недостача',writeoff:'Списание недостачи',surplus:'Излишек наличных',surplus_income:'Признание излишка доходом',surplus_merchant:'Излишек мерчанта',surplus_shortage:'Излишек в погашение недостачи',surplus_return:'Возврат излишка мерчанту',collection:'Погашение задолженности',recovery:'Возврат после списания',forgive_injection:'Прощение долга по внесению'};
 const accountNames = {'1100':'На картах','1200':'Наличные у ответственных','1210':'Наличные у главного администратора','1220':'Деньги в пути','1300':'Долг мерчанта нам','1390':'Прочая дебиторская задолженность','1400':'Недостачи к взысканию','2100':'Долг мерчантам','2110':'Отдельный долг по излишку','2200':'Долг за собственные внесения','2290':'Прочая кредиторская задолженность','2300':'Невыясненные поступления','3100':'Начальный капитал','3200':'Капитал от прощения долга','4100':'Комиссионная выручка','4200':'Прочие доходы','5100':'Операционные расходы','5200':'Агентские расходы','5300':'Банковские расходы','5400':'Потери и недостачи','5900':'Прочие расходы'};
@@ -98,10 +98,18 @@ async function start() {
       $$('[data-page="overview"], [data-page="reports"], [data-page="expenses"], [data-page="money"], [data-page="requests"], [data-page="registries"]').forEach(button => button.hidden = true);
       state.page = 'catalog';
     }
+    if (state.user.Role === 'collector') {
+      $$('[data-page]').filter(button => button.dataset.page !== 'account').forEach(button => button.hidden = true);
+      state.page = 'account';
+    }
     await show(state.page);
   } catch { $('#login-view').hidden = false; }
 }
 async function show(name) {
+  if (state.user?.Role === 'collector' && name !== 'account') {
+    notify('Сборщик работает с назначенными картами через Telegram.', true);
+    return;
+  }
   if (state.user?.Role === 'operator' && operatorHiddenPages.has(name)) {
     notify('Этот раздел недоступен операционисту.', true);
     return;
@@ -523,7 +531,7 @@ function catalogForm(tab) {
   if (tab === 'banks') return `<div class="surface"><h2>Добавить банк</h2><form id="catalog-form" data-kind="bank"><div class="form-grid">${field('code','Короткий код',input('code','text','required'))}${field('name','Название банка',input('name','text','required'))}</div><div class="form-actions"><button class="button primary">Добавить банк</button></div></form></div>`;
   if (tab === 'cards') return `<div class="surface"><h2>Добавить учебную карту</h2><p class="hint">Хранится маска. Для демонстрационной выгрузки система создаст заведомо недействительный полный номер.</p><form id="catalog-form" data-kind="card"><div class="form-grid">${field('bank_id','Банк',select('bank_id',c.banks,item=>item.name,'required'))}${field('mask','Маска карты',input('mask','text','placeholder="000000******1234" pattern="[0-9]{6}\\*{6}[0-9]{4}" required'))}${field('owner_label','Вымышленное ФИО',`<select id="owner_label" name="owner_label" required>${syntheticFIO.map(name=>`<option>${esc(name)}</option>`).join('')}</select>`)}</div><div class="form-actions"><button class="button primary">Добавить карту</button></div></form></div>`;
   if (tab === 'custodians') return `<div class="surface"><h2>Добавить ответственного за наличные</h2><form id="catalog-form" data-kind="custodian"><div class="form-grid">${field('name','Имя или обозначение',input('name','text','required'))}${field('custodian_kind','Функция',`<select id="custodian_kind" name="custodian_kind"><option value="collector">Сборщик</option><option value="operator">Операционист</option></select>`)}</div><div class="form-actions"><button class="button primary">Добавить ответственного</button></div></form></div>`;
-  if (tab === 'users' && state.user.Role === 'sysadmin') return `<div class="surface"><h2>Новый пользователь</h2><form id="catalog-form" data-kind="user"><div class="form-grid">${field('login','Логин',input('login','text','required'))}${field('name','Имя',input('name','text','required'))}${field('role','Роль',`<select id="role" name="role"><option value="operator">Операционист</option><option value="accountant">Бухгалтер</option><option value="auditor">Аудитор</option></select>`)}</div><div class="form-actions"><button class="button primary">Создать пользователя</button></div></form><div id="new-password"></div></div><div class="surface"><h2>Назначить карту операционисту</h2><form id="card-assign-form"><div class="form-grid">${field('assign-user','Операционист',`<select id="assign-user" name="user_id">${option((c.users||[]).filter(u=>u.role==='operator'),u=>u.name)}</select>`)}${field('assign-card','Карта',`<select id="assign-card" name="card_id">${option(c.cards,item=>item.mask)}</select>`)}</div><div class="form-actions"><button class="button secondary">Назначить</button></div></form></div><details><summary>Привязать Telegram ID</summary><div class="details-body"><form id="telegram-link-form"><div class="form-grid">${field('telegram-user','Пользователь',`<select id="telegram-user" name="user_id">${option(c.users||[],u=>u.name)}</select>`)}${field('telegram_id','Числовой Telegram ID',input('telegram_id','text','required'))}</div><div class="form-actions"><button class="button secondary">Сохранить связь</button></div></form></div></details>`;
+  if (tab === 'users' && state.user.Role === 'sysadmin') return `<div class="surface"><h2>Новый пользователь</h2><form id="catalog-form" data-kind="user"><div class="form-grid">${field('login','Логин',input('login','text','required'))}${field('name','Имя',input('name','text','required'))}${field('role','Роль',`<select id="role" name="role"><option value="collector">Сборщик</option><option value="operator">Операционист</option><option value="accountant">Бухгалтер</option><option value="auditor">Аудитор</option></select>`)}</div><div class="form-actions"><button class="button primary">Создать пользователя</button></div></form><div id="new-password"></div></div><div class="surface"><h2>Назначить карту</h2><form id="card-assign-form"><div class="form-grid">${field('assign-user','Сборщик или операционист',`<select id="assign-user" name="user_id">${option((c.users||[]).filter(u=>u.role==='operator'||u.role==='collector'),u=>u.name)}</select>`)}${field('assign-card','Карта',`<select id="assign-card" name="card_id">${option(c.cards,item=>item.mask)}</select>`)}</div><div class="form-actions"><button class="button secondary">Назначить</button></div></form></div><details><summary>Привязать Telegram ID и остаток наличных</summary><div class="details-body"><form id="telegram-link-form"><div class="form-grid">${field('telegram-user','Пользователь',`<select id="telegram-user" name="user_id">${option((c.users||[]).filter(u=>u.role==='collector'||u.role==='chief'),u=>u.name)}</select>`)}${field('telegram_id','Числовой Telegram ID',input('telegram_id','text','inputmode="numeric" required'))}${field('telegram-custodian','Ответственный за наличные',`<select id="telegram-custodian" name="custodian_id" required>${option((c.custodians||[]).filter(item=>item.kind==='collector'||item.kind==='chief'),item=>item.name)}</select>`)}</div><div class="form-actions"><button class="button secondary">Сохранить связь</button></div></form></div></details>`;
   return '';
 }
 function catalogRows(tab) {
@@ -532,7 +540,7 @@ function catalogRows(tab) {
   if (tab === 'cards') return table([{title:'Карта',render:r=>`<span class="mono">${esc(r.mask)}</span>`},{title:'Банк',key:'name'},{title:'Владелец',key:'owner_label'},{title:'Состояние',render:r=>r.status==='active'?'Активна':r.status==='blocked'?'Заблокирована':'Выведена'}],c.cards,'Карт пока нет','Добавьте учебную карту для формирования запроса.');
   if (tab === 'banks') return table([{title:'Банк',key:'name'},{title:'Код',key:'code'}],c.banks,'Банков пока нет','Добавьте банк, чтобы создать карту.');
   if (tab === 'custodians') return table([{title:'Ответственный',key:'name'},{title:'Функция',render:r=>r.kind==='chief'?'Главный администратор':r.kind==='collector'?'Сборщик':'Операционист'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.custodians,'Ответственных пока нет','Добавьте сборщика или операциониста.');
-  if (tab === 'users') return table([{title:'Имя',key:'name'},{title:'Логин',key:'login'},{title:'Роль',render:r=>esc(roleNames[r.role]||'Пользователь')},{title:'Состояние',render:r=>r.active?'Доступ открыт':'Доступ закрыт'}],c.users,'Пользователей пока нет','Системный администратор создаёт учётные записи.');
+  if (tab === 'users') return table([{title:'Имя',key:'name'},{title:'Логин',key:'login'},{title:'Роль',render:r=>esc(roleNames[r.role]||'Пользователь')},{title:'Telegram ID',render:r=>esc(r.telegram_id||'—')},{title:'Наличные у',render:r=>esc(r.custodian_id ? custodianName(r.custodian_id) : 'Не привязан')},{title:'Состояние',render:r=>r.active?'Доступ открыт':'Доступ закрыт'}],c.users,'Пользователей пока нет','Системный администратор создаёт учётные записи.');
   return table([{title:'Мерчант',key:'name'},{title:'Ставка',render:r=>rate(r.rate_bp)},{title:'С даты',render:r=>esc(String(r.valid_from||'').slice(0,10))},{title:'Состояние',render:r=>r.active?'Действует':'Заменён'}],c.tariffs,'Тарифов пока нет','Установите тариф в разделе «Реестры оплат».');
 }
 async function catalogPage(tab = 'merchants') {
@@ -556,7 +564,16 @@ async function catalogPage(tab = 'merchants') {
     } catch(error) { notify(error.message,true); }
   };
   if ($('#card-assign-form')) $('#card-assign-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/card/assign',values(event.target)); notify('Карта назначена.'); } catch(error) { notify(error.message,true); } };
-  if ($('#telegram-link-form')) $('#telegram-link-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/user/telegram',values(event.target)); notify('Telegram ID привязан.'); } catch(error) { notify(error.message,true); } };
+  if ($('#telegram-link-form')) {
+    const refreshCustodian = () => {
+      const user = (state.catalog.users||[]).find(item=>item.id===$('#telegram-user').value);
+      const kind = user?.role === 'chief' ? 'chief' : 'collector';
+      $('#telegram-custodian').innerHTML = option((state.catalog.custodians||[]).filter(item=>item.kind===kind&&item.active),item=>item.name);
+    };
+    $('#telegram-user').onchange = refreshCustodian;
+    refreshCustodian();
+    $('#telegram-link-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/user/telegram',values(event.target)); notify('Telegram ID и ответственный за наличные связаны.'); await catalogPage('users'); } catch(error) { notify(error.message,true); } };
+  }
 }
 
 async function reportsPage() {

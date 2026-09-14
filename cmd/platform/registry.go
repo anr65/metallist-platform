@@ -363,6 +363,9 @@ func (a *App) currentRate(tx *sql.Tx, merchant string) (int, error) {
 	return bp, e
 }
 func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
+	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
+		return
+	}
 	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),COALESCE(r.manual_rate_bp,0),r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
@@ -418,6 +421,9 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, out)
 }
 func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
+	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
+		return
+	}
 	if r.Method != "GET" {
 		fail(w, 405, errors.New("method"))
 		return

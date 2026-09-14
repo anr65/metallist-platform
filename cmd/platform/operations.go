@@ -182,6 +182,10 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
+	if p["telegram_confirmation_required"] == true && p["telegram_sender_confirmed"] != true {
+		fail(w, 409, errors.New("сначала требуется подтверждение отправителя в Telegram"))
+		return
+	}
 	number, ok := p["amount_cents"].(json.Number)
 	if !ok {
 		fail(w, 500, errors.New("сумма черновика повреждена"))

@@ -64,6 +64,7 @@
 - [Развёртывание](operations/deployment.md)
 - [Первая демонстрационная версия](operations/demo-v1.md)
 - [Миграция запросов карт к оплате](operations/payment-request-migration.md)
+- [Миграция Telegram-сборщиков](operations/telegram-collector-migration.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
 - [Границы доверия](security/trust-boundaries.md)

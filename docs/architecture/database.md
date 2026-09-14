@@ -41,6 +41,8 @@
 
 ## Операционные события
 
+Добавочная демонстрационная схема 003 вводит роль `collector`, уникальную связь `users.custodian_id` с фактическим хранителем, сохраняет очищенные метаданные Telegram update в `telegram_updates.raw_update` и краткоживущий выбор команды в `telegram_dialogs`. Произвольный текст чата не сохраняется в этой таблице; принятая валидная команда остаётся в черновике. Подтверждение кнопкой использует существующий `drafts` и неизменяемый `journal_entries`/`postings`; отдельного редактируемого поля баланса не появляется. Ключ `draft:<draft_id>` обеспечивает однократную публикацию, а `telegram:<update_id>` — однократный черновик источника. Полный номер карты в демо не сохраняется.
+
 - `merchant_fundings(id, merchant_id, card_id, registry_item_id, amount, currency, occurred_at, status, idempotency_key)`
 - `withdrawals(id, card_id, custodian_id, amount, currency, occurred_at, status, source_document_id, idempotency_key)`; `custodian_id` — фактический получатель наличных, обязателен при подтверждении
 - `card_balance_observations(id, card_id, observed_amount, currency, observed_at, reporter_id, source_document_id)`

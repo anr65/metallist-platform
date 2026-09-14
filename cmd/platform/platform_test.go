@@ -49,7 +49,7 @@ func testApp(t *testing.T) *App {
 }
 func reset(t *testing.T, a *App) {
 	t.Helper()
-	_, e := a.db.Exec("TRUNCATE telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
+	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
 	if e != nil {
 		t.Fatal(e)
 	}
