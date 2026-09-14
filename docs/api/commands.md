@@ -47,3 +47,5 @@ Web, Telegram и import workers вызывают одинаковые applicatio
 - expected version для конкурентных изменений.
 
 Command handler валидирует права и состояние, сохраняет business event и вызывает ledger в одной транзакции, когда событие должно быть опубликовано.
+
+Для новых обычных расходов кабинет передаёт категории `agent_fee`, `bank_fee`, `salary`, `warmup`, `it_infrastructure`, `taxes`, `communication`, `delivery`, `other`. Сервер не принимает `repayment`, `losses` и `dividends` как категорию `RecordExpense`: первая относится к `RecordMerchantRepayment`, вторая — к отдельному списанию подтверждённой недостачи, третья ожидает самостоятельного правила распределения капитала. Старые категории `operating` и `transport` читаются и могут завершаться для уже подготовленных черновиков.

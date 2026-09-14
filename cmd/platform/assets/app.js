@@ -304,7 +304,8 @@ function bindTariffControls() {
   };
 }
 
-const expenseTypes = {operating:'Операционный расход',transport:'Транспорт',bank_fee:'Банковские услуги',agent_fee:'Агентское вознаграждение',other:'Другой расход'};
+const expenseTypes = {agent_fee:'Агентские',bank_fee:'Банк. Комиссия',repayment:'Выдача мерчанту',dividends:'Дивиденды',salary:'Зарплата',warmup:'Прогрев',it_infrastructure:'ИТ Инфраструктура',taxes:'Налоги',losses:'Потери',communication:'Связь',delivery:'Доставка',other:'Прочие РАСХОДЫ',operating:'Операционный расход (ранее)',transport:'Транспорт (ранее)'};
+const newExpenseTypes = ['agent_fee','bank_fee','repayment','dividends','salary','warmup','it_infrastructure','taxes','losses','communication','delivery','other'];
 async function expensesPage(selectedDraft = '') {
   await Promise.all([loadCatalog(),loadDrafts()]);
   const chiefCash = (state.catalog.custodians || []).find(item => item.kind === 'chief');
@@ -314,13 +315,13 @@ async function expensesPage(selectedDraft = '') {
   const expenseList = state.drafts.filter(item => item.kind === 'expense');
   const form = `<div class="surface"><h2>Новый расход</h2><p class="hint">Заполнение занимает несколько секунд. После сохранения сумма ещё не списана.</p><form id="expense-form"><div class="form-grid">
     ${field('expense-amount','Сумма, ₽',input('expense-amount','text','name="amount" inputmode="decimal" autocomplete="off" placeholder="Например, 1 500,00" required'))}
-    ${field('expense-category','Тип расхода',`<select id="expense-category" name="category" required>${Object.entries(expenseTypes).map(([key,value])=>`<option value="${key}">${esc(value)}</option>`).join('')}</select>`)}
+    ${field('expense-category','Тип расхода',`<select id="expense-category" name="category" required><option value="">Выберите тип</option>${newExpenseTypes.map(key=>`<option value="${key}">${esc(expenseTypes[key])}</option>`).join('')}</select>`)}
     ${field('expense-reason','Комментарий',input('expense-reason','text','name="reason" placeholder="Можно не заполнять"'))}
     ${field('expense-date','Дата расхода',input('expense-date','date',`name="date" value="${todayMoscow()}" required`))}
-  </div><div class="source-line"><div><small>Списать из</small><strong id="expense-source-label">${esc(sourceLabel(defaultKind,defaultID))}</strong></div><button type="button" class="text-button" id="change-expense-source">Изменить</button></div><div id="expense-source-fields" hidden><div class="form-grid">${field('expense-source-kind','Где находятся деньги',`<select id="expense-source-kind"><option value="cash">Наличные</option><option value="card">На карте</option></select>`)}${field('expense-source-id','Ответственный или карта',`<select id="expense-source-id"></select>`)}</div></div><div class="form-actions"><button class="button primary">Сохранить расход</button></div></form></div>`;
+  </div><div id="expense-type-guidance" class="callout" hidden></div><div class="source-line"><div><small>Списать из</small><strong id="expense-source-label">${esc(sourceLabel(defaultKind,defaultID))}</strong></div><button type="button" class="text-button" id="change-expense-source">Изменить</button></div><div id="expense-source-fields" hidden><div class="form-grid">${field('expense-source-kind','Где находятся деньги',`<select id="expense-source-kind"><option value="cash">Наличные</option><option value="card">На карте</option></select>`)}${field('expense-source-id','Ответственный или карта',`<select id="expense-source-id"></select>`)}</div></div><div class="form-actions"><button id="save-expense" class="button primary">Сохранить расход</button></div></form></div>`;
   const list = table([
     {title:'Дата',render:d=>esc(d.payload?.date || dateLabel(d.created_at))},
-    {title:'Тип',render:d=>esc(expenseTypes[d.payload?.category] || 'Другой расход')},
+    {title:'Тип',render:d=>esc(expenseTypes[d.payload?.category] || 'Тип не указан')},
     {title:'Сумма',render:d=>`<span class="numeric">${money(d.payload?.amount)}</span>`},
     {title:'Статус',render:d=>status(d.status)},
     {title:'',render:d=>`<button class="button quiet" data-expense="${esc(d.id)}">${d.status === 'draft' && state.user.Role === 'chief' ? 'Проверить' : 'Открыть'}</button>`}
@@ -337,11 +338,26 @@ async function expensesPage(selectedDraft = '') {
   };
   $('#expense-source-kind').value = sourceKind;
   drawSources();
+  $('#expense-category').onchange = event => {
+    const type = event.target.value;
+    if (type === 'repayment' || type === 'losses') {
+      state.page = 'money';
+      moneyPage(type === 'repayment' ? 'repayment' : 'advanced', '', $('#expense-amount').value, type === 'losses' ? 'writeoff' : '')
+        .then(()=>notify(type === 'repayment' ? 'Открыта выдача мерчанту: она погашает долг и не уменьшает прибыль.' : 'Открыто списание подтверждённой недостачи. Укажите исходную недостачу.'))
+        .catch(error=>notify(error.message,true));
+      return;
+    }
+    const explanation = type === 'dividends' ? 'Дивиденды не уменьшают прибыль. Для их выплаты требуется отдельное правило о получателе и источнике капитала.' : '';
+    $('#expense-type-guidance').textContent = explanation;
+    $('#expense-type-guidance').hidden = !explanation;
+    $('#save-expense').disabled = !!explanation;
+  };
   $('#change-expense-source').onclick = () => { $('#expense-source-fields').hidden = !$('#expense-source-fields').hidden; };
   $('#expense-source-kind').onchange = event => { sourceKind = event.target.value; drawSources(); };
   $('#expense-source-id').onchange = event => { sourceID = event.target.value; $('#expense-source-label').textContent = sourceLabel(sourceKind,sourceID); };
   $('#expense-form').onsubmit = async event => {
     event.preventDefault();
+    if (['repayment','dividends','losses'].includes($('#expense-category').value)) { notify('Для этого типа требуется отдельный сценарий.',true); return; }
     if (!sourceID) { notify('Сначала добавьте карту или ответственного за наличные.',true); return; }
     try {
       const body = {kind:'expense',amount:$('#expense-amount').value,category:$('#expense-category').value,reason:$('#expense-reason').value,date:$('#expense-date').value,source_kind:sourceKind,source_id:sourceID};
@@ -360,7 +376,7 @@ async function showExpense(id) {
   const source = sourceLabel(p.source_kind,p.source_id);
   const review = draft.status === 'draft' && state.user.Role === 'chief' ? `<div class="review-box"><h3>Проверка перед списанием</h3><p>С карты или наличных будет списано ровно <strong class="amount">${money(p.amount)}</strong>.</p>${field('expense-confirm-amount','Введите точную сумму для подтверждения',input('expense-confirm-amount','text','inputmode="decimal" placeholder="Сумма из черновика" required'))}<div class="button-row"><button id="confirm-expense" class="button primary">Подтвердить расход</button></div></div>` : draft.status === 'draft' ? '<div class="callout">Ожидает подтверждения главного администратора. Баланс пока не меняется.</div>' : '';
   const reverse = draft.status === 'posted' && state.user.Role === 'chief' ? `<details><summary>Исправить через сторно</summary><div class="details-body"><p class="hint">Исходная запись сохранится в истории. Новый правильный расход создайте отдельно.</p>${field('expense-reverse-reason','Причина сторно',input('expense-reverse-reason','text','required'))}<div class="form-actions"><button id="reverse-expense" class="button danger">Сторнировать расход</button></div></div></details>` : '';
-  $('#expense-detail').innerHTML = section('Детали расхода',`<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Сумма</small><strong>${money(p.amount)}</strong></div><div><small>Тип</small><strong>${esc(expenseTypes[p.category] || 'Другой расход')}</strong></div><div><small>Дата</small><strong>${esc(p.date || 'Дата подтверждения')}</strong></div><div><small>Источник</small><strong>${esc(source)}</strong></div></div>${p.reason ? `<p style="margin-top:20px">Комментарий: ${esc(p.reason)}</p>` : ''}<p style="margin-top:15px">${status(draft.status)}</p>${review}${reverse}</div>`);
+  $('#expense-detail').innerHTML = section('Детали расхода',`<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Сумма</small><strong>${money(p.amount)}</strong></div><div><small>Тип</small><strong>${esc(expenseTypes[p.category] || 'Тип не указан')}</strong></div><div><small>Дата</small><strong>${esc(p.date || 'Дата подтверждения')}</strong></div><div><small>Источник</small><strong>${esc(source)}</strong></div></div>${p.reason ? `<p style="margin-top:20px">Комментарий: ${esc(p.reason)}</p>` : ''}<p style="margin-top:15px">${status(draft.status)}</p>${review}${reverse}</div>`);
   if ($('#confirm-expense')) $('#confirm-expense').onclick = async () => {
     try { await api('/api/draft/confirm',{id,version:String(draft.version),confirm_amount:$('#expense-confirm-amount').value}); notify('Расход подтверждён и учтён.'); await expensesPage(id); }
     catch (error) { notify(error.message,true); }
@@ -408,12 +424,12 @@ function operationField([key,label,type], form) {
   }
   return field(key,label,control);
 }
-async function moneyPage(selectedKind = 'withdrawal', selectedDraft = '') {
+async function moneyPage(selectedKind = 'withdrawal', selectedDraft = '', initialAmount = '', advancedKind = '') {
   await Promise.all([loadCatalog(),loadDrafts()]);
   const kind = operationGroups[selectedKind] ? selectedKind : 'withdrawal';
   const tabs = `<div class="tabs" role="tablist">${Object.entries(operationGroups).map(([key,label])=>`<button data-money-tab="${key}" class="${kind===key?'active':''}" role="tab" aria-selected="${kind===key}">${esc(label)}</button>`).join('')}</div>`;
   const active = kind === 'advanced' ? 'injection' : kind;
-  const form = kind === 'observation' ? `<div class="surface"><h2>Фактический остаток карты</h2><p class="hint">Наблюдение помогает найти расхождение, но само по себе не меняет баланс.</p><form id="observation-form"><div class="form-grid">${field('card_id','Карта',select('card_id',state.catalog.cards,item=>item.mask,'required'))}${field('amount','Остаток, ₽',input('amount','text','inputmode="decimal" required'))}</div><div class="form-actions"><button class="button primary">Сохранить остаток</button></div></form></div>` : `<div class="surface"><h2>${esc(kindNames[active])}</h2><p class="hint">Сохраните черновик. Главный администратор проверит точную сумму перед проведением.</p><form id="money-form">${kind==='advanced' ? field('advanced_kind','Операция',`<select id="advanced_kind">${Object.keys(operationFields).filter(k=>!['withdrawal','handover','repayment'].includes(k)).map(k=>`<option value="${k}">${esc(kindNames[k])}</option>`).join('')}</select>`) : ''}<div id="operation-fields" class="form-grid"></div><div class="form-grid" style="margin-top:16px">${field('op-amount','Сумма, ₽',input('op-amount','text','name="amount" inputmode="decimal" required'))}${field('op-reason','Основание или комментарий',input('op-reason','text','name="reason" placeholder="При необходимости"'))}</div><div class="form-actions"><button class="button primary">Сохранить черновик</button></div></form></div>`;
+  const form = kind === 'observation' ? `<div class="surface"><h2>Фактический остаток карты</h2><p class="hint">Наблюдение помогает найти расхождение, но само по себе не меняет баланс.</p><form id="observation-form"><div class="form-grid">${field('card_id','Карта',select('card_id',state.catalog.cards,item=>item.mask,'required'))}${field('amount','Остаток, ₽',input('amount','text','inputmode="decimal" required'))}</div><div class="form-actions"><button class="button primary">Сохранить остаток</button></div></form></div>` : `<div class="surface"><h2>${esc(kind === 'advanced' ? 'Другие операции' : kindNames[active])}</h2><p class="hint">Сохраните черновик. Главный администратор проверит точную сумму перед проведением.</p><form id="money-form">${kind==='advanced' ? field('advanced_kind','Операция',`<select id="advanced_kind">${Object.keys(operationFields).filter(k=>!['withdrawal','handover','repayment'].includes(k)).map(k=>`<option value="${k}">${esc(kindNames[k])}</option>`).join('')}</select>`) : ''}<div id="operation-fields" class="form-grid"></div><div class="form-grid" style="margin-top:16px">${field('op-amount','Сумма, ₽',input('op-amount','text','name="amount" inputmode="decimal" required'))}${field('op-reason','Основание или комментарий',input('op-reason','text','name="reason" placeholder="При необходимости"'))}</div><div class="form-actions"><button class="button primary">Сохранить черновик</button></div></form></div>`;
   const relevantDrafts = state.drafts.filter(item=>item.kind!=='expense');
   const list = table([
     {title:'Действие',render:d=>esc(kindNames[d.kind] || 'Денежная операция')},
@@ -425,7 +441,11 @@ async function moneyPage(selectedKind = 'withdrawal', selectedDraft = '') {
   page('Движение денег','Снятия, передачи, возвраты и отдельные решения по расхождениям.',tabs + `<div class="split">${form}<div class="surface tinted"><h2>Правило подтверждения</h2><p>Создание черновика не меняет остатки. Точную сумму и фактическое движение денег подтверждает главный администратор.</p><p class="hint">История подтверждённых операций не редактируется; исправление оформляется сторно.</p></div></div>` + section('Черновики и проведённые операции',list) + `<div id="money-detail"></div>`);
   $$('[data-money-tab]').forEach(button=>button.onclick=()=>moneyPage(button.dataset.moneyTab));
   if (kind === 'observation') $('#observation-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/observation',values(event.target)); notify('Фактический остаток сохранён.'); await moneyPage('observation'); } catch(error) { notify(error.message,true); } };
-  else bindOperationForm(kind);
+  else {
+    if (kind === 'advanced' && advancedKind) $('#advanced_kind').value = advancedKind;
+    bindOperationForm(kind);
+  }
+  if (initialAmount && $('#op-amount')) $('#op-amount').value = initialAmount;
   $$('[data-money-draft]').forEach(button=>button.onclick=()=>showMoneyDraft(button.dataset.moneyDraft));
   if (selectedDraft) await showMoneyDraft(selectedDraft);
 }

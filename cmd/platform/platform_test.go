@@ -243,6 +243,55 @@ func TestExpenseDateAndSource(t *testing.T) {
 		t.Fatal("expense in wrong month", month, e)
 	}
 }
+func TestExpenseTypePostingAndBlockedPayouts(t *testing.T) {
+	for _, category := range []string{"salary", "warmup", "it_infrastructure", "taxes", "communication", "delivery"} {
+		if account, e := expenseAccount(category); e != nil || account != "5100" {
+			t.Fatal("ordinary expense mapped incorrectly", category, account, e)
+		}
+	}
+	a := testApp(t)
+	u, _, _, card := fixtures(t, a)
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_funding", id(), "test-expense-funding-"+id(), u.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 3_000, Card: card}, {Account: "3100", Side: "credit", Amount: 3_000}}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	for category, account := range map[string]string{"agent_fee": "5200", "bank_fee": "5300", "other": "5900"} {
+		status, created := req(t, a.draft, u, M{"kind": "expense", "source_kind": "card", "source_id": card, "category": category, "amount": "10.00"})
+		if status != 201 {
+			t.Fatal("draft rejected", category, created)
+		}
+		draftID := created["id"].(string)
+		status, confirmed := req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "10.00"})
+		if status != 200 {
+			t.Fatal("expense not confirmed", category, confirmed)
+		}
+		status, _ = req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "10.00"})
+		if status != 200 {
+			t.Fatal("expense retry not idempotent", category)
+		}
+		var count int
+		if e = a.db.QueryRow("SELECT COUNT(*) FROM postings p JOIN journal_entries j ON j.id=p.entry_id WHERE j.event_type='expense' AND j.event_id=$1 AND p.account=$2 AND p.side='debit'", draftID, account).Scan(&count); e != nil || count != 1 {
+			t.Fatal("wrong expense account or duplicate posting", category, account, count, e)
+		}
+	}
+	for _, category := range []string{"repayment", "dividends", "losses", "unknown"} {
+		status, _ := req(t, a.draft, u, M{"kind": "expense", "source_kind": "card", "source_id": card, "category": category, "amount": "1.00"})
+		if status != 400 {
+			t.Fatal("unsupported expense category accepted", category, status)
+		}
+	}
+	var net int64
+	if e = a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings").Scan(&net); e != nil || net != 0 {
+		t.Fatal("expense ledger unbalanced", net, e)
+	}
+}
 func TestCLIPasswordResetRevokesSessions(t *testing.T) {
 	a := testApp(t)
 	u, _, _, _ := fixtures(t, a)

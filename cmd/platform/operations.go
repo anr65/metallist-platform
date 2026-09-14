@@ -17,6 +17,21 @@ func valIf(ok bool, a, b string) string {
 	return b
 }
 
+func expenseAccount(category string) (string, error) {
+	switch category {
+	case "agent_fee":
+		return "5200", nil
+	case "bank_fee":
+		return "5300", nil
+	case "other":
+		return "5900", nil
+	case "salary", "warmup", "it_infrastructure", "taxes", "communication", "delivery", "operating", "transport":
+		return "5100", nil
+	default:
+		return "", errors.New("для этого типа расхода нет утверждённого способа учёта")
+	}
+}
+
 func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != "POST" || !a.require(w, u, "chief", "operator") {
 		return
@@ -60,6 +75,10 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	if kind == "expense" {
+		if _, err := expenseAccount(str(m, "category")); err != nil {
+			fail(w, 400, err)
+			return
+		}
 		date := str(m, "date")
 		if date == "" {
 			date = time.Now().In(a.location).Format("2006-01-02")
@@ -336,14 +355,9 @@ func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, erro
 			return nil, e
 		}
 		cat := str(p, "category")
-		if cat == "" {
-			return nil, errors.New("нужна категория")
-		}
-		account := "5100"
-		if cat == "bank_fee" {
-			account = "5300"
-		} else if cat == "agent_fee" {
-			account = "5200"
+		account, e := expenseAccount(cat)
+		if e != nil {
+			return nil, e
 		}
 		return []Posting{debit(account, "", "", "", "", cat), s}, nil
 	case "injection":
