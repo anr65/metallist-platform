@@ -322,7 +322,7 @@ func (a *App) audit(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, out)
 }
 func (a *App) observation(w http.ResponseWriter, r *http.Request, u User) {
-	if r.Method != "POST" || !a.require(w, u, "operator", "chief") {
+	if r.Method != "POST" || !a.require(w, u, "chief") {
 		return
 	}
 	m, e := jsonBody(r)

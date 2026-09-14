@@ -85,7 +85,9 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 			m["amount"] = words[3]
 		}
 	case "/balance":
-		if len(words) != 3 {
+		if u.Role != "chief" {
+			e = errors.New("Ввод остатков доступен только главному администратору")
+		} else if len(words) != 3 {
 			e = errors.New("Формат: /balance <ID-карты> <остаток-руб>")
 		} else {
 			v, err := nonnegative(words[2])
@@ -98,7 +100,9 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "/expense":
-		if len(words) != 5 {
+		if u.Role != "chief" {
+			e = errors.New("Расходы доступны только главному администратору")
+		} else if len(words) != 5 {
 			e = errors.New("Формат: /expense <card|cash> <ID-источника> <категория> <сумма-руб>")
 		} else {
 			kind = "expense"
@@ -108,7 +112,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 			m["amount"] = words[4]
 		}
 	default:
-		e = errors.New("Команды: /withdraw, /balance, /expense")
+		e = errors.New("Команды: /withdraw; /balance и /expense — только для главного администратора")
 	}
 	if kind == "withdrawal" && !a.cardAllowed(u, str(m, "card_id")) {
 		e = errors.New("карта не назначена")

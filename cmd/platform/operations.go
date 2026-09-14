@@ -47,13 +47,13 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("неизвестный тип"))
 		return
 	}
-	if (kind == "shortage" || kind == "writeoff" || kind == "surplus_income" || kind == "surplus_merchant" || kind == "surplus_shortage" || kind == "recovery") && str(m, "reason") == "" {
-		fail(w, 400, errors.New("нужно основание"))
-		return
-	}
-	if u.Role == "operator" && kind != "withdrawal" && kind != "handover" && kind != "expense" {
+	if u.Role == "operator" && kind != "withdrawal" && kind != "handover" {
 		a.logAudit(u.ID, "web", "draft_create", kind, "", "rejected", "role", M{})
 		fail(w, 403, errors.New("только главный администратор"))
+		return
+	}
+	if (kind == "shortage" || kind == "writeoff" || kind == "surplus_income" || kind == "surplus_merchant" || kind == "surplus_shortage" || kind == "recovery") && str(m, "reason") == "" {
+		fail(w, 400, errors.New("нужно основание"))
 		return
 	}
 	if u.Role == "operator" {
@@ -108,11 +108,14 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 201, M{"id": newID})
 }
 func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
+	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
+		return
+	}
 	query := "SELECT id,kind,payload,status,version,created_at FROM drafts ORDER BY created_at DESC LIMIT 100"
 	var rows *sql.Rows
 	var e error
 	if u.Role == "operator" {
-		query = "SELECT id,kind,payload,status,version,created_at FROM drafts WHERE created_by=$1 ORDER BY created_at DESC LIMIT 100"
+		query = "SELECT id,kind,payload,status,version,created_at FROM drafts WHERE created_by=$1 AND kind<>'expense' ORDER BY created_at DESC LIMIT 100"
 		rows, e = a.db.Query(query, u.ID)
 	} else {
 		rows, e = a.db.Query(query)

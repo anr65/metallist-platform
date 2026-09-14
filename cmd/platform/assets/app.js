@@ -26,6 +26,7 @@ const accountNames = {'1100':'На картах','1200':'Наличные у о�
 const actionNames = {registry_upload:'Загрузка реестра',registry_confirm:'Подтверждение реестра',registry_reverse:'Сторно реестра',draft_create:'Создание черновика',draft_confirm:'Подтверждение операции',draft_reverse:'Сторно операции',payment_request_create:'Создание запроса на карты',payment_request_export:'Скачивание реестра карт',password_change:'Смена пароля',password_reset:'Сброс пароля',observation:'Наблюдение остатка',report_approve:'Утверждение отчёта',catalog_create:'Создание записи',card_assign:'Назначение карты',telegram_link:'Привязка Telegram',login:'Вход',manual_rate_approve:'Разовая ставка',manual_rate_correction:'Исправление разовой ставки',tariff_confirm:'Изменение тарифа',tariff_adjustment:'Перерасчёт тарифа',demo_registry_seed:'Демонстрационный реестр'};
 const reasonNames = {role:'Недостаточно прав',card_not_assigned:'Карта не назначена пользователю',card_not_unique_or_unknown:'Карта не найдена или неоднозначна'};
 const state = {user:null, page:'overview', catalog:{}, registries:[], drafts:[], requests:[]};
+const operatorHiddenPages = new Set(['overview','reports','expenses','audit']);
 function friendlyError(message) {
   const known = {card_not_assigned:'Эта карта не назначена вам.',card_not_unique_or_unknown:'Карта не найдена или её маска неоднозначна.',invalid_amount:'Проверьте сумму.',"invalid input syntax for type uuid":'Выберите запись из списка.',"duplicate key value violates unique constraint":'Такая запись уже существует.',"permission denied":'У вас нет прав на это действие.'};
   const text = String(message || '');
@@ -90,8 +91,8 @@ async function start() {
     $('#sidebar-user').textContent = state.user.Name;
     $('#role-label').textContent = roleNames[state.user.Role] || 'Пользователь';
     if (state.user.Role === 'operator') {
-      $$('[data-page="overview"], [data-page="reports"], [data-page="audit"]').forEach(button => button.hidden = true);
-      if (state.page === 'overview') state.page = 'expenses';
+      $$('[data-page]').filter(button => operatorHiddenPages.has(button.dataset.page)).forEach(button => button.hidden = true);
+      if (operatorHiddenPages.has(state.page)) state.page = 'registries';
     }
     if (state.user.Role === 'sysadmin') {
       $$('[data-page="overview"], [data-page="reports"], [data-page="expenses"], [data-page="money"], [data-page="requests"], [data-page="registries"]').forEach(button => button.hidden = true);
@@ -101,6 +102,10 @@ async function start() {
   } catch { $('#login-view').hidden = false; }
 }
 async function show(name) {
+  if (state.user?.Role === 'operator' && operatorHiddenPages.has(name)) {
+    notify('Этот раздел недоступен операционисту.', true);
+    return;
+  }
   state.page = name;
   try {
     if (name === 'overview') await overviewPage();
@@ -426,8 +431,8 @@ function operationField([key,label,type], form) {
 }
 async function moneyPage(selectedKind = 'withdrawal', selectedDraft = '', initialAmount = '', advancedKind = '') {
   await Promise.all([loadCatalog(),loadDrafts()]);
-  const kind = operationGroups[selectedKind] ? selectedKind : 'withdrawal';
-  const tabs = `<div class="tabs" role="tablist">${Object.entries(operationGroups).map(([key,label])=>`<button data-money-tab="${key}" class="${kind===key?'active':''}" role="tab" aria-selected="${kind===key}">${esc(label)}</button>`).join('')}</div>`;
+  const kind = operationGroups[selectedKind] && !(state.user.Role === 'operator' && selectedKind === 'observation') ? selectedKind : 'withdrawal';
+  const tabs = `<div class="tabs" role="tablist">${Object.entries(operationGroups).filter(([key])=>!(state.user.Role === 'operator' && key === 'observation')).map(([key,label])=>`<button data-money-tab="${key}" class="${kind===key?'active':''}" role="tab" aria-selected="${kind===key}">${esc(label)}</button>`).join('')}</div>`;
   const active = kind === 'advanced' ? 'injection' : kind;
   const form = kind === 'observation' ? `<div class="surface"><h2>Фактический остаток карты</h2><p class="hint">Наблюдение помогает найти расхождение, но само по себе не меняет баланс.</p><form id="observation-form"><div class="form-grid">${field('card_id','Карта',select('card_id',state.catalog.cards,item=>item.mask,'required'))}${field('amount','Остаток, ₽',input('amount','text','inputmode="decimal" required'))}</div><div class="form-actions"><button class="button primary">Сохранить остаток</button></div></form></div>` : `<div class="surface"><h2>${esc(kind === 'advanced' ? 'Другие операции' : kindNames[active])}</h2><p class="hint">Сохраните черновик. Главный администратор проверит точную сумму перед проведением.</p><form id="money-form">${kind==='advanced' ? field('advanced_kind','Операция',`<select id="advanced_kind">${Object.keys(operationFields).filter(k=>!['withdrawal','handover','repayment'].includes(k)).map(k=>`<option value="${k}">${esc(kindNames[k])}</option>`).join('')}</select>`) : ''}<div id="operation-fields" class="form-grid"></div><div class="form-grid" style="margin-top:16px">${field('op-amount','Сумма, ₽',input('op-amount','text','name="amount" inputmode="decimal" required'))}${field('op-reason','Основание или комментарий',input('op-reason','text','name="reason" placeholder="При необходимости"'))}</div><div class="form-actions"><button class="button primary">Сохранить черновик</button></div></form></div>`;
   const relevantDrafts = state.drafts.filter(item=>item.kind!=='expense');

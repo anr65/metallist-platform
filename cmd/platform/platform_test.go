@@ -540,6 +540,95 @@ func TestRoleDenied(t *testing.T) {
 		t.Fatal(code)
 	}
 }
+func TestOperatorCannotAccessExpensesOrChangeBalances(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	operator := User{ID: id(), Login: "op", Name: "Операционист", Role: "operator"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x')", operator.ID, operator.Login, operator.Name, operator.Role); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO card_assignments(user_id,card_id,assigned_by) VALUES($1,$2,$3)", operator.ID, card, chief.ID); e != nil {
+		t.Fatal(e)
+	}
+	for _, kind := range []string{"expense", "repayment", "shortage", "writeoff"} {
+		code, _ := req(t, a.draft, operator, M{"kind": kind, "amount": "10.00", "category": "salary", "source_kind": "card", "source_id": card})
+		if code != 403 {
+			t.Fatal("operator created restricted draft", kind, code)
+		}
+	}
+	if status, _ := req(t, a.observation, operator, M{"card_id": card, "amount": "100.00"}); status != 403 {
+		t.Fatal("operator changed observed balance", status)
+	}
+	code, created := req(t, a.draft, operator, M{"kind": "withdrawal", "amount": "10.00", "card_id": card, "custodian_id": id()})
+	if code != 201 {
+		t.Fatal("operator could not prepare withdrawal", created)
+	}
+	draftID := created["id"].(string)
+	for _, check := range []struct {
+		name string
+		fn   handler
+		body M
+	}{
+		{"confirm", a.confirmDraft, M{"id": draftID, "version": "1", "confirm_amount": "10.00"}},
+		{"reverse", a.reverseDraft, M{"id": draftID, "reason": "test"}},
+		{"registry confirmation", a.confirmRegistry, M{}},
+	} {
+		status, _ := req(t, check.fn, operator, check.body)
+		if status != 403 {
+			t.Fatal("operator changed money", check.name, status)
+		}
+	}
+	if _, e := a.db.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,'expense',$2,$3,$4)", id(), encode(M{"amount": "99.00", "category": "salary"}), operator.ID, id()); e != nil {
+		t.Fatal(e)
+	}
+	w := httptest.NewRecorder()
+	a.drafts(w, httptest.NewRequest("GET", "/api/drafts", nil), operator)
+	var listed []M
+	if e := json.Unmarshal(w.Body.Bytes(), &listed); e != nil || w.Code != 200 || len(listed) != 1 || listed[0]["kind"] != "withdrawal" {
+		t.Fatal("operator sees expense history or lost operational draft", w.Code, w.Body.String(), e)
+	}
+	w = httptest.NewRecorder()
+	a.report(w, httptest.NewRequest("GET", "/api/report", nil), operator)
+	if w.Code != 403 {
+		t.Fatal("operator sees statistics", w.Code)
+	}
+	w = httptest.NewRecorder()
+	a.report(w, httptest.NewRequest("GET", "/api/report", nil), chief)
+	if w.Code != 200 {
+		t.Fatal("chief lost statistics", w.Code)
+	}
+	var postings int
+	if e := a.db.QueryRow("SELECT count(*) FROM postings").Scan(&postings); e != nil || postings != 0 {
+		t.Fatal("operator action changed balances", postings, e)
+	}
+}
+func TestSystemAdminCreatesOperatorRole(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, _ := fixtures(t, a)
+	admin := User{ID: id(), Login: "sysadmin", Name: "Системный администратор", Role: "sysadmin"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x')", admin.ID, admin.Login, admin.Name, admin.Role); e != nil {
+		t.Fatal(e)
+	}
+	body := M{"kind": "user", "login": "operator_demo", "name": "Учебный операционист", "role": "operator"}
+	if status, _ := req(t, a.catalogCreate, chief, body); status != 403 {
+		t.Fatal("chief created a user", status)
+	}
+	status, result := req(t, a.catalogCreate, admin, body)
+	if status != 201 {
+		t.Fatal("sysadmin could not create operator", status)
+	}
+	password, ok := result["temporary_password"].(string)
+	if !ok || len(password) < 16 {
+		t.Fatal("one-time password missing")
+	}
+	var role, hash string
+	if e := a.db.QueryRow("SELECT role,password_hash FROM users WHERE login=$1", "operator_demo").Scan(&role, &hash); e != nil || role != "operator" {
+		t.Fatal("operator role not stored", e)
+	}
+	if e := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); e != nil {
+		t.Fatal("one-time password does not authenticate")
+	}
+}
 func TestManualRateAndDraftMoney(t *testing.T) {
 	a := testApp(t)
 	u, merchant, _, card := fixtures(t, a)
@@ -793,9 +882,13 @@ func TestAssignedCardsAndReadPermissions(t *testing.T) {
 	if len(c["cards"].([]interface{})) != 1 {
 		t.Fatal("assigned card hidden")
 	}
-	code, out = req(t, a.observation, operator, M{"card_id": card, "amount": "0.00"})
-	if code != 201 {
-		t.Fatal(out)
+	code, _ = req(t, a.observation, operator, M{"card_id": card, "amount": "0.00"})
+	if code != 403 {
+		t.Fatal("operator changed observed balance", code)
+	}
+	var observations int
+	if e = a.db.QueryRow("SELECT count(*) FROM observations").Scan(&observations); e != nil || observations != 0 {
+		t.Fatal("operator persisted a balance observation", observations, e)
 	}
 	w = httptest.NewRecorder()
 	a.report(w, httptest.NewRequest("GET", "/api/report", nil), operator)
