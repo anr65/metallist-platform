@@ -63,6 +63,7 @@
 - [Окружения](operations/environments.md)
 - [Развёртывание](operations/deployment.md)
 - [Первая демонстрационная версия](operations/demo-v1.md)
+- [Миграция запросов карт к оплате](operations/payment-request-migration.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
 - [Границы доверия](security/trust-boundaries.md)

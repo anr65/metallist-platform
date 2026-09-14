@@ -59,6 +59,17 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, e)
 		return
 	}
+	if kind == "expense" {
+		date := str(m, "date")
+		if date == "" {
+			date = time.Now().In(a.location).Format("2006-01-02")
+		}
+		if _, err := time.ParseInLocation("2006-01-02", date, a.location); err != nil {
+			fail(w, 400, errors.New("неверная дата расхода"))
+			return
+		}
+		m["date"] = date
+	}
 	m["amount_cents"] = v
 	newID := id()
 	m["draft_id"] = newID
@@ -177,7 +188,15 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, e)
 		return
 	}
-	_, e = put(tx, kind, str(m, "id"), "draft:"+str(m, "id"), u.ID, time.Now(), time.Now(), lines, "")
+	occurredAt := time.Now()
+	if kind == "expense" && str(p, "date") != "" {
+		occurredAt, e = time.ParseInLocation("2006-01-02", str(p, "date"), a.location)
+		if e != nil {
+			fail(w, 409, errors.New("дата расхода не определена"))
+			return
+		}
+	}
+	_, e = put(tx, kind, str(m, "id"), "draft:"+str(m, "id"), u.ID, occurredAt, occurredAt, lines, "")
 	if e != nil {
 		fail(w, 409, e)
 		return

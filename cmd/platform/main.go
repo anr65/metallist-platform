@@ -194,6 +194,10 @@ func main() {
 	mux.HandleFunc("/api/card/assign", app.auth(app.assignCard))
 	mux.HandleFunc("/api/user/telegram", app.auth(app.linkTelegram))
 	mux.HandleFunc("/api/registry/upload", app.auth(app.upload))
+	mux.HandleFunc("/api/payment-request/create", app.auth(app.createPaymentRequest))
+	mux.HandleFunc("/api/payment-requests", app.auth(app.paymentRequests))
+	mux.HandleFunc("/api/payment-request/rows", app.auth(app.paymentRequestRows))
+	mux.HandleFunc("/api/payment-request/export", app.auth(app.paymentRequestExport))
 	mux.HandleFunc("/api/demo/sample", app.auth(app.sample))
 	mux.HandleFunc("/api/registries", app.auth(app.registries))
 	mux.HandleFunc("/api/registry/rows", app.auth(app.registryRows))
@@ -214,6 +218,11 @@ func main() {
 	mux.HandleFunc("/api/audit", app.auth(app.audit))
 	mux.HandleFunc("/telegram/webhook", app.telegram)
 	mux.HandleFunc("/assets/app.js", app.javascript)
+	mux.HandleFunc("/assets/app.css", func(w http.ResponseWriter, r *http.Request) {
+		serveAsset(w, r, []byte(appCSS), "text/css; charset=utf-8", false)
+	})
+	mux.HandleFunc("/assets/fonts/geist-sans.woff2", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, geistSans, "font/woff2", true) })
+	mux.HandleFunc("/assets/fonts/geist-mono.woff2", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, geistMono, "font/woff2", true) })
 	mux.HandleFunc("/", app.ui)
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
@@ -250,15 +259,23 @@ func (a *App) setPassword(login, file string) error {
 	if e != nil {
 		return e
 	}
-	res, e := a.db.Exec("UPDATE users SET password_hash=$1 WHERE login=$2", string(hash), login)
+	tx, e := a.db.Begin()
 	if e != nil {
 		return e
 	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		return errors.New("user not found")
+	defer tx.Rollback()
+	var userID string
+	e = tx.QueryRow("UPDATE users SET password_hash=$1 WHERE login=$2 RETURNING id", string(hash), login).Scan(&userID)
+	if e != nil {
+		return e
 	}
-	return nil
+	if _, e = tx.Exec("DELETE FROM sessions WHERE user_id=$1", userID); e != nil {
+		return e
+	}
+	if _, e = tx.Exec("INSERT INTO audit_events(id,actor_role,channel,action,object_type,object_id,outcome) VALUES($1,'system','cli','password_reset','user',$2,'success')", id(), userID); e != nil {
+		return e
+	}
+	return tx.Commit()
 }
 func (a *App) bootstrap(chiefFile, adminFile string) error {
 	b, e := os.ReadFile(chiefFile)
@@ -437,16 +454,24 @@ func (a *App) ui(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(indexHTML))
 }
 func (a *App) javascript(w http.ResponseWriter, r *http.Request) {
+	serveAsset(w, r, []byte(appJS), "text/javascript; charset=utf-8", false)
+}
+func serveAsset(w http.ResponseWriter, r *http.Request, data []byte, mediaType string, immutable bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		fail(w, http.StatusMethodNotAllowed, errors.New("method"))
 		return
 	}
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(appJS))
+	w.Header().Set("Content-Type", mediaType)
+	if immutable {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+	_, _ = w.Write(data)
 }
 func safeFilename(s string) string { return filepath.Base(strings.ReplaceAll(s, "\\", "/")) }
 

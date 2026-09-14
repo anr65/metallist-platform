@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f4">
+  <title>Металлист Платформа</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">К содержимому</a>
+  <section id="login-view" class="login-shell">
+    <div class="login-brand"><span class="brand-mark" aria-hidden="true">М</span><span>Металлист<br><strong>Платформа</strong></span></div>
+    <div class="login-intro">
+      <p class="eyebrow">Рабочий кабинет</p>
+      <h1>Деньги и обязательства — на виду.</h1>
+      <p>Реестры, наличные и расходы в одном месте. Каждое денежное действие проходит отдельное подтверждение.</p>
+    </div>
+    <div class="login-panel">
+      <h2>Войти в кабинет</h2>
+      <p class="muted">Для главного администратора демо логин — <strong>chief</strong>. Пароль задаётся отдельно.</p>
+      <form id="login-form" autocomplete="on">
+        <label for="login-name">Логин</label>
+        <input id="login-name" name="login" autocomplete="username" required>
+        <label for="login-password">Пароль</label>
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="field-error" role="alert" hidden></p>
+        <button class="button primary full" type="submit">Войти</button>
+      </form>
+      <p class="login-note">Демо использует только вымышленные данные.</p>
+    </div>
+  </section>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Основная навигация">
+      <div class="sidebar-top"><div class="brand"><span class="brand-mark" aria-hidden="true">М</span><span>Металлист<br><strong>Платформа</strong></span></div><button id="close-menu" class="icon-button mobile-only" aria-label="Закрыть меню">Закрыть</button></div>
+      <p class="nav-caption">Работа</p>
+      <nav class="side-nav">
+        <button data-page="overview">Обзор</button>
+        <button data-page="requests">Карты к оплате</button>
+        <button data-page="registries">Реестры оплат</button>
+        <button data-page="expenses">Расходы</button>
+        <button data-page="money">Движение денег</button>
+      </nav>
+      <p class="nav-caption">Управление</p>
+      <nav class="side-nav">
+        <button data-page="catalog">Справочники</button>
+        <button data-page="reports">Отчёты</button>
+        <button data-page="audit">История действий</button>
+      </nav>
+      <div class="sidebar-bottom"><span id="sidebar-user"></span><button data-page="account" class="text-button">Настройки входа</button><button id="logout-button" class="text-button">Выйти</button></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><button id="open-menu" class="icon-button mobile-only" aria-label="Открыть меню">Меню</button><span id="breadcrumb">Обзор</span><span id="role-label" class="role-pill"></span></header>
+      <main id="main-content" tabindex="-1"></main>
+    </div>
+  </div>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

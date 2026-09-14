@@ -101,6 +101,174 @@ func TestMoneyExact(t *testing.T) {
 		t.Fatal(v, e)
 	}
 }
+func TestPaymentPlanAndSyntheticIdentity(t *testing.T) {
+	count, e := paymentPlan("count", "20", "", "")
+	if e != nil || len(count) != 20 || count[0] != 25_000_000 {
+		t.Fatal("20-payment plan", e)
+	}
+	total, e := paymentPlan("total", "", "1500000.00", "")
+	if e != nil || len(total) != 6 || total[5] != 25_000_000 {
+		t.Fatal("1.5m plan", e)
+	}
+	remainder, e := paymentPlan("total", "", "525000.00", "")
+	if e != nil || len(remainder) != 3 || remainder[2] != 2_500_000 {
+		t.Fatal("remainder plan", e)
+	}
+	if _, e = paymentPlan("count", "501", "", ""); e == nil {
+		t.Fatal("unbounded plan")
+	}
+	number, name, e := demoCardIdentity("f2d280ba-f209-428f-8e13-16329db63679", "000000******1001")
+	if e != nil || len(number) != 16 || number[:6] != "000000" || number[12:] != "1001" || validLuhn(number) || !strings.Contains(name, " ") {
+		t.Fatal("synthetic export identity")
+	}
+}
+func TestPaymentRequestExportAndResponse(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, _ := fixtures(t, a)
+	operator := User{ID: id(), Login: "op", Name: "Операционист", Role: "operator"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x')", operator.ID, operator.Login, operator.Name, operator.Role); e != nil {
+		t.Fatal(e)
+	}
+	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "count", "payment_count": "20"}
+	if status, _ := req(t, a.createPaymentRequest, operator, requestBody); status != 403 {
+		t.Fatal("operator issued card file")
+	}
+	status, created := req(t, a.createPaymentRequest, chief, requestBody)
+	if status != 201 || created["payment_count"] != float64(20) || created["planned_total"] != "5000000.00" {
+		t.Fatal("request creation", status, created)
+	}
+	requestID := created["id"].(string)
+	status, _ = req(t, a.createPaymentRequest, chief, requestBody)
+	if status != 409 {
+		t.Fatal("duplicate request accepted")
+	}
+	w := httptest.NewRecorder()
+	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), operator)
+	if w.Code != 403 {
+		t.Fatal("operator exported card numbers", w.Code)
+	}
+	w = httptest.NewRecorder()
+	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), chief)
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Content-Disposition"), requestID) {
+		t.Fatal("export failed", w.Code)
+	}
+	book, e := excelize.OpenReader(bytes.NewReader(w.Body.Bytes()))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer book.Close()
+	lines, e := book.GetRows("Карты к оплате")
+	if e != nil || len(lines) != 24 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || validLuhn(lines[4][1]) {
+		t.Fatal("unsafe or incomplete export", e)
+	}
+	responseStatus, responseData := func() (int, M) {
+		response := excelize.NewFile()
+		response.SetCellStr("Sheet1", "A1", "Карта")
+		response.SetCellStr("Sheet1", "B1", "Сумма")
+		response.SetCellStr("Sheet1", "A2", lines[4][1])
+		response.SetCellStr("Sheet1", "B2", "250000.00")
+		data, _ := response.WriteToBuffer()
+		response.Close()
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		_ = form.WriteField("merchant_id", merchant)
+		_ = form.WriteField("external_ref", "REPLY-20")
+		_ = form.WriteField("payment_request_id", requestID)
+		part, _ := form.CreateFormFile("file", "response.xlsx")
+		_, _ = part.Write(data.Bytes())
+		form.Close()
+		r := httptest.NewRequest("POST", "/api/registry/upload", &body)
+		r.Header.Set("Content-Type", form.FormDataContentType())
+		out := httptest.NewRecorder()
+		a.upload(out, r, chief)
+		var result M
+		_ = json.Unmarshal(out.Body.Bytes(), &result)
+		return out.Code, result
+	}()
+	if responseStatus != 201 {
+		t.Fatal("linked response rejected", responseStatus, responseData)
+	}
+	var leaked string
+	if e = a.db.QueryRow("SELECT raw::text FROM registry_rows ORDER BY row_no LIMIT 1").Scan(&leaked); e != nil || strings.Contains(leaked, lines[4][1]) {
+		t.Fatal("full synthetic number stored in import rows", e)
+	}
+	w = httptest.NewRecorder()
+	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)
+	var requests []M
+	_ = json.Unmarshal(w.Body.Bytes(), &requests)
+	if w.Code != 200 || len(requests) != 1 || requests[0]["received_total"] != "0.00" {
+		t.Fatal("preview changed financial totals", w.Body.String())
+	}
+	registryID := responseData["id"].(string)
+	status, confirmed := req(t, a.confirmRegistry, chief, M{"id": registryID, "version": "1", "confirm_total": "250000.00", "confirm_commission": "10000.00", "confirm_rate_bp": "400"})
+	if status != 200 {
+		t.Fatal("linked response confirmation", status, confirmed)
+	}
+	w = httptest.NewRecorder()
+	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)
+	_ = json.Unmarshal(w.Body.Bytes(), &requests)
+	if w.Code != 200 || len(requests) != 1 || requests[0]["received_total"] != "250000.00" || requests[0]["difference"] != "4750000.00" {
+		t.Fatal("confirmed response not reconciled with plan", w.Body.String())
+	}
+}
+func TestExpenseDateAndSource(t *testing.T) {
+	a := testApp(t)
+	u, _, _, card := fixtures(t, a)
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_funding", id(), "test-funding-"+id(), u.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 10_000, Card: card}, {Account: "3100", Side: "credit", Amount: 10_000}}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	status, out := req(t, a.draft, u, M{"kind": "expense", "source_kind": "card", "source_id": card, "category": "operating", "amount": "10.00", "date": "2026-07-11", "reason": "Вымышленный расход"})
+	if status != 201 {
+		t.Fatal("expense draft", out)
+	}
+	draftID := out["id"].(string)
+	status, out = req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "10.00"})
+	if status != 200 {
+		t.Fatal("expense confirmation", out)
+	}
+	var day string
+	if e = a.db.QueryRow("SELECT to_char(occurred_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') FROM journal_entries WHERE event_type='expense' AND event_id=$1", draftID).Scan(&day); e != nil || day != "2026-07-11" {
+		t.Fatal("expense date not preserved", day, e)
+	}
+	month, e := a.monthReport("2026-07")
+	if e != nil || month["expenses"] != "10.00" {
+		t.Fatal("expense in wrong month", month, e)
+	}
+}
+func TestCLIPasswordResetRevokesSessions(t *testing.T) {
+	a := testApp(t)
+	u, _, _, _ := fixtures(t, a)
+	if _, e := a.db.Exec("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')", digest("synthetic-session"), u.ID); e != nil {
+		t.Fatal(e)
+	}
+	file := t.TempDir() + "/new-password"
+	pass := "synthetic-reset-" + id()
+	if e := os.WriteFile(file, []byte(pass), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e := a.setPassword(u.Login, file); e != nil {
+		t.Fatal(e)
+	}
+	var hash string
+	var sessions, audits int
+	if e := a.db.QueryRow("SELECT password_hash FROM users WHERE id=$1", u.ID).Scan(&hash); e != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)) != nil {
+		t.Fatal("new password not installed", e)
+	}
+	if e := a.db.QueryRow("SELECT COUNT(*) FROM sessions WHERE user_id=$1", u.ID).Scan(&sessions); e != nil || sessions != 0 {
+		t.Fatal("old sessions survived reset", e)
+	}
+	if e := a.db.QueryRow("SELECT COUNT(*) FROM audit_events WHERE action='password_reset' AND object_id=$1", u.ID).Scan(&audits); e != nil || audits != 1 {
+		t.Fatal("reset not audited", e)
+	}
+}
 func TestDashboardScriptAllowedByCSP(t *testing.T) {
 	a := &App{}
 	mux := http.NewServeMux()
@@ -116,13 +284,13 @@ func TestDashboardScriptAllowedByCSP(t *testing.T) {
 	if !strings.Contains(page.Header().Get("Content-Security-Policy"), "script-src 'self'") {
 		t.Fatal("same-origin scripts are not allowed")
 	}
-	if !strings.Contains(page.Body.String(), `<script src="/assets/app.js" defer></script>`) || strings.Contains(page.Body.String(), "<script>") || strings.Contains(page.Body.String(), "onclick=") {
+	if !strings.Contains(page.Body.String(), `<script src="/assets/app.js" defer></script>`) || !strings.Contains(page.Body.String(), `/assets/app.css`) || strings.Contains(page.Body.String(), "<script>") || strings.Contains(page.Body.String(), "onclick=") {
 		t.Fatal("page uses blocked inline JavaScript")
 	}
 
 	script := httptest.NewRecorder()
 	h.ServeHTTP(script, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
-	if script.Code != http.StatusOK || !strings.HasPrefix(script.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(script.Body.String(), "$('#loginForm').onsubmit=") || !strings.Contains(script.Body.String(), "$('#logoutButton').onclick=logout") {
+	if script.Code != http.StatusOK || !strings.HasPrefix(script.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(script.Body.String(), "$('#login-form').addEventListener") || !strings.Contains(script.Body.String(), "$('#logout-button').addEventListener") {
 		t.Fatal("dashboard script is unavailable")
 	}
 }

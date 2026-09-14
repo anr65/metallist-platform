@@ -94,6 +94,15 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	defer tx.Rollback()
+	requestID := strings.TrimSpace(r.FormValue("payment_request_id"))
+	var requestNumbers, requestMasks map[string]string
+	if requestID != "" {
+		requestNumbers, requestMasks, e = verifyRequest(tx, requestID, merchant)
+		if e != nil {
+			fail(w, 400, e)
+			return
+		}
+	}
 	var exists bool
 	if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM source_documents WHERE sha256=$1)", sum).Scan(&exists); e != nil {
 		fail(w, 500, e)
@@ -106,7 +115,20 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	var total int64
 	for i := range rows {
 		if rows[i].Error == "" {
-			card, err := a.resolveCard(tx, rows[i].Mask)
+			var card string
+			var err error
+			if requestID != "" {
+				value := strings.TrimSpace(rows[i].Mask)
+				card = requestNumbers[value]
+				if card == "" {
+					card = requestMasks[value]
+				}
+				if card == "" {
+					err = errors.New("карта не найдена в выбранном запросе или неоднозначна")
+				}
+			} else {
+				card, err = a.resolveCard(tx, rows[i].Mask)
+			}
 			if err != nil {
 				rows[i].Error = err.Error()
 			} else if !a.cardAllowed(u, card) {
@@ -127,7 +149,26 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	sourceID, regID := id(), id()
 	path := filepath.Join(a.storage, sum)
-	if e = os.WriteFile(path, data, 0600); e != nil {
+	stored, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if openErr != nil {
+		fail(w, 409, errors.New("этот файл уже обрабатывается или загружен"))
+		return
+	}
+	keepFile := false
+	defer func() {
+		if !keepFile {
+			_ = os.Remove(path)
+		}
+	}()
+	if written, writeErr := stored.Write(data); writeErr != nil || written != len(data) {
+		_ = stored.Close()
+		if writeErr == nil {
+			writeErr = io.ErrShortWrite
+		}
+		fail(w, 500, writeErr)
+		return
+	}
+	if e = stored.Close(); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -136,7 +177,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, e)
 		return
 	}
-	_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,$4,'preview',$5)", regID, merchant, sourceID, external, total)
+	_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_request_id) VALUES($1,$2,$3,$4,'preview',$5,$6)", regID, merchant, sourceID, external, total, nilID(requestID))
 	if e != nil {
 		fail(w, 409, e)
 		return
@@ -156,6 +197,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, e)
 		return
 	}
+	keepFile = true
 	respond(w, 201, M{"id": regID, "rows": len(rows), "accepted_total": rub(total)})
 }
 func parseRows(kind string, data []byte) ([]importedRow, error) {
@@ -321,7 +363,7 @@ func (a *App) currentRate(tx *sql.Tx, merchant string) (int, error) {
 	return bp, e
 }
 func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
-	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),COALESCE(r.manual_rate_bp,0),r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1) FROM registries r JOIN merchants m ON m.id=r.merchant_id"
+	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),COALESCE(r.manual_rate_bp,0),r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
 	if u.Role == "operator" {
@@ -336,12 +378,12 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	defer rows.Close()
 	out := []M{}
 	for rows.Next() {
-		var id, name, merchant, ref, status string
+		var id, name, merchant, ref, status, requestID string
 		var total, comm, adjustment int64
 		var rate, manual, version int
 		var adjustedRate sql.NullInt64
 		var confirmed sql.NullTime
-		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate); e != nil {
+		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID); e != nil {
 			fail(w, 500, e)
 			return
 		}
@@ -353,7 +395,7 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 		} else if status == "reversed" {
 			comm = 0
 		}
-		x := M{"id": id, "merchant": name, "external_ref": ref, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual, "version": version}
+		x := M{"id": id, "merchant": name, "external_ref": ref, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual, "version": version, "payment_request_id": requestID}
 		if status == "preview" {
 			tx, _ := a.db.Begin()
 			rate, _ = a.currentRate(tx, merchant)

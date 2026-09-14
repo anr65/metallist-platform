@@ -30,6 +30,8 @@
 
 ## Документы и импорт
 
+В демонстрационной схеме 002 есть `payment_requests(id, merchant_id, external_ref, mode, payment_count, per_payment_cents, requested_total_cents, export_path, export_sha256, created_by, created_at)` и `payment_request_rows(id, request_id, row_no, card_id, planned_cents, synthetic_number, synthetic_name)`. Пара `(merchant_id, external_ref)` и номер строки в запросе уникальны. `registries.payment_request_id` необязателен; ответный реестр проверяет совпадение мерчанта. Запрос хранит неизменяемый план и контрольную сумму файла, не создаёт проводок. `synthetic_number` — только демонстрационный недействительный номер; production PAN и ФИО здесь хранить запрещено до отдельной архитектуры защищённого хранилища.
+
 - `source_documents(id, source_type, external_id, checksum, storage_key, received_at, received_by, metadata)`
 - `import_batches(id, source_document_id, parser_version, status, created_at, approved_by, confirmed_at, applied_at, reversed_by, reversed_at, reversal_reason)`; срок отката считается от `confirmed_at`
 - `import_rows(id, batch_id, sheet_name nullable, row_number, raw_data, normalized_data, source_order_ref nullable, source_rrn nullable, status, error_codes)`; для CSV `sheet_name` пуст, порядковый номер/номер заказа/RRN сохраняются как данные источника, но их глобальная уникальность пока не доказана

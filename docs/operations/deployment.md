@@ -1,7 +1,7 @@
 # Развёртывание
 
 Статус: демонстрационное окружение запущено; production не создан
-Дата: 2026-09-13
+Дата: 2026-09-14
 
 ## Текущее состояние
 
@@ -11,6 +11,7 @@
 - `metallist-demo.service` работает из `/opt/metallist-platform/current`, точная версия — commit ветки `demo-v1`;
 - PostgreSQL содержит отдельную `metallist_demo` исключительно с синтетическими данными; приложение подключено отдельной малопривилегированной ролью;
 - перед первичным применением схемы был создан backup `metallist_demo_before_initial_20260913T191223Z.dump` и успешно восстановлен в отдельную `metallist_demo_restore_test`;
+- перед добавочной миграцией 002 создан закрытый backup `/var/backups/metallist-platform/metallist_demo_before_payment_requests_20260914T071019Z.dump` (62 092 байта, права `0600`), проверен `pg_restore -l` и восстановлен в пустую `metallist_demo_restore_test`; совпали 2 пользователя, 3 реестра, 10 journal entries, 26 postings и нулевой дисбаланс. На восстановленной копии миграция 1→2 прошла; в `metallist_demo` после неё остались 10 entries, 26 postings и нулевой дисбаланс;
 - отдельная локальная одноразовая база `metallist_platform_test` используется для автоматических проверок. Демо-БД не используется для тестовых сбросов и экспериментов с миграциями.
 
 ## Текущий demo deployment flow

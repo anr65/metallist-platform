@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 )
@@ -237,6 +238,8 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		mask := str(m, "mask")
 		if !cardMaskPattern.MatchString(mask) {
 			e = errors.New("нужна маска формата 000000******1234; полный номер запрещён")
+		} else if os.Getenv("APP_ENV") == "demo" && !approvedSyntheticName(str(m, "owner_label")) {
+			e = errors.New("в демо выберите вымышленное ФИО из списка")
 		} else {
 			_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, str(m, "bank_id"), str(m, "owner_label"), mask, mask[len(mask)-4:])
 		}
