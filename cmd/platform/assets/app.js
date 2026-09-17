@@ -225,7 +225,7 @@ async function registriesPage(selectedRequest = '', selectedRegistry = '') {
     ${field('upload-merchant','Мерчант',`<select id="upload-merchant" name="merchant_id" required>${option(state.catalog.merchants,item => item.name)}</select>`)}
     ${field('payment_request_id','Запрос на карты',`<select id="payment_request_id" name="payment_request_id">${requestOptions}</select>`,'Если файл относится к подготовленному запросу, выберите его.')}
     ${field('external_ref','Номер ответного реестра',input('external_ref','text','required placeholder="Номер от мерчанта"'))}
-    ${field('file','Файл XLSX или CSV',input('file','file','accept=".xlsx,.csv" required'))}
+    ${field('file','Файл XLSX, XLS или CSV',input('file','file','accept=".xlsx,.xls,.csv" required'))}
     </div><div class="form-actions"><button class="button primary">Загрузить и проверить</button></div></form>
     <p class="form-note"><a href="/api/demo/sample">Скачать учебный XLSX</a> · <a href="/api/demo/sample?kind=csv">Скачать учебный банковский CSV</a></p></div>`;
   const list = table([
@@ -536,7 +536,7 @@ function catalogForm(tab) {
 }
 function catalogRows(tab) {
   const c = state.catalog;
-  if (tab === 'merchants') return table([{title:'Название',key:'name'},{title:'Код',key:'code'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.merchants,'Мерчантов пока нет','Добавьте мерчанта перед созданием запроса на карты.');
+  if (tab === 'merchants') return table([{title:'Название',key:'name'},{title:'Код',key:'code'},{title:'Разбор реестра',render:r=>r.parser_status==='configured'?esc(r.parser_name):'<span class="muted">Ожидает образец</span>'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.merchants,'Мерчантов пока нет','Добавьте мерчанта перед созданием запроса на карты.');
   if (tab === 'cards') return table([{title:'Карта',render:r=>`<span class="mono">${esc(r.mask)}</span>`},{title:'Банк',key:'name'},{title:'Владелец',key:'owner_label'},{title:'Состояние',render:r=>r.status==='active'?'Активна':r.status==='blocked'?'Заблокирована':'Выведена'}],c.cards,'Карт пока нет','Добавьте учебную карту для формирования запроса.');
   if (tab === 'banks') return table([{title:'Банк',key:'name'},{title:'Код',key:'code'}],c.banks,'Банков пока нет','Добавьте банк, чтобы создать карту.');
   if (tab === 'custodians') return table([{title:'Ответственный',key:'name'},{title:'Функция',render:r=>r.kind==='chief'?'Главный администратор':r.kind==='collector'?'Сборщик':'Операционист'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.custodians,'Ответственных пока нет','Добавьте сборщика или операциониста.');

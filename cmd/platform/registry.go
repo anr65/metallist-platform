@@ -1,11 +1,8 @@
 package main
 
 import (
-	"archive/zip"
-	"bytes"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,9 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/xuri/excelize/v2"
-	"golang.org/x/text/encoding/charmap"
 )
 
 type importedRow struct {
@@ -32,7 +26,8 @@ type importedRow struct {
 	Amount, BankFee, Transfer     int64
 }
 
-var longDigits = regexp.MustCompile(`[0-9]{12,19}`)
+var longDigits = regexp.MustCompile(`(?:[0-9][ -]?){12,19}`)
+var trailingFour = regexp.MustCompile(`([0-9]{4})\s*$`)
 
 func safeRaw(values []string) []string {
 	out := make([]string, len(values))
@@ -66,21 +61,42 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("размер файла"))
 		return
 	}
-	kind := "xlsx"
 	ext := strings.ToLower(filepath.Ext(h.Filename))
-	if ext != ".csv" && ext != ".xlsx" {
-		fail(w, 400, errors.New("поддержаны только .xlsx и .csv"))
+	if ext != ".csv" && ext != ".xlsx" && ext != ".xls" {
+		fail(w, 400, errors.New("поддержаны только .xlsx, .xls и .csv"))
 		return
 	}
-	if ext == ".csv" {
-		kind = "bank_csv"
+	merchant := r.FormValue("merchant_id")
+	var parserCode, profileStatus string
+	var parserVersion int
+	e = a.db.QueryRow("SELECT COALESCE(p.parser_code,''),p.status,COALESCE(t.version,0) FROM merchant_import_profiles p LEFT JOIN registry_parser_types t ON t.code=p.parser_code AND t.active WHERE p.merchant_id=$1", merchant).Scan(&parserCode, &profileStatus, &parserVersion)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		fail(w, 500, errors.New("не удалось определить тип разбора файла"))
+		return
 	}
-	rows, e := parseRows(kind, data)
+	if e != nil || profileStatus != "configured" || parserCode == "" || parserVersion <= 0 {
+		fail(w, 400, errors.New("для мерчанта ещё не настроен тип разбора файла"))
+		return
+	}
+	var extensionAllowed bool
+	e = a.db.QueryRow("SELECT $1=ANY(accepted_extensions) FROM registry_parser_types WHERE code=$2 AND active", ext, parserCode).Scan(&extensionAllowed)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		fail(w, 500, errors.New("не удалось проверить тип файла"))
+		return
+	}
+	if e != nil || !extensionAllowed {
+		fail(w, 400, errors.New("расширение файла не соответствует типу разбора этого мерчанта"))
+		return
+	}
+	rows, e := readAndParseRows(parserCode, ext, data)
 	if e != nil {
 		fail(w, 400, e)
 		return
 	}
-	merchant := r.FormValue("merchant_id")
+	kind := strings.TrimPrefix(ext, ".")
+	if ext == ".csv" {
+		kind = "bank_csv"
+	}
 	external := strings.TrimSpace(r.FormValue("external_ref"))
 	if external == "" {
 		fail(w, 400, errors.New("нужен номер реестра"))
@@ -172,7 +188,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
-	_, e = tx.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", sourceID, kind, safeFilename(h.Filename), sum, h.Header.Get("Content-Type"), len(data), path, u.ID)
+	_, e = tx.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id,parser_code,parser_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", sourceID, kind, safeFilename(h.Filename), sum, h.Header.Get("Content-Type"), len(data), path, u.ID, parserCode, parserVersion)
 	if e != nil {
 		fail(w, 409, e)
 		return
@@ -189,7 +205,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
-	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows)}); e != nil {
+	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows), "parser_code": parserCode, "parser_version": parserVersion}); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -200,140 +216,6 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	keepFile = true
 	respond(w, 201, M{"id": regID, "rows": len(rows), "accepted_total": rub(total)})
 }
-func parseRows(kind string, data []byte) ([]importedRow, error) {
-	if kind == "bank_csv" {
-		reader := csv.NewReader(charmap.Windows1251.NewDecoder().Reader(strings.NewReader(string(data))))
-		reader.Comma = ';'
-		reader.FieldsPerRecord = -1
-		all, e := reader.ReadAll()
-		if e != nil {
-			return nil, e
-		}
-		if len(all) < 3 {
-			return nil, errors.New("CSV без строк")
-		}
-		header := all[1]
-		if len(all) > 10002 {
-			return nil, errors.New("слишком много строк")
-		}
-		indices := map[string]int{}
-		for i, h := range header {
-			indices[strings.TrimSpace(h)] = i
-		}
-		for _, name := range []string{"Маскированный номер карты", "Сумма операции", "Комиссия Банка", "К перечислению"} {
-			if _, ok := indices[name]; !ok {
-				return nil, fmt.Errorf("нет поля %s", name)
-			}
-		}
-		get := func(row []string, name string) string {
-			i := indices[name]
-			if i >= len(row) {
-				return ""
-			}
-			return row[i]
-		}
-		out := []importedRow{}
-		for i, row := range all[2:] {
-			if len(row) == 0 || strings.TrimSpace(strings.Join(row, "")) == "" {
-				continue
-			}
-			x := importedRow{Number: i + 3, Raw: row, Mask: get(row, "Маскированный номер карты"), Order: get(row, "Номер заказа"), RRN: get(row, "RRN")}
-			var e1, e2, e3 error
-			x.Amount, e1 = amount(get(row, "Сумма операции"))
-			x.BankFee, e2 = nonnegative(get(row, "Комиссия Банка"))
-			x.Transfer, e3 = amount(get(row, "К перечислению"))
-			if e1 != nil || e2 != nil || e3 != nil || x.Transfer != x.Amount+x.BankFee {
-				x.Error = "invalid_amount_or_bank_total"
-			}
-			out = append(out, x)
-		}
-		return out, nil
-	}
-	z, e := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if e != nil {
-		return nil, e
-	}
-	var size uint64
-	for _, entry := range z.File {
-		size += entry.UncompressedSize64
-		if size > 64<<20 || entry.UncompressedSize64 > 20<<20 {
-			return nil, errors.New("слишком большой XLSX после распаковки")
-		}
-		if strings.Contains(strings.ToLower(entry.Name), "vba") {
-			return nil, errors.New("макросы запрещены")
-		}
-	}
-	f, e := excelize.OpenReader(bytes.NewReader(data))
-	if e != nil {
-		return nil, e
-	}
-	defer f.Close()
-	out := []importedRow{}
-	sheets := f.GetSheetList()
-	if len(sheets) != 1 {
-		return nil, errors.New("поддержан один лист XLSX")
-	}
-	sheet := sheets[0]
-	raw, e := f.GetRows(sheet, excelize.Options{RawCellValue: true})
-	if e != nil {
-		return nil, e
-	}
-	if len(raw) < 2 {
-		return nil, errors.New("XLSX без строк")
-	}
-	if len(raw) > 10001 {
-		return nil, errors.New("слишком много строк")
-	}
-	head := map[string]int{}
-	for i, h := range raw[0] {
-		lower := strings.ToLower(strings.TrimSpace(h))
-		if strings.Contains(lower, "pin") || strings.Contains(lower, "пин") || strings.Contains(lower, "cvv") {
-			return nil, errors.New("колонки PIN/CVV запрещены")
-		}
-		head[strings.ToLower(strings.TrimSpace(h))] = i
-	}
-	for rowNo, row := range raw {
-		for colNo := range row {
-			cell, _ := excelize.CoordinatesToCellName(colNo+1, rowNo+1)
-			formula, err := f.GetCellFormula(sheet, cell)
-			if err != nil {
-				return nil, err
-			}
-			if formula != "" {
-				return nil, errors.New("формулы в реестре запрещены")
-			}
-		}
-	}
-	find := func(keys ...string) int {
-		for _, k := range keys {
-			if i, ok := head[k]; ok {
-				return i
-			}
-		}
-		return -1
-	}
-	ci, ai := find("карта", "card", "маска карты"), find("сумма", "amount", "сумма пополнения")
-	if ci < 0 || ai < 0 {
-		return nil, errors.New("нужны колонки Карта и Сумма")
-	}
-	for i, row := range raw[1:] {
-		if len(row) == 0 || strings.TrimSpace(strings.Join(row, "")) == "" {
-			continue
-		}
-		x := importedRow{Number: i + 2, Sheet: sheet, Raw: row}
-		if ci >= len(row) || ai >= len(row) {
-			x.Error = "missing_cell"
-		} else {
-			x.Mask = row[ci]
-			x.Amount, e = amount(row[ai])
-			if e != nil {
-				x.Error = "invalid_amount"
-			}
-		}
-		out = append(out, x)
-	}
-	return out, nil
-}
 func nonnegative(s string) (int64, error) {
 	if strings.TrimSpace(s) == "0" || strings.TrimSpace(s) == "0,00" || strings.TrimSpace(s) == "0.00" {
 		return 0, nil
@@ -341,16 +223,51 @@ func nonnegative(s string) (int64, error) {
 	return amount(s)
 }
 func (a *App) resolveCard(tx *sql.Tx, mask string) (string, error) {
-	rows, e := tx.Query("SELECT id FROM cards WHERE mask=$1 AND status='active'", strings.TrimSpace(mask))
+	value := strings.TrimSpace(mask)
+	rows, e := tx.Query("SELECT id FROM cards WHERE mask=$1 AND status='active'", value)
 	if e != nil {
 		return "", e
 	}
-	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var x string
-		_ = rows.Scan(&x)
+		if e = rows.Scan(&x); e != nil {
+			rows.Close()
+			return "", e
+		}
 		ids = append(ids, x)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return "", e
+	}
+	if len(ids) == 1 {
+		return ids[0], nil
+	}
+	if len(ids) > 1 {
+		return "", errors.New("card_not_unique_or_unknown")
+	}
+	match := trailingFour.FindStringSubmatch(value)
+	if len(match) != 2 {
+		return "", errors.New("card_not_unique_or_unknown")
+	}
+	rows, e = tx.Query("SELECT id FROM cards WHERE last4=$1 AND status='active'", match[1])
+	if e != nil {
+		return "", e
+	}
+	ids = ids[:0]
+	for rows.Next() {
+		var card string
+		if e = rows.Scan(&card); e != nil {
+			return "", e
+		}
+		ids = append(ids, card)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return "", e
 	}
 	if len(ids) != 1 {
 		return "", errors.New("card_not_unique_or_unknown")
@@ -546,10 +463,13 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		var card string
 		var v int64
 		if e = rows.Scan(&card, &v); e != nil {
-			break
+			rows.Close()
+			fail(w, 500, e)
+			return
 		}
 		lines = append(lines, Posting{Account: "1100", Side: "debit", Amount: v, Card: card})
 	}
+	e = rows.Err()
 	rows.Close()
 	if e != nil {
 		fail(w, 500, e)

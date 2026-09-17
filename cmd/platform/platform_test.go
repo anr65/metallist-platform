@@ -75,6 +75,7 @@ func fixtures(t *testing.T, a *App) (User, string, string, string) {
 	}{
 		{"INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'chief','Chief','chief','x')", []interface{}{u.ID}},
 		{"INSERT INTO merchants(id,code,name) VALUES($1,'FAKE','Вымышленный мерчант')", []interface{}{merchant}},
+		{"INSERT INTO merchant_import_profiles(merchant_id,parser_code,status) VALUES($1,'generic_xlsx_v1','configured')", []interface{}{merchant}},
 		{"INSERT INTO tariffs(id,merchant_id,rate_bp,valid_from,created_by) VALUES($1,$2,400,'2026-01-01',$3)", []interface{}{id(), merchant, u.ID}},
 		{"INSERT INTO banks(id,code,name) VALUES($1,'FAKEBANK','Вымышленный банк')", []interface{}{bank}},
 		{"INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Тестовый владелец','000000******1234','1234')", []interface{}{card, bank}},
@@ -521,14 +522,115 @@ func TestImportRepeatedRowsAndMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, e := parseRows("bank_csv", encoded)
+	rows, e := parseRows("aliten_bank_csv_v1", ".csv", encoded)
 	if e != nil || len(rows) != 2 || rows[0].Error != "" || rows[1].Error != "" {
 		t.Fatal(rows, e)
 	}
 	bad := []byte("x\nКарта;Сумма\n000000******1234;1.001\n")
-	_, e = parseRows("bank_csv", bad)
+	_, e = parseRows("aliten_bank_csv_v1", ".csv", bad)
 	if e == nil {
 		t.Fatal("invalid headers accepted")
+	}
+}
+
+func TestMerchantParserMappings(t *testing.T) {
+	tests := []struct {
+		name   string
+		parser string
+		sheet  spreadsheetSheet
+		count  int
+		amount int64
+		error  string
+	}{
+		{"Света", "sveta_cards_xls_v1", spreadsheetSheet{Name: "Лист_1", Rows: [][]string{{}, {}, {}, {"№ п/п", "Сумма", "Номер вх.", "По номеру карты"}, {"1", "248063", "3999", "000000******1234"}, {"Итого", "248063"}}}, 1, 24_806_300, ""},
+		{"Катя", "katya_payouts_xlsx_v1", spreadsheetSheet{Name: "Sheet1", Rows: [][]string{{"Статус выплаты", "Id выплаты", "Выплата", "Комиссия банка", "Реквизиты вывода"}, {"оплачена", "182194058", "244541", "1100.43", "000000******1234"}}}, 1, 24_454_100, ""},
+		{"Толя", "tolya_operations_xlsx_v1", spreadsheetSheet{Name: "Операции", Rows: [][]string{{"ID", "СТАТУС", "ЦЕНА"}, {"synthetic-id", "Выполнен", "248121"}}}, 1, 24_812_100, "missing_card_reference"},
+		{"Наркоман", "narkoman_avangard_xls_v1", spreadsheetSheet{Name: "clb_stat_complete.jr", Rows: [][]string{{}, {}, {}, {}, {}, {}, {"", "", "Дата док-та", "", "", "Номер док-та", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "Назначение платежа"}, {}, {"", "", "14.09.2026", "", "", "6873656995", "", "", "", "", "", "", "", "", "", "", "13", "250000", "", "", "Расчеты. Карта:****1234"}, {"", "", "Итого:"}}}, 1, 25_000_000, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rows, e := parseMerchantSheets(test.parser, []spreadsheetSheet{test.sheet})
+			if e != nil || len(rows) != test.count || rows[0].Amount != test.amount || rows[0].Error != test.error {
+				t.Fatalf("mapping failed: count=%d amount=%d error=%q parse=%v", len(rows), func() int64 {
+					if len(rows) == 0 {
+						return 0
+					}
+					return rows[0].Amount
+				}(), func() string {
+					if len(rows) == 0 {
+						return ""
+					}
+					return rows[0].Error
+				}(), e)
+			}
+		})
+	}
+}
+
+func TestMerchantParserRejectsFormulaAndUnsafePrecision(t *testing.T) {
+	file := excelize.NewFile()
+	file.SetCellValue("Sheet1", "A1", "Карта")
+	file.SetCellValue("Sheet1", "B1", "Сумма")
+	file.SetCellValue("Sheet1", "A2", "000000******1234")
+	file.SetCellFormula("Sheet1", "B2", "=100+1")
+	blob, e := file.WriteToBuffer()
+	if e != nil {
+		t.Fatal(e)
+	}
+	file.Close()
+	if _, e = parseRows("generic_xlsx_v1", ".xlsx", blob.Bytes()); e == nil || !strings.Contains(e.Error(), "формулы") {
+		t.Fatal("formula was accepted", e)
+	}
+	if _, e = spreadsheetAmount("1.0010"); e == nil {
+		t.Fatal("non-zero sub-kopeck precision was accepted")
+	}
+	if value, e := spreadsheetAmount("1.2300"); e != nil || value != 123 {
+		t.Fatal("exact trailing zeros were rejected", value, e)
+	}
+}
+
+func TestAttachedMerchantSamples(t *testing.T) {
+	tests := []struct {
+		env, parser, ext string
+		count, invalid   int
+		total            int64
+	}{
+		{"METALLIST_SAMPLE_SVETA", "sveta_cards_xls_v1", ".xls", 24, 0, 593_656_900},
+		{"METALLIST_SAMPLE_NARKOMAN", "narkoman_avangard_xls_v1", ".xls", 20, 0, 500_000_000},
+		{"METALLIST_SAMPLE_TOLYA", "tolya_operations_xlsx_v1", ".xlsx", 18, 18, 440_155_900},
+		{"METALLIST_SAMPLE_KATYA", "katya_payouts_xlsx_v1", ".xlsx", 6, 0, 146_337_400},
+	}
+	ran := false
+	for _, test := range tests {
+		path := os.Getenv(test.env)
+		if path == "" {
+			continue
+		}
+		ran = true
+		data, e := os.ReadFile(path)
+		if e != nil {
+			t.Fatal(e)
+		}
+		rows, e := parseRows(test.parser, test.ext, data)
+		if e != nil {
+			t.Fatalf("%s: %v", test.parser, e)
+		}
+		var total int64
+		invalid := 0
+		errorsByCode := map[string]int{}
+		for _, row := range rows {
+			total += row.Amount
+			if row.Error != "" {
+				invalid++
+				errorsByCode[row.Error]++
+			}
+		}
+		if len(rows) != test.count || invalid != test.invalid || total != test.total {
+			t.Fatalf("%s: rows=%d invalid=%d total=%d errors=%v", test.parser, len(rows), invalid, total, errorsByCode)
+		}
+	}
+	if !ran {
+		t.Skip("local merchant samples are not configured")
 	}
 }
 func TestRoleDenied(t *testing.T) {
@@ -803,7 +905,7 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 	file := excelize.NewFile()
 	file.SetCellValue("Sheet1", "A1", "Карта")
 	file.SetCellValue("Sheet1", "B1", "Сумма")
-	file.SetCellValue("Sheet1", "A2", "000000******1234")
+	file.SetCellValue("Sheet1", "A2", "0000000000001234")
 	file.SetCellValue("Sheet1", "B2", "1234.64")
 	file.SetCellValue("Sheet1", "A3", "000000******1234")
 	file.SetCellValue("Sheet1", "B3", "987.70")
@@ -812,12 +914,12 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 		t.Fatal(e)
 	}
 	file.Close()
-	upload := func(ref string) (int, M) {
+	upload := func(ref, merchantID, filename string) (int, M) {
 		var body bytes.Buffer
 		mw := multipart.NewWriter(&body)
-		_ = mw.WriteField("merchant_id", merchant)
+		_ = mw.WriteField("merchant_id", merchantID)
 		_ = mw.WriteField("external_ref", ref)
-		fw, _ := mw.CreateFormFile("file", "synthetic.xlsx")
+		fw, _ := mw.CreateFormFile("file", filename)
 		_, _ = fw.Write(blob.Bytes())
 		mw.Close()
 		r := httptest.NewRequest("POST", "/api/registry/upload", &body)
@@ -828,7 +930,20 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &result)
 		return w.Code, result
 	}
-	code, out := upload("X1")
+	pendingMerchant := id()
+	if _, e = a.db.Exec("INSERT INTO merchants(id,code,name) VALUES($1,'PENDING','Без образца')", pendingMerchant); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.db.Exec("INSERT INTO merchant_import_profiles(merchant_id,status) VALUES($1,'awaiting_sample')", pendingMerchant); e != nil {
+		t.Fatal(e)
+	}
+	if code, _ := upload("PENDING", pendingMerchant, "synthetic.xlsx"); code != 400 {
+		t.Fatal("merchant without parser accepted", code)
+	}
+	if code, _ := upload("WRONG-EXT", merchant, "synthetic.csv"); code != 400 {
+		t.Fatal("wrong parser extension accepted", code)
+	}
+	code, out := upload("X1", merchant, "synthetic.xlsx")
 	if code != 201 {
 		t.Fatal(out)
 	}
@@ -843,7 +958,13 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 	if len(items) != 2 || items[0]["amount"] != "1234.64" || items[1]["amount"] != "987.70" {
 		t.Fatal(items)
 	}
-	code, _ = upload("X2")
+	var raw string
+	var parser string
+	var parserVersion int
+	if e := a.db.QueryRow("SELECT rr.raw::text,s.parser_code,s.parser_version FROM registry_rows rr JOIN registries r ON r.id=rr.registry_id JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1 AND rr.row_no=2", reg).Scan(&raw, &parser, &parserVersion); e != nil || strings.Contains(raw, "0000000000001234") || parser != "generic_xlsx_v1" || parserVersion != 1 {
+		t.Fatal("parser snapshot or PAN redaction failed", e)
+	}
+	code, _ = upload("X2", merchant, "synthetic.xlsx")
 	if code != 409 {
 		t.Fatal("duplicate file accepted")
 	}
