@@ -58,9 +58,16 @@ func (a *App) telegramCall(method string, payload M) error {
 	return nil
 }
 
+func telegramCommands() []M {
+	return []M{{"command": "start", "description": "Начать работу"}, {"command": "help", "description": "Форматы команд"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "expense", "description": "Расход по карте"}, {"command": "balance", "description": "Остаток — только главный администратор"}}
+}
+
 func (a *App) telegramSetGroupCommands(chatID int64) error {
-	commands := []M{{"command": "start", "description": "Начать работу"}, {"command": "help", "description": "Форматы команд"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "expense", "description": "Расход по карте"}, {"command": "balance", "description": "Остаток — только главный администратор"}}
-	return a.telegramCall("setMyCommands", M{"scope": M{"type": "chat", "chat_id": chatID}, "commands": commands})
+	return a.telegramCall("setMyCommands", M{"scope": M{"type": "chat", "chat_id": chatID}, "commands": telegramCommands()})
+}
+
+func (a *App) telegramSetAllGroupCommands() error {
+	return a.telegramCall("setMyCommands", M{"scope": M{"type": "all_group_chats"}, "commands": telegramCommands()})
 }
 
 func (a *App) telegramSetupCommands() {
@@ -80,6 +87,9 @@ func (a *App) telegramSetupCommands() {
 	if !ok {
 		log.Print("Telegram group: TELEGRAM_ALLOWED_CHAT_ID is missing or invalid")
 		return
+	}
+	if e := a.telegramSetAllGroupCommands(); e != nil {
+		log.Printf("Telegram all-group commands: %v", e)
 	}
 	if e := a.telegramSetGroupCommands(chatID); e != nil {
 		log.Printf("Telegram group commands: %v", e)

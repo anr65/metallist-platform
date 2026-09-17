@@ -114,6 +114,21 @@ func (f *fakeTelegram) call(method string) M {
 	return nil
 }
 
+func (f *fakeTelegram) hasCommandScope(scopeType string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, call := range f.calls {
+		if str(call, "method") != "setMyCommands" {
+			continue
+		}
+		scope, ok := call["scope"].(map[string]interface{})
+		if ok && scope["type"] == scopeType {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTelegramCollectorWithdrawalConfirmationAndRetry(t *testing.T) {
 	a := testApp(t)
 	chief, _, _, card := fixtures(t, a)
@@ -307,9 +322,8 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		t.Fatal("webhook was not registered")
 	}
 	call := fake.call("setMyCommands")
-	scope, ok := call["scope"].(map[string]interface{})
-	if call == nil || !ok || scope["type"] != "chat" || scope["chat_id"] != float64(telegramTestGroup) {
-		t.Fatal("group command menu has wrong scope", call)
+	if call == nil || !fake.hasCommandScope("chat") || !fake.hasCommandScope("all_group_chats") {
+		t.Fatal("group command menus have wrong scopes", call)
 	}
 }
 
