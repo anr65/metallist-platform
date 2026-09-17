@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -46,6 +47,30 @@ var errTelegramDelivery = errors.New("Telegram временно недоступ
 // Reject full card numbers both as one string and in groups separated by spaces or hyphens.
 var telegramSensitiveNumber = regexp.MustCompile(`(^|[^0-9])(?:[0-9][ -]?){11,18}[0-9]([^0-9]|$)`)
 
+func telegramAllowedGroup() (int64, bool) {
+	chatID, e := strconv.ParseInt(strings.TrimSpace(os.Getenv("TELEGRAM_ALLOWED_CHAT_ID")), 10, 64)
+	return chatID, e == nil && chatID < 0
+}
+
+func telegramGroupAllowed(chatID int64, chatType string) bool {
+	allowed, ok := telegramAllowedGroup()
+	return ok && chatID == allowed && (chatType == "group" || chatType == "supergroup")
+}
+
+func telegramCommand(token string) string {
+	command := strings.TrimPrefix(token, "/")
+	command, _, _ = strings.Cut(command, "@")
+	return strings.ToLower(command)
+}
+
+func telegramMessageCommand(text string) string {
+	words := strings.Fields(strings.TrimSpace(text))
+	if len(words) == 0 {
+		return ""
+	}
+	return telegramCommand(words[0])
+}
+
 func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	if os.Getenv("TELEGRAM_WEBHOOK_SECRET") == "" || telegramToken() == "" {
 		http.NotFound(w, r)
@@ -66,15 +91,40 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var sender, chat int64
-	var private bool
+	var chatType string
 	if x.Message != nil {
-		sender, chat, private = x.Message.From.ID, x.Message.Chat.ID, x.Message.Chat.Type == "private"
+		sender, chat, chatType = x.Message.From.ID, x.Message.Chat.ID, x.Message.Chat.Type
 	} else if x.CallbackQuery != nil && x.CallbackQuery.Message != nil {
-		sender, chat, private = x.CallbackQuery.From.ID, x.CallbackQuery.Message.Chat.ID, x.CallbackQuery.Message.Chat.Type == "private"
+		sender, chat, chatType = x.CallbackQuery.From.ID, x.CallbackQuery.Message.Chat.ID, x.CallbackQuery.Message.Chat.Type
 	}
-	if !private || sender <= 0 || chat <= 0 {
+	if sender <= 0 || chat == 0 {
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+	if !telegramGroupAllowed(chat, chatType) {
+		if x.CallbackQuery != nil {
+			_ = a.telegramAnswer(x.CallbackQuery.ID, "Эта группа не подключена")
+		} else if x.Message != nil && (telegramMessageCommand(x.Message.Text) == "start" || telegramMessageCommand(x.Message.Text) == "help") {
+			if chatType == "group" || chatType == "supergroup" {
+				_ = a.telegramReply(chat, fmt.Sprintf("Эта группа ещё не подключена. Её Telegram chat ID: %d", chat), nil)
+			} else {
+				_ = a.telegramReply(chat, "Бот работает только в подключённой рабочей группе.", nil)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && !telegramSensitiveNumber.MatchString(x.Message.Text) {
+		var waiting bool
+		e = a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM telegram_dialogs d JOIN users u ON u.id=d.user_id WHERE u.telegram_id=$1 AND u.active AND d.expires_at>now())", sender).Scan(&waiting)
+		if e != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if !waiting {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 	}
 	// Persist update identity for deduplication and audit, never arbitrary chat text.
 	recorded := encode(M{"update_id": x.UpdateID, "from_id": sender, "chat_id": chat})
@@ -90,6 +140,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	}
 	inserted, _ := res.RowsAffected()
 	if x.Message != nil && telegramSensitiveNumber.MatchString(x.Message.Text) {
+		a.telegramDeleteMessage(chat, x.Message.MessageID)
 		_ = a.telegramReply(chat, "Не отправляйте полный номер карты или другие секреты. В команде нужны только последние 4 цифры.", nil)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -139,7 +190,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return nil
 	}
 	words := strings.Fields(text)
-	command := strings.TrimPrefix(words[0], "/")
+	command := telegramCommand(words[0])
 	if command == "start" || command == "help" {
 		if u.Role == "collector" {
 			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. После выбора отправьте данные одним сообщением. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
@@ -197,7 +248,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	if e != nil {
 		return e
 	}
-	payload := M{"card_id": intent.CardID, "amount": rub(intent.Amount), "amount_cents": intent.Amount, "telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_mask": intent.Mask}
+	payload := M{"card_id": intent.CardID, "amount": rub(intent.Amount), "amount_cents": intent.Amount, "telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_mask": intent.Mask, "telegram_actor_name": u.Name}
 	if command == "withdraw" {
 		payload["custodian_id"] = u.CustodianID
 		payload["observed_cents"] = intent.Observed
@@ -242,13 +293,14 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	amountCents, _ := telegramInt(p["amount_cents"])
 	observed, _ := telegramInt(p["observed_cents"])
 	mask := str(p, "telegram_mask")
+	actor := str(p, "telegram_actor_name")
 	var heading, details string
 	if str(p, "category") == "" {
 		heading = "Подтвердите снятие и остаток по карте"
-		details = "Карта: " + mask + "\nСумма снятия: " + telegramMoney(amountCents) + "\nОстаток: " + telegramMoney(observed)
+		details = "Автор: " + actor + "\nКарта: " + mask + "\nСумма снятия: " + telegramMoney(amountCents) + "\nОстаток: " + telegramMoney(observed)
 	} else {
 		heading = "Подтвердите расход по карте"
-		details = "Карта: " + mask + "\nСумма расхода: " + telegramMoney(amountCents) + "\nКатегория: " + telegramCategoryName(str(p, "category"))
+		details = "Автор: " + actor + "\nКарта: " + mask + "\nСумма расхода: " + telegramMoney(amountCents) + "\nКатегория: " + telegramCategoryName(str(p, "category"))
 	}
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить", "callback_data": "confirm:" + draftID}, M{"text": "Отклонить", "callback_data": "reject:" + draftID}}}}
 	if e := a.telegramReply(chat, heading+"\n\n"+details, keyboard); e != nil {
@@ -286,4 +338,8 @@ func (a *App) telegramAnswer(callbackID, message string) error {
 
 func (a *App) telegramRemoveButtons(chat, messageID int64) {
 	_ = a.telegramCall("editMessageReplyMarkup", M{"chat_id": chat, "message_id": messageID, "reply_markup": M{"inline_keyboard": []interface{}{}}})
+}
+
+func (a *App) telegramDeleteMessage(chat, messageID int64) {
+	_ = a.telegramCall("deleteMessage", M{"chat_id": chat, "message_id": messageID})
 }

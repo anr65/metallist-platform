@@ -312,12 +312,6 @@ func (a *App) linkTelegram(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	a.logAudit(u.ID, "web", "telegram_link", "user", str(m, "user_id"), "success", "", M{"telegram_id": tid, "custodian_id": custodian})
-	if telegramToken() != "" {
-		var role string
-		if a.db.QueryRow("SELECT role FROM users WHERE id=$1", str(m, "user_id")).Scan(&role) == nil {
-			_ = a.telegramSetCommands(tid, role)
-		}
-	}
 	respond(w, 200, M{"linked": true})
 }
 func bcryptHash(p string) (string, error) {

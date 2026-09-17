@@ -16,6 +16,8 @@ type fakeTelegram struct {
 	calls []M
 }
 
+const telegramTestGroup int64 = -100777000111
+
 func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fakeTelegram) {
 	t.Helper()
 	fake := &fakeTelegram{}
@@ -39,6 +41,7 @@ func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fa
 	t.Setenv("TELEGRAM_BOT_TOKEN_FILE", file)
 	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "synthetic-secret")
 	t.Setenv("TELEGRAM_API_BASE", server.URL)
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_ID", "-100777000111")
 	admin := User{ID: id(), Login: "sysadmin", Role: "sysadmin"}
 	collector := User{ID: id(), Login: "collector", Role: "collector"}
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'sysadmin','Admin','sysadmin','x'),($2,'collector','Сборщик','collector','x')", admin.ID, collector.ID); e != nil {
@@ -67,11 +70,15 @@ func telegramRequest(t *testing.T, a *App, update M) int {
 }
 
 func telegramMessageUpdate(updateID int64, telegramID int64, text string) M {
-	return M{"update_id": updateID, "message": M{"message_id": updateID, "text": text, "chat": M{"id": telegramID, "type": "private"}, "from": M{"id": telegramID}}}
+	return telegramMessageUpdateInChat(updateID, telegramID, telegramTestGroup, "supergroup", text)
+}
+
+func telegramMessageUpdateInChat(updateID, telegramID, chatID int64, chatType, text string) M {
+	return M{"update_id": updateID, "message": M{"message_id": updateID, "text": text, "chat": M{"id": chatID, "type": chatType}, "from": M{"id": telegramID}}}
 }
 
 func telegramButtonUpdate(updateID int64, telegramID int64, action, draftID string) M {
-	return M{"update_id": updateID, "callback_query": M{"id": "synthetic-callback", "data": action + ":" + draftID, "from": M{"id": telegramID}, "message": M{"message_id": int64(500), "chat": M{"id": telegramID, "type": "private"}}}}
+	return M{"update_id": updateID, "callback_query": M{"id": "synthetic-callback", "data": action + ":" + draftID, "from": M{"id": telegramID}, "message": M{"message_id": int64(500), "chat": M{"id": telegramTestGroup, "type": "supergroup"}}}}
 }
 
 func (f *fakeTelegram) contains(text string) bool {
@@ -83,6 +90,28 @@ func (f *fakeTelegram) contains(text string) bool {
 		}
 	}
 	return false
+}
+
+func (f *fakeTelegram) called(method string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, call := range f.calls {
+		if str(call, "method") == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeTelegram) call(method string) M {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, call := range f.calls {
+		if str(call, "method") == method {
+			return call
+		}
+	}
+	return nil
 }
 
 func TestTelegramCollectorWithdrawalConfirmationAndRetry(t *testing.T) {
@@ -97,10 +126,10 @@ func TestTelegramCollectorWithdrawalConfirmationAndRetry(t *testing.T) {
 	if e != nil || tx.Commit() != nil {
 		t.Fatal("funding failed", e)
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(1001, 555, "/withdraw 1234 100к/200")); code != 200 {
+	if code := telegramRequest(t, a, telegramMessageUpdate(1001, 555, "/withdraw@metallist_test_bot 1234 100к/200")); code != 200 {
 		t.Fatal(code)
 	}
-	if !fake.contains("Карта: ****1234") || !fake.contains("Сумма снятия: 100 000 ₽") || !fake.contains("Остаток: 200 ₽") {
+	if !fake.contains("Автор: Сборщик") || !fake.contains("Карта: ****1234") || !fake.contains("Сумма снятия: 100 000 ₽") || !fake.contains("Остаток: 200 ₽") {
 		t.Fatal("preview missing exact input")
 	}
 	var draftID, status string
@@ -229,11 +258,58 @@ func TestTelegramCardCollisionAndSensitiveInput(t *testing.T) {
 	if e := a.db.QueryRow("SELECT raw_update::text FROM telegram_updates WHERE update_id=3002").Scan(&raw); e != nil || strings.Contains(raw, "1234567812341234") || !fake.contains("Не отправляйте полный номер карты") {
 		t.Fatal("full card number persisted or not rejected", e)
 	}
+	if !fake.called("deleteMessage") {
+		t.Fatal("sensitive group message was not deleted")
+	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(3003, 555, "/withdraw 1234 5678 9012 3456 100к/200")); code != 200 {
 		t.Fatal(code)
 	}
 	if e := a.db.QueryRow("SELECT raw_update::text FROM telegram_updates WHERE update_id=3003").Scan(&raw); e != nil || strings.Contains(raw, "5678 9012") || !strings.Contains(raw, "redacted") {
 		t.Fatal("grouped card number persisted", e)
+	}
+}
+
+func TestTelegramOnlyAllowsConfiguredGroup(t *testing.T) {
+	a := testApp(t)
+	_, _, _, card := fixtures(t, a)
+	_, _, _, fake := telegramFixture(t, a, card)
+	if code := telegramRequest(t, a, telegramMessageUpdateInChat(4001, 555, 555, "private", "/withdraw 1234 1/0")); code != 200 {
+		t.Fatal(code)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdateInChat(4002, 555, -100999, "supergroup", "/withdraw 1234 1/0")); code != 200 {
+		t.Fatal(code)
+	}
+	var count int
+	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key IN ('telegram:4001','telegram:4002')").Scan(&count); e != nil || count != 0 {
+		t.Fatal("command outside configured group created a draft", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM telegram_updates WHERE update_id IN (4001,4002)").Scan(&count); e != nil || count != 0 {
+		t.Fatal("command outside configured group was persisted", count, e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdateInChat(4003, 555, -100999, "supergroup", "/start@metallist_test_bot")); code != 200 || !fake.contains("Telegram chat ID: -100999") {
+		t.Fatal("group bootstrap did not disclose its chat ID", code)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(4004, 555, "обычное сообщение в рабочей группе")); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM telegram_updates WHERE update_id=4004").Scan(&count); e != nil || count != 0 {
+		t.Fatal("ordinary group conversation was persisted", count, e)
+	}
+}
+
+func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
+	a := testApp(t)
+	_, _, _, card := fixtures(t, a)
+	_, _, _, fake := telegramFixture(t, a, card)
+	t.Setenv("TELEGRAM_WEBHOOK_URL", "https://example.test/telegram/webhook")
+	a.telegramSetupCommands()
+	if !fake.called("setWebhook") {
+		t.Fatal("webhook was not registered")
+	}
+	call := fake.call("setMyCommands")
+	scope, ok := call["scope"].(map[string]interface{})
+	if call == nil || !ok || scope["type"] != "chat" || scope["chat_id"] != float64(telegramTestGroup) {
+		t.Fatal("group command menu has wrong scope", call)
 	}
 }
 
