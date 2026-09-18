@@ -10,6 +10,8 @@ import (
 
 var telegramLastFour = regexp.MustCompile(`^[0-9]{4}$`)
 
+const telegramExpenseBatchLimit = 20
+
 type telegramIntent struct {
 	CardID   string
 	Mask     string
@@ -98,6 +100,27 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 	}
 	out.CardID, out.Mask = card, mask
 	return out, nil
+}
+
+func (a *App) telegramParseExpenses(u telegramActor, args string) ([]telegramIntent, error) {
+	parts := strings.FieldsFunc(strings.ReplaceAll(args, "\r\n", "\n"), func(r rune) bool {
+		return r == '\n' || r == ';'
+	})
+	if len(parts) == 0 {
+		return nil, errors.New("Добавьте хотя бы один расход")
+	}
+	if len(parts) > telegramExpenseBatchLimit {
+		return nil, fmt.Errorf("За один раз можно добавить не более %d расходов", telegramExpenseBatchLimit)
+	}
+	intents := make([]telegramIntent, 0, len(parts))
+	for i, part := range parts {
+		intent, err := a.telegramParse(u, "expense", strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("Строка %d: %w", i+1, err)
+		}
+		intents = append(intents, intent)
+	}
+	return intents, nil
 }
 
 func telegramAmount(raw string) (int64, error) {

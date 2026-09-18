@@ -242,6 +242,96 @@ func TestTelegramCollectorExpensePermissionsAndRejection(t *testing.T) {
 	}
 }
 
+func TestTelegramCollectorExpenseBatchIsAtomicAndIdempotent(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	_, _, _, fake := telegramFixture(t, a, card)
+	tx, _ := a.tx()
+	_, e := put(tx, "test_funding", id(), "tg-expense-batch-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 100_000, Card: card}, {Account: "3100", Side: "credit", Amount: 100_000}}, "")
+	if e != nil || tx.Commit() != nil {
+		t.Fatal(e)
+	}
+	message := "/expense 1234 прогрев 230\n1234 банк. комиссия 25,50"
+	if code := telegramRequest(t, a, telegramMessageUpdate(2101, 555, message)); code != 200 {
+		t.Fatal(code)
+	}
+	if !fake.contains("Подтвердите расходы по картам") || !fake.contains("1. ****1234 · Прогрев · 230 ₽") || !fake.contains("2. ****1234 · Банк. Комиссия · 25,50 ₽") || !fake.contains("Итого: 255,50 ₽") {
+		t.Fatal("batch preview is incomplete")
+	}
+	var draftID, status string
+	if e := a.db.QueryRow("SELECT id,status FROM drafts WHERE idempotency_key='telegram:2101'").Scan(&draftID, &status); e != nil || status != "draft" {
+		t.Fatal("batch draft missing", status, e)
+	}
+	var count int
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 0 {
+		t.Fatal("preview changed balances", count, e)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(2102, 555, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(2103, 555, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_type='expense' AND event_id=$1", draftID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("batch journal duplicated or missing", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM postings p JOIN journal_entries j ON p.entry_id=j.id WHERE j.event_id=$1", draftID).Scan(&count); e != nil || count != 4 {
+		t.Fatal("batch postings count is wrong", count, e)
+	}
+	var warmup, bankFee, cardCredit int64
+	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN p.account='5100' AND p.category='warmup' AND p.side='debit' THEN p.amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN p.account='5300' AND p.category='bank_fee' AND p.side='debit' THEN p.amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN p.account='1100' AND p.card_id=$2 AND p.side='credit' THEN p.amount_cents ELSE 0 END),0) FROM postings p JOIN journal_entries j ON p.entry_id=j.id WHERE j.event_id=$1", draftID, card).Scan(&warmup, &bankFee, &cardCredit); e != nil || warmup != 23_000 || bankFee != 2_550 || cardCredit != 25_550 {
+		t.Fatal("batch amounts are wrong", warmup, bankFee, cardCredit, e)
+	}
+	if !fake.contains("Расходы подтверждены: 2 расхода на 255,50 ₽") {
+		t.Fatal("batch completion message missing")
+	}
+	if code, out := req(t, a.reverseDraft, chief, M{"id": draftID, "reason": "исправление пакетного расхода"}); code != 200 {
+		t.Fatal("batch reversal failed", code, out)
+	}
+	var cardBalance, expenseBalance int64
+	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN account='1100' AND card_id=$1 AND side='debit' THEN amount_cents WHEN account='1100' AND card_id=$1 AND side='credit' THEN -amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN account IN ('5100','5300') AND side='debit' THEN amount_cents WHEN account IN ('5100','5300') AND side='credit' THEN -amount_cents ELSE 0 END),0) FROM postings", card).Scan(&cardBalance, &expenseBalance); e != nil || cardBalance != 100_000 || expenseBalance != 0 {
+		t.Fatal("batch reversal did not restore balances", cardBalance, expenseBalance, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE reversal_of=(SELECT id FROM journal_entries WHERE event_id=$1 AND event_type='expense')", draftID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("batch reversal missing or duplicated", count, e)
+	}
+}
+
+func TestTelegramExpenseBatchRejectsWholeInvalidOrUnfundedBatch(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	_, _, _, fake := telegramFixture(t, a, card)
+	tx, _ := a.tx()
+	_, e := put(tx, "test_funding", id(), "tg-expense-batch-limit-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 100_000, Card: card}, {Account: "3100", Side: "credit", Amount: 100_000}}, "")
+	if e != nil || tx.Commit() != nil {
+		t.Fatal(e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(2201, 555, "/expense 1234 прогрев 10; 1234 зарплата 20")); code != 200 {
+		t.Fatal(code)
+	}
+	var count int
+	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:2201'").Scan(&count); e != nil || count != 0 || !fake.contains("Строка 2") {
+		t.Fatal("invalid item did not reject whole batch", count, e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(2202, 555, "/expense 1234 прогрев 600; 1234 банк. комиссия 500")); code != 200 {
+		t.Fatal(code)
+	}
+	var draftID string
+	if e := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:2202'").Scan(&draftID); e != nil {
+		t.Fatal(e)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(2203, 555, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 0 {
+		t.Fatal("part of unfunded batch was posted", count, e)
+	}
+	var status string
+	if e := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", draftID).Scan(&status); e != nil || status != "draft" {
+		t.Fatal("failed batch changed draft status", status, e)
+	}
+}
+
 func TestTelegramCardCollisionAndSensitiveInput(t *testing.T) {
 	a := testApp(t)
 	_, _, _, card := fixtures(t, a)

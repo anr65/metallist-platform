@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -193,9 +194,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	command := telegramCommand(words[0])
 	if command == "start" || command == "help" {
 		if u.Role == "collector" {
-			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. После выбора отправьте данные одним сообщением. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
+			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. После выбора отправьте данные одним сообщением. В /expense можно указать несколько расходов — по одному в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Выберите /withdraw, /expense или /balance в меню и отправьте данные. Для снятия: 7898 100к/200. Для расхода: 7898 прогрев 230.", nil)
+		return a.telegramReply(message.Chat.ID, "Выберите /withdraw, /expense или /balance в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу.", nil)
 	}
 	if command == "balance" {
 		if u.Role != "chief" {
@@ -242,28 +243,50 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		if command == "withdraw" {
 			return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, сумму снятия и остаток: 7898 100к/200", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму: 7898 прогрев 230", nil)
+		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 банк. комиссия 25,50", nil)
 	}
-	intent, e := a.telegramParse(u, command, args)
-	if e != nil {
-		return e
-	}
-	payload := M{"card_id": intent.CardID, "amount": rub(intent.Amount), "amount_cents": intent.Amount, "telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_mask": intent.Mask, "telegram_actor_name": u.Name}
+	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "withdraw" {
+		intent, e := a.telegramParse(u, command, args)
+		if e != nil {
+			return e
+		}
+		payload["card_id"] = intent.CardID
+		payload["amount"] = rub(intent.Amount)
+		payload["amount_cents"] = intent.Amount
+		payload["telegram_mask"] = intent.Mask
 		payload["custodian_id"] = u.CustodianID
 		payload["observed_cents"] = intent.Observed
 	} else {
-		payload["source_kind"] = "card"
-		payload["source_id"] = intent.CardID
-		payload["category"] = intent.Category
+		intents, e := a.telegramParseExpenses(u, args)
+		if e != nil {
+			return e
+		}
+		items := make([]M, 0, len(intents))
+		var total int64
+		for _, intent := range intents {
+			if intent.Amount > math.MaxInt64-total {
+				return errors.New("Общая сумма расходов слишком велика")
+			}
+			total += intent.Amount
+			items = append(items, M{"card_id": intent.CardID, "source_kind": "card", "source_id": intent.CardID, "category": intent.Category, "amount_cents": intent.Amount, "telegram_mask": intent.Mask})
+		}
+		payload["amount"] = rub(total)
+		payload["amount_cents"] = total
+		payload["expense_items"] = items
 	}
 	draftID := id()
-	_, e = a.db.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5)", draftID, commandKind(command), encode(payload), u.ID, fmt.Sprintf("telegram:%d", updateID))
+	_, e := a.db.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5)", draftID, commandKind(command), encode(payload), u.ID, fmt.Sprintf("telegram:%d", updateID))
 	if e != nil {
 		return errors.New("Черновик не сохранён; проверьте карту и повторите ввод")
 	}
 	_, _ = a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
-	a.logAudit(u.ID, "telegram", "draft_create", commandKind(command), draftID, "success", "", M{"update_id": updateID})
+	auditDetail := M{"update_id": updateID}
+	if command == "expense" {
+		items, _ := telegramExpenseItems(payload)
+		auditDetail["item_count"] = len(items)
+	}
+	a.logAudit(u.ID, "telegram", "draft_create", commandKind(command), draftID, "success", "", auditDetail)
 	return a.telegramSendPreview(draftID, message.Chat.ID, payload)
 }
 
@@ -295,12 +318,23 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	mask := str(p, "telegram_mask")
 	actor := str(p, "telegram_actor_name")
 	var heading, details string
-	if str(p, "category") == "" {
+	items, itemsErr := telegramExpenseItems(p)
+	if len(items) == 0 && itemsErr != nil {
 		heading = "Подтвердите снятие и остаток по карте"
 		details = "Автор: " + actor + "\nКарта: " + mask + "\nСумма снятия: " + telegramMoney(amountCents) + "\nОстаток: " + telegramMoney(observed)
-	} else {
+	} else if len(items) == 1 {
+		itemAmount, _ := telegramInt(items[0]["amount_cents"])
 		heading = "Подтвердите расход по карте"
-		details = "Автор: " + actor + "\nКарта: " + mask + "\nСумма расхода: " + telegramMoney(amountCents) + "\nКатегория: " + telegramCategoryName(str(p, "category"))
+		details = "Автор: " + actor + "\nКарта: " + str(items[0], "telegram_mask") + "\nСумма расхода: " + telegramMoney(itemAmount) + "\nКатегория: " + telegramCategoryName(str(items[0], "category"))
+	} else {
+		heading = "Подтвердите расходы по картам"
+		lines := []string{"Автор: " + actor}
+		for i, item := range items {
+			itemAmount, _ := telegramInt(item["amount_cents"])
+			lines = append(lines, fmt.Sprintf("%d. %s · %s · %s", i+1, str(item, "telegram_mask"), telegramCategoryName(str(item, "category")), telegramMoney(itemAmount)))
+		}
+		lines = append(lines, "", "Итого: "+telegramMoney(amountCents))
+		details = strings.Join(lines, "\n")
 	}
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить", "callback_data": "confirm:" + draftID}, M{"text": "Отклонить", "callback_data": "reject:" + draftID}}}}
 	if e := a.telegramReply(chat, heading+"\n\n"+details, keyboard); e != nil {
@@ -319,6 +353,36 @@ func telegramInt(v interface{}) (int64, error) {
 	default:
 		return 0, errors.New("неверная сумма")
 	}
+}
+
+func telegramExpenseItems(p M) ([]M, error) {
+	if raw, ok := p["expense_items"]; ok {
+		var items []M
+		switch list := raw.(type) {
+		case []M:
+			items = list
+		case []interface{}:
+			items = make([]M, 0, len(list))
+			for _, value := range list {
+				item, ok := value.(map[string]interface{})
+				if !ok {
+					return nil, errors.New("список расходов повреждён")
+				}
+				items = append(items, M(item))
+			}
+		default:
+			return nil, errors.New("список расходов повреждён")
+		}
+		if len(items) == 0 || len(items) > telegramExpenseBatchLimit {
+			return nil, errors.New("список расходов повреждён")
+		}
+		return items, nil
+	}
+	// Backward compatibility for drafts created before batch input was introduced.
+	if str(p, "category") != "" {
+		return []M{{"card_id": str(p, "card_id"), "source_kind": str(p, "source_kind"), "source_id": str(p, "source_id"), "category": str(p, "category"), "amount_cents": p["amount_cents"], "telegram_mask": str(p, "telegram_mask")}}, nil
+	}
+	return nil, errors.New("это не расход")
 }
 
 func (a *App) telegramReply(chat int64, message string, markup interface{}) error {
