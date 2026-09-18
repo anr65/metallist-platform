@@ -60,16 +60,11 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 		a.logAudit(u.ID, "telegram", "draft_confirm", kind, draftID, "rejected", e.Error(), M{})
 		return e.Error(), false
 	}
-	if kind == "withdrawal" {
-		if _, e = telegramInt(p["observed_cents"]); e != nil {
-			return "Остаток черновика некорректен", false
-		}
-	}
 	var lines []Posting
 	if kind == "expense" {
 		lines, e = a.telegramExpenseLines(tx, p, amountCents)
 	} else {
-		lines, e = a.eventLines(tx, kind, p, amountCents)
+		lines, e = a.telegramWithdrawalLines(tx, p, amountCents)
 	}
 	if e != nil {
 		a.logAudit(u.ID, "telegram", "draft_confirm", kind, draftID, "rejected", e.Error(), M{})
@@ -80,9 +75,13 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 		return "Не удалось провести операцию", false
 	}
 	if kind == "withdrawal" {
-		observed, _ := telegramInt(p["observed_cents"])
-		if _, e = tx.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,$4,$5,$6)", id(), str(p, "card_id"), observed, now, u.ID, "telegram:"+draftID); e != nil {
-			return "Не удалось сохранить остаток", false
+		items, _ := telegramWithdrawalItems(p)
+		for i, item := range items {
+			observed, _ := telegramInt(item["observed_cents"])
+			observedAt := now.Add(time.Duration(i) * time.Microsecond)
+			if _, e = tx.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,$4,$5,$6)", id(), str(item, "card_id"), observed, observedAt, u.ID, "telegram:"+draftID); e != nil {
+				return "Не удалось сохранить остаток", false
+			}
 		}
 	}
 	p["telegram_sender_confirmed"] = true
@@ -92,6 +91,9 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 	auditDetail := M{"confirmed_cents": amountCents}
 	if kind == "expense" {
 		items, _ := telegramExpenseItems(p)
+		auditDetail["item_count"] = len(items)
+	} else {
+		items, _ := telegramWithdrawalItems(p)
 		auditDetail["item_count"] = len(items)
 	}
 	if e = txAudit(tx, u.ID, "telegram", "draft_confirm", kind, draftID, "success", "", auditDetail); e != nil {
@@ -110,6 +112,11 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 		_ = a.telegramReply(chat, "Расходы подтверждены: "+telegramExpenseCount(len(items))+" на "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
 		return "Подтверждено", true
 	}
+	items, _ := telegramWithdrawalItems(p)
+	if len(items) > 1 {
+		_ = a.telegramReply(chat, "Снятия подтверждены: "+telegramWithdrawalCount(len(items))+" на "+telegramMoney(amountCents)+". Балансы и остатки обновлены.", nil)
+		return "Подтверждено", true
+	}
 	_ = a.telegramReply(chat, label+" подтверждён: "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
 	return "Подтверждено", true
 }
@@ -121,15 +128,41 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 		return errors.New("Связь Telegram с ответственным изменилась")
 	}
 	if kind == "withdrawal" {
-		if e = a.telegramValidateCard(tx, u.ID, role, str(p, "card_id")); e != nil {
-			return e
-		}
 		if str(p, "custodian_id") != currentCustodian {
 			return errors.New("Получатель наличных изменился")
 		}
 		var kind string
 		if e = tx.QueryRow("SELECT kind FROM custodians WHERE id=$1 AND active", currentCustodian).Scan(&kind); e != nil || (role == "collector" && kind != "collector") || (role == "chief" && kind != "chief") {
 			return errors.New("Ответственный за наличные недоступен")
+		}
+		items, itemsErr := telegramWithdrawalItems(p)
+		if itemsErr != nil {
+			return errors.New("Список снятий повреждён")
+		}
+		var total int64
+		byCard := map[string]int64{}
+		for _, item := range items {
+			cardID := str(item, "card_id")
+			if e = a.telegramValidateCard(tx, u.ID, role, cardID); e != nil {
+				return e
+			}
+			itemAmount, amountErr := telegramInt(item["amount_cents"])
+			observed, observedErr := telegramInt(item["observed_cents"])
+			if amountErr != nil || itemAmount <= 0 || observedErr != nil || observed < 0 || itemAmount > math.MaxInt64-total || itemAmount > math.MaxInt64-byCard[cardID] {
+				return errors.New("Сумма снятия или остаток некорректны")
+			}
+			total += itemAmount
+			byCard[cardID] += itemAmount
+		}
+		claimed, claimedErr := telegramInt(p["amount_cents"])
+		if claimedErr != nil || total != claimed {
+			return errors.New("Общая сумма снятий изменилась")
+		}
+		for cardID, required := range byCard {
+			availableCents, balanceErr := available(tx, Posting{Account: "1100", Card: cardID})
+			if balanceErr != nil || availableCents < required {
+				return errors.New("Недостаточно денег на одной из карт")
+			}
 		}
 		return nil
 	}
@@ -213,6 +246,32 @@ func (a *App) telegramExpenseLines(tx *sql.Tx, p M, expectedTotal int64) ([]Post
 	return lines, nil
 }
 
+func (a *App) telegramWithdrawalLines(tx *sql.Tx, p M, expectedTotal int64) ([]Posting, error) {
+	items, e := telegramWithdrawalItems(p)
+	if e != nil {
+		return nil, e
+	}
+	lines := make([]Posting, 0, len(items)*2)
+	var total int64
+	for _, item := range items {
+		itemAmount, err := telegramInt(item["amount_cents"])
+		if err != nil || itemAmount <= 0 || itemAmount > math.MaxInt64-total {
+			return nil, errors.New("сумма снятия некорректна")
+		}
+		itemPayload := M{"card_id": str(item, "card_id"), "custodian_id": str(p, "custodian_id")}
+		itemLines, err := a.eventLines(tx, "withdrawal", itemPayload, itemAmount)
+		if err != nil {
+			return nil, err
+		}
+		total += itemAmount
+		lines = append(lines, itemLines...)
+	}
+	if total != expectedTotal {
+		return nil, errors.New("общая сумма снятий изменилась")
+	}
+	return lines, nil
+}
+
 func telegramExpenseCount(n int) string {
 	if n%10 == 1 && n%100 != 11 {
 		return fmt.Sprintf("%d расход", n)
@@ -221,4 +280,14 @@ func telegramExpenseCount(n int) string {
 		return fmt.Sprintf("%d расхода", n)
 	}
 	return fmt.Sprintf("%d расходов", n)
+}
+
+func telegramWithdrawalCount(n int) string {
+	if n%10 == 1 && n%100 != 11 {
+		return fmt.Sprintf("%d снятие", n)
+	}
+	if n%10 >= 2 && n%10 <= 4 && (n%100 < 12 || n%100 > 14) {
+		return fmt.Sprintf("%d снятия", n)
+	}
+	return fmt.Sprintf("%d снятий", n)
 }

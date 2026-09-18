@@ -194,7 +194,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	command := telegramCommand(words[0])
 	if command == "start" || command == "help" {
 		if u.Role == "collector" {
-			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. После выбора отправьте данные одним сообщением. В /expense можно указать несколько расходов — по одному в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
+			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. В обеих командах можно указать несколько операций — по одной в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Выберите /withdraw, /expense или /balance в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу.", nil)
 	}
@@ -241,22 +241,29 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return errors.New("Не удалось начать ввод")
 		}
 		if command == "withdraw" {
-			return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, сумму снятия и остаток: 7898 100к/200", nil)
+			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 банк. комиссия 25,50", nil)
 	}
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "withdraw" {
-		intent, e := a.telegramParse(u, command, args)
+		intents, e := a.telegramParseWithdrawals(u, args)
 		if e != nil {
 			return e
 		}
-		payload["card_id"] = intent.CardID
-		payload["amount"] = rub(intent.Amount)
-		payload["amount_cents"] = intent.Amount
-		payload["telegram_mask"] = intent.Mask
+		items := make([]M, 0, len(intents))
+		var total int64
+		for _, intent := range intents {
+			if intent.Amount > math.MaxInt64-total {
+				return errors.New("Общая сумма снятий слишком велика")
+			}
+			total += intent.Amount
+			items = append(items, M{"card_id": intent.CardID, "amount_cents": intent.Amount, "observed_cents": intent.Observed, "telegram_mask": intent.Mask})
+		}
+		payload["amount"] = rub(total)
+		payload["amount_cents"] = total
 		payload["custodian_id"] = u.CustodianID
-		payload["observed_cents"] = intent.Observed
+		payload["withdrawal_items"] = items
 	} else {
 		intents, e := a.telegramParseExpenses(u, args)
 		if e != nil {
@@ -284,6 +291,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	auditDetail := M{"update_id": updateID}
 	if command == "expense" {
 		items, _ := telegramExpenseItems(payload)
+		auditDetail["item_count"] = len(items)
+	} else {
+		items, _ := telegramWithdrawalItems(payload)
 		auditDetail["item_count"] = len(items)
 	}
 	a.logAudit(u.ID, "telegram", "draft_create", commandKind(command), draftID, "success", "", auditDetail)
@@ -314,19 +324,14 @@ func (a *App) telegramRetryPreview(updateID, chat int64) error {
 
 func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	amountCents, _ := telegramInt(p["amount_cents"])
-	observed, _ := telegramInt(p["observed_cents"])
-	mask := str(p, "telegram_mask")
 	actor := str(p, "telegram_actor_name")
 	var heading, details string
 	items, itemsErr := telegramExpenseItems(p)
-	if len(items) == 0 && itemsErr != nil {
-		heading = "Подтвердите снятие и остаток по карте"
-		details = "Автор: " + actor + "\nКарта: " + mask + "\nСумма снятия: " + telegramMoney(amountCents) + "\nОстаток: " + telegramMoney(observed)
-	} else if len(items) == 1 {
+	if itemsErr == nil && len(items) == 1 {
 		itemAmount, _ := telegramInt(items[0]["amount_cents"])
 		heading = "Подтвердите расход по карте"
 		details = "Автор: " + actor + "\nКарта: " + str(items[0], "telegram_mask") + "\nСумма расхода: " + telegramMoney(itemAmount) + "\nКатегория: " + telegramCategoryName(str(items[0], "category"))
-	} else {
+	} else if itemsErr == nil {
 		heading = "Подтвердите расходы по картам"
 		lines := []string{"Автор: " + actor}
 		for i, item := range items {
@@ -335,6 +340,27 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 		}
 		lines = append(lines, "", "Итого: "+telegramMoney(amountCents))
 		details = strings.Join(lines, "\n")
+	} else {
+		withdrawals, err := telegramWithdrawalItems(p)
+		if err != nil {
+			return err
+		}
+		if len(withdrawals) == 1 {
+			itemAmount, _ := telegramInt(withdrawals[0]["amount_cents"])
+			observed, _ := telegramInt(withdrawals[0]["observed_cents"])
+			heading = "Подтвердите снятие и остаток по карте"
+			details = "Автор: " + actor + "\nКарта: " + str(withdrawals[0], "telegram_mask") + "\nСумма снятия: " + telegramMoney(itemAmount) + "\nОстаток: " + telegramMoney(observed)
+		} else {
+			heading = "Подтвердите снятия и остатки по картам"
+			lines := []string{"Автор: " + actor}
+			for i, item := range withdrawals {
+				itemAmount, _ := telegramInt(item["amount_cents"])
+				observed, _ := telegramInt(item["observed_cents"])
+				lines = append(lines, fmt.Sprintf("%d. %s · снято %s · остаток %s", i+1, str(item, "telegram_mask"), telegramMoney(itemAmount), telegramMoney(observed)))
+			}
+			lines = append(lines, "", "Итого снято: "+telegramMoney(amountCents))
+			details = strings.Join(lines, "\n")
+		}
 	}
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить", "callback_data": "confirm:" + draftID}, M{"text": "Отклонить", "callback_data": "reject:" + draftID}}}}
 	if e := a.telegramReply(chat, heading+"\n\n"+details, keyboard); e != nil {
@@ -373,7 +399,7 @@ func telegramExpenseItems(p M) ([]M, error) {
 		default:
 			return nil, errors.New("список расходов повреждён")
 		}
-		if len(items) == 0 || len(items) > telegramExpenseBatchLimit {
+		if len(items) == 0 || len(items) > telegramBatchLimit {
 			return nil, errors.New("список расходов повреждён")
 		}
 		return items, nil
@@ -383,6 +409,36 @@ func telegramExpenseItems(p M) ([]M, error) {
 		return []M{{"card_id": str(p, "card_id"), "source_kind": str(p, "source_kind"), "source_id": str(p, "source_id"), "category": str(p, "category"), "amount_cents": p["amount_cents"], "telegram_mask": str(p, "telegram_mask")}}, nil
 	}
 	return nil, errors.New("это не расход")
+}
+
+func telegramWithdrawalItems(p M) ([]M, error) {
+	if raw, ok := p["withdrawal_items"]; ok {
+		var items []M
+		switch list := raw.(type) {
+		case []M:
+			items = list
+		case []interface{}:
+			items = make([]M, 0, len(list))
+			for _, value := range list {
+				item, ok := value.(map[string]interface{})
+				if !ok {
+					return nil, errors.New("список снятий повреждён")
+				}
+				items = append(items, M(item))
+			}
+		default:
+			return nil, errors.New("список снятий повреждён")
+		}
+		if len(items) == 0 || len(items) > telegramBatchLimit {
+			return nil, errors.New("список снятий повреждён")
+		}
+		return items, nil
+	}
+	// Backward compatibility for drafts created before batch input was introduced.
+	if str(p, "card_id") != "" && p["observed_cents"] != nil {
+		return []M{{"card_id": str(p, "card_id"), "amount_cents": p["amount_cents"], "observed_cents": p["observed_cents"], "telegram_mask": str(p, "telegram_mask")}}, nil
+	}
+	return nil, errors.New("это не снятие")
 }
 
 func (a *App) telegramReply(chat int64, message string, markup interface{}) error {

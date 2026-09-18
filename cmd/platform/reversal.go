@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"math"
 	"net/http"
 )
 
@@ -99,8 +100,20 @@ func (a *App) reverseDraft(w http.ResponseWriter, r *http.Request, u User) {
 		lines = append(lines, x)
 	}
 	rows.Close()
+	type balanceKey struct {
+		account, card, cust string
+	}
+	required := map[balanceKey]int64{}
 	for _, x := range lines {
-		account, card, cust, v := x.account, x.card, x.cust, x.v
+		key := balanceKey{account: x.account, card: x.card, cust: x.cust}
+		if x.v > math.MaxInt64-required[key] {
+			fail(w, 409, errors.New("сумма сторно слишком велика"))
+			return
+		}
+		required[key] += x.v
+	}
+	for x, v := range required {
+		account, card, cust := x.account, x.card, x.cust
 		dim, key := "custodian", cust
 		if card != "" {
 			dim, key = "card", card

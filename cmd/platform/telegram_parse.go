@@ -10,7 +10,7 @@ import (
 
 var telegramLastFour = regexp.MustCompile(`^[0-9]{4}$`)
 
-const telegramExpenseBatchLimit = 20
+const telegramBatchLimit = 20
 
 type telegramIntent struct {
 	CardID   string
@@ -103,14 +103,12 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 }
 
 func (a *App) telegramParseExpenses(u telegramActor, args string) ([]telegramIntent, error) {
-	parts := strings.FieldsFunc(strings.ReplaceAll(args, "\r\n", "\n"), func(r rune) bool {
-		return r == '\n' || r == ';'
-	})
+	parts := telegramBatchParts(args)
 	if len(parts) == 0 {
 		return nil, errors.New("Добавьте хотя бы один расход")
 	}
-	if len(parts) > telegramExpenseBatchLimit {
-		return nil, fmt.Errorf("За один раз можно добавить не более %d расходов", telegramExpenseBatchLimit)
+	if len(parts) > telegramBatchLimit {
+		return nil, fmt.Errorf("За один раз можно добавить не более %d расходов", telegramBatchLimit)
 	}
 	intents := make([]telegramIntent, 0, len(parts))
 	for i, part := range parts {
@@ -121,6 +119,31 @@ func (a *App) telegramParseExpenses(u telegramActor, args string) ([]telegramInt
 		intents = append(intents, intent)
 	}
 	return intents, nil
+}
+
+func (a *App) telegramParseWithdrawals(u telegramActor, args string) ([]telegramIntent, error) {
+	parts := telegramBatchParts(args)
+	if len(parts) == 0 {
+		return nil, errors.New("Добавьте хотя бы одно снятие")
+	}
+	if len(parts) > telegramBatchLimit {
+		return nil, fmt.Errorf("За один раз можно добавить не более %d снятий", telegramBatchLimit)
+	}
+	intents := make([]telegramIntent, 0, len(parts))
+	for i, part := range parts {
+		intent, err := a.telegramParse(u, "withdraw", strings.TrimSpace(part))
+		if err != nil {
+			return nil, fmt.Errorf("Строка %d: %w", i+1, err)
+		}
+		intents = append(intents, intent)
+	}
+	return intents, nil
+}
+
+func telegramBatchParts(args string) []string {
+	return strings.FieldsFunc(strings.ReplaceAll(args, "\r\n", "\n"), func(r rune) bool {
+		return r == '\n' || r == ';'
+	})
 }
 
 func telegramAmount(raw string) (int64, error) {
