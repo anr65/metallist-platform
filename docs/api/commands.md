@@ -9,6 +9,9 @@ Web, Telegram и import workers вызывают одинаковые applicatio
 
 - `CreateMerchant`
 - `RegisterCard`
+- `CreatePaymentContact` (ФИО и телефон в справочнике; в demo только синтетические значения)
+- `CreatePaymentRequest` (плановые строки с обязательным `contact_id` и снимком ФИО/телефона; без ledger)
+- `ExportPaymentRequestXLSX` (повторная выдача ранее сформированного файла после проверки SHA-256)
 - `SetCardLimit`
 - `CreateMaterialBatch`
 - `UploadRegistry`

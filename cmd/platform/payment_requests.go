@@ -21,6 +21,8 @@ import (
 const defaultPaymentCents int64 = 25_000_000
 
 var requestReferencePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,79}$`)
+var paymentPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{10,14}$`)
+var demoPaymentPhonePattern = regexp.MustCompile(`^\+7000000[0-9]{4}$`)
 var syntheticNames = []string{
 	"Тестов Алексей Учебович", "Демина Мария Примеровна",
 	"Образцов Илья Тестович", "Учебная Анна Образцовна",
@@ -37,8 +39,40 @@ func approvedSyntheticName(name string) bool {
 }
 
 type plannedPayment struct {
-	cardID, mask, bank, number, name string
-	amount                           int64
+	cardID, mask, bank, number, name, phone, contactID string
+	amount                                             int64
+}
+
+func normalizePaymentPhone(raw string) (string, error) {
+	s := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(strings.TrimSpace(raw))
+	if strings.HasPrefix(s, "8") && len(s) == 11 {
+		s = "+7" + s[1:]
+	} else if !strings.HasPrefix(s, "+") {
+		s = "+" + s
+	}
+	if !paymentPhonePattern.MatchString(s) {
+		return "", errors.New("номер телефона должен содержать от 11 до 15 цифр и код страны")
+	}
+	if os.Getenv("APP_ENV") == "demo" && !demoPaymentPhonePattern.MatchString(s) {
+		return "", errors.New("в демо используйте только вымышленный номер вида +7 000 000-00-01")
+	}
+	return s, nil
+}
+
+func paymentContactIDs(m M, count int) ([]string, error) {
+	raw, ok := m["contact_ids"].([]interface{})
+	if !ok || len(raw) != count {
+		return nil, errors.New("выберите ФИО и номер телефона для каждой строки")
+	}
+	out := make([]string, count)
+	for i, value := range raw {
+		contactID, ok := value.(string)
+		if !ok || contactID == "" {
+			return nil, fmt.Errorf("строка %d: выберите ФИО и номер телефона", i+1)
+		}
+		out[i] = contactID
+	}
+	return out, nil
 }
 
 func demoCardIdentity(cardID, mask string) (string, string, error) {
@@ -131,7 +165,7 @@ func requestWorkbook(reference, merchant string, rows []plannedPayment) ([]byte,
 	f.SetSheetName("Sheet1", sheet)
 	f.SetCellStr(sheet, "A1", "ДЕМО: вымышленные данные, платежи по этим номерам невозможны")
 	f.SetCellStr(sheet, "A2", "Мерчант: "+merchant+" · Запрос: "+reference)
-	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "СУММА, ₽", "БАНК"} {
+	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "НОМЕР ТЕЛЕФОНА", "СУММА, ₽", "БАНК"} {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 4)
 		f.SetCellStr(sheet, cell, title)
 	}
@@ -145,14 +179,17 @@ func requestWorkbook(reference, merchant string, rows []plannedPayment) ([]byte,
 		f.SetCellStr(sheet, fmt.Sprintf("B%d", n), row.number)
 		f.SetCellStyle(sheet, fmt.Sprintf("B%d", n), fmt.Sprintf("B%d", n), textStyle)
 		f.SetCellStr(sheet, fmt.Sprintf("C%d", n), row.name)
-		f.SetCellStr(sheet, fmt.Sprintf("D%d", n), rub(row.amount))
-		f.SetCellStr(sheet, fmt.Sprintf("E%d", n), row.bank)
+		f.SetCellStr(sheet, fmt.Sprintf("D%d", n), row.phone)
+		f.SetCellStyle(sheet, fmt.Sprintf("D%d", n), fmt.Sprintf("D%d", n), textStyle)
+		f.SetCellStr(sheet, fmt.Sprintf("E%d", n), rub(row.amount))
+		f.SetCellStr(sheet, fmt.Sprintf("F%d", n), row.bank)
 	}
 	f.SetColWidth(sheet, "A", "A", 7)
 	f.SetColWidth(sheet, "B", "B", 24)
 	f.SetColWidth(sheet, "C", "C", 35)
-	f.SetColWidth(sheet, "D", "D", 20)
-	f.SetColWidth(sheet, "E", "E", 25)
+	f.SetColWidth(sheet, "D", "D", 22)
+	f.SetColWidth(sheet, "E", "E", 20)
+	f.SetColWidth(sheet, "F", "F", 25)
 	b, e := f.WriteToBuffer()
 	if e != nil {
 		return nil, e
@@ -161,7 +198,7 @@ func requestWorkbook(reference, merchant string, rows []plannedPayment) ([]byte,
 }
 
 func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u User) {
-	if r.Method != http.MethodPost || !a.require(w, u, "chief") {
+	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
 		return
 	}
 	if os.Getenv("APP_ENV") != "demo" && os.Getenv("APP_ENV") != "testing" {
@@ -179,6 +216,11 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		return
 	}
 	plan, e := paymentPlan(str(m, "mode"), str(m, "payment_count"), str(m, "total"), str(m, "per_payment"))
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	contactIDs, e := paymentContactIDs(m, len(plan))
 	if e != nil {
 		fail(w, 400, e)
 		return
@@ -238,10 +280,37 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 409, errors.New("нет доступных карт"))
 		return
 	}
+	contacts := map[string]plannedPayment{}
+	contactRows, e := tx.Query("SELECT id,full_name,phone FROM payment_contacts WHERE active")
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	for contactRows.Next() {
+		var contact plannedPayment
+		if e = contactRows.Scan(&contact.contactID, &contact.name, &contact.phone); e != nil {
+			break
+		}
+		contacts[contact.contactID] = contact
+	}
+	if e == nil {
+		e = contactRows.Err()
+	}
+	contactRows.Close()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
 	selected := []plannedPayment{}
 	for i, cents := range plan {
 		card := cards[i%len(cards)]
+		contact, ok := contacts[contactIDs[i]]
+		if !ok {
+			fail(w, 400, fmt.Errorf("строка %d: выбранный контакт недоступен", i+1))
+			return
+		}
 		card.amount = cents
+		card.contactID, card.name, card.phone = contact.contactID, contact.name, contact.phone
 		selected = append(selected, card)
 	}
 	var total int64
@@ -271,7 +340,7 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		return
 	}
 	for i, row := range selected {
-		_, e = tx.Exec("INSERT INTO payment_request_rows(id,request_id,row_no,card_id,planned_cents,synthetic_number,synthetic_name) VALUES($1,$2,$3,$4,$5,$6,$7)", id(), requestID, i+1, row.cardID, row.amount, row.number, row.name)
+		_, e = tx.Exec("INSERT INTO payment_request_rows(id,request_id,row_no,card_id,planned_cents,synthetic_number,synthetic_name,contact_id,contact_name,contact_phone) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", id(), requestID, i+1, row.cardID, row.amount, row.number, row.name, row.contactID, row.name, row.phone)
 		if e != nil {
 			fail(w, 500, e)
 			return
@@ -320,28 +389,32 @@ func (a *App) paymentRequestRows(w http.ResponseWriter, r *http.Request, u User)
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	rows, e := a.db.Query("SELECT x.row_no,c.mask,b.name,x.synthetic_name,x.planned_cents FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", r.URL.Query().Get("id"))
+	rows, e := a.db.Query("SELECT x.row_no,c.mask,b.name,COALESCE(x.contact_name,x.synthetic_name),COALESCE(x.contact_phone,''),x.planned_cents FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", r.URL.Query().Get("id"))
 	if e != nil {
 		fail(w, 500, e)
 		return
 	}
 	defer rows.Close()
 	out := []M{}
+	canSeePhone := u.Role == "chief" || u.Role == "operator"
 	for rows.Next() {
 		var n int
-		var mask, bank, name string
+		var mask, bank, name, phone string
 		var cents int64
-		if e = rows.Scan(&n, &mask, &bank, &name, &cents); e != nil {
+		if e = rows.Scan(&n, &mask, &bank, &name, &phone, &cents); e != nil {
 			fail(w, 500, e)
 			return
 		}
-		out = append(out, M{"row_no": n, "mask": mask, "bank": bank, "synthetic_name": name, "amount": rub(cents)})
+		if !canSeePhone {
+			phone = ""
+		}
+		out = append(out, M{"row_no": n, "mask": mask, "bank": bank, "contact_name": name, "contact_phone": phone, "amount": rub(cents)})
 	}
 	respond(w, 200, out)
 }
 
 func (a *App) paymentRequestExport(w http.ResponseWriter, r *http.Request, u User) {
-	if r.Method != http.MethodGet || !a.require(w, u, "chief") {
+	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator") {
 		return
 	}
 	if os.Getenv("APP_ENV") != "demo" && os.Getenv("APP_ENV") != "testing" {

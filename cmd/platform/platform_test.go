@@ -49,7 +49,7 @@ func testApp(t *testing.T) *App {
 }
 func reset(t *testing.T, a *App) {
 	t.Helper()
-	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
+	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -123,18 +123,50 @@ func TestPaymentPlanAndSyntheticIdentity(t *testing.T) {
 		t.Fatal("synthetic export identity")
 	}
 }
+func TestPaymentContactPhoneNormalizationAndDemoBoundary(t *testing.T) {
+	t.Setenv("APP_ENV", "testing")
+	phone, e := normalizePaymentPhone("8 (999) 123-45-67")
+	if e != nil || phone != "+79991234567" {
+		t.Fatal("phone normalization", phone, e)
+	}
+	t.Setenv("APP_ENV", "demo")
+	phone, e = normalizePaymentPhone("+7 000 000-00-01")
+	if e != nil || phone != "+70000000001" {
+		t.Fatal("synthetic demo phone rejected", phone, e)
+	}
+	if _, e = normalizePaymentPhone("+7 999 123-45-67"); e == nil {
+		t.Fatal("real-looking phone accepted in demo")
+	}
+}
 func TestPaymentRequestExportAndResponse(t *testing.T) {
 	a := testApp(t)
 	chief, merchant, _, _ := fixtures(t, a)
 	operator := User{ID: id(), Login: "op", Name: "Операционист", Role: "operator"}
-	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x')", operator.ID, operator.Login, operator.Name, operator.Role); e != nil {
+	accountant := User{ID: id(), Login: "accountant", Name: "Бухгалтер", Role: "accountant"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x'),($5,$6,$7,$8,'x')", operator.ID, operator.Login, operator.Name, operator.Role, accountant.ID, accountant.Login, accountant.Name, accountant.Role); e != nil {
 		t.Fatal(e)
 	}
-	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "count", "payment_count": "20"}
-	if status, _ := req(t, a.createPaymentRequest, operator, requestBody); status != 403 {
-		t.Fatal("operator issued card file")
+	status, contact := req(t, a.catalogCreate, operator, M{"kind": "payment_contact", "full_name": "Тестов Алексей Учебович", "phone": "+7 000 000-00-01"})
+	if status != 201 {
+		t.Fatal("operator could not create payment contact", status, contact)
 	}
-	status, created := req(t, a.createPaymentRequest, chief, requestBody)
+	contactID := contact["id"].(string)
+	duplicateStatus, duplicateContact := req(t, a.catalogCreate, operator, M{"kind": "payment_contact", "full_name": "Тестов Алексей Учебович", "phone": "+7 (000) 000-00-01"})
+	if duplicateStatus != 201 || duplicateContact["id"] != contactID {
+		t.Fatal("repeat payment contact did not reuse directory entry", duplicateStatus, duplicateContact)
+	}
+	contacts := make([]string, 20)
+	for i := range contacts {
+		contacts[i] = contactID
+	}
+	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "count", "payment_count": "20", "contact_ids": contacts}
+	if status, _ := req(t, a.createPaymentRequest, accountant, requestBody); status != 403 {
+		t.Fatal("accountant issued card file")
+	}
+	if missingStatus, _ := req(t, a.createPaymentRequest, chief, M{"merchant_id": merchant, "external_ref": "NO-CONTACT", "mode": "count", "payment_count": "1"}); missingStatus != 400 {
+		t.Fatal("request without mandatory contact accepted", missingStatus)
+	}
+	status, created := req(t, a.createPaymentRequest, operator, requestBody)
 	if status != 201 || created["payment_count"] != float64(20) || created["planned_total"] != "5000000.00" {
 		t.Fatal("request creation", status, created)
 	}
@@ -145,8 +177,8 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), operator)
-	if w.Code != 403 {
-		t.Fatal("operator exported card numbers", w.Code)
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
+		t.Fatal("operator could not export prepared XLSX", w.Code)
 	}
 	w = httptest.NewRecorder()
 	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), chief)
@@ -159,8 +191,44 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	defer book.Close()
 	lines, e := book.GetRows("Карты к оплате")
-	if e != nil || len(lines) != 24 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || validLuhn(lines[4][1]) {
+	if e != nil || len(lines) != 24 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
 		t.Fatal("unsafe or incomplete export", e)
+	}
+	rowsRecorder := httptest.NewRecorder()
+	a.paymentRequestRows(rowsRecorder, httptest.NewRequest("GET", "/api/payment-request/rows?id="+requestID, nil), operator)
+	var requestRows []M
+	_ = json.Unmarshal(rowsRecorder.Body.Bytes(), &requestRows)
+	if rowsRecorder.Code != 200 || len(requestRows) != 20 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" {
+		t.Fatal("saved contact snapshot missing", rowsRecorder.Code, requestRows)
+	}
+	rowsRecorder = httptest.NewRecorder()
+	a.paymentRequestRows(rowsRecorder, httptest.NewRequest("GET", "/api/payment-request/rows?id="+requestID, nil), accountant)
+	requestRows = nil
+	_ = json.Unmarshal(rowsRecorder.Body.Bytes(), &requestRows)
+	if rowsRecorder.Code != 200 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "" {
+		t.Fatal("accountant received payment contact phone", rowsRecorder.Code, requestRows[0])
+	}
+	catalogRecorder := httptest.NewRecorder()
+	a.catalog(catalogRecorder, httptest.NewRequest("GET", "/api/catalog", nil), accountant)
+	var accountantCatalog M
+	_ = json.Unmarshal(catalogRecorder.Body.Bytes(), &accountantCatalog)
+	if _, exposed := accountantCatalog["payment_contacts"]; catalogRecorder.Code != 200 || exposed {
+		t.Fatal("accountant received payment contact directory", catalogRecorder.Code, accountantCatalog)
+	}
+	if _, e = a.db.Exec("UPDATE payment_contacts SET full_name='Изменённый Контакт Тестович',phone='+70000000009' WHERE id=$1", contactID); e != nil {
+		t.Fatal(e)
+	}
+	rowsRecorder = httptest.NewRecorder()
+	a.paymentRequestRows(rowsRecorder, httptest.NewRequest("GET", "/api/payment-request/rows?id="+requestID, nil), operator)
+	requestRows = nil
+	_ = json.Unmarshal(rowsRecorder.Body.Bytes(), &requestRows)
+	if requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" {
+		t.Fatal("directory change rewrote request snapshot", requestRows[0])
+	}
+	repeatExport := httptest.NewRecorder()
+	a.paymentRequestExport(repeatExport, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), operator)
+	if repeatExport.Code != 200 || !bytes.Equal(repeatExport.Body.Bytes(), w.Body.Bytes()) {
+		t.Fatal("repeat XLSX export changed after directory edit", repeatExport.Code)
 	}
 	responseStatus, responseData := func() (int, M) {
 		response := excelize.NewFile()

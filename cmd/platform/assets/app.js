@@ -157,14 +157,17 @@ async function overviewPage() {
 
 async function requestsPage(selectedID = '') {
   await Promise.all([loadCatalog(), loadRequests()]);
-  const canCreate = state.user.Role === 'chief';
+  const canCreate = state.user.Role === 'chief' || state.user.Role === 'operator';
+  const contacts = (state.catalog.payment_contacts || []).filter(item => item.active);
   const form = canCreate ? `<div class="surface"><h2>Новый запрос мерчанта</h2><p class="hint">Один платеж по умолчанию — 250 000 ₽. В режиме общей суммы последняя строка может быть меньше.</p><form id="request-form">
     <div class="form-grid">${field('merchant_id','Мерчант',select('merchant_id',state.catalog.merchants,item => item.name,'required'))}${field('external_ref','Номер запроса',input('external_ref','text','required placeholder="Например, ЗК-2026-01"'))}</div>
     <div class="choice-grid" style="margin-top:18px"><label class="choice"><input type="radio" name="mode" value="count" checked> По количеству платежей</label><label class="choice"><input type="radio" name="mode" value="total"> По общей сумме</label></div>
     <div class="form-grid">${field('payment_count','Сколько платежей',input('payment_count','number','min="1" max="500" value="20" required'))}${field('total','Общая сумма',input('total','text','inputmode="decimal" placeholder="1 500 000,00" disabled'))}${field('per_payment','План на один платеж',input('per_payment','text','inputmode="decimal" value="250000.00" required'),'Можно изменить для этого запроса.')}</div>
     <div id="request-preview" class="callout" style="margin-top:20px">20 платежей по 250 000 ₽. Всего 5 000 000 ₽.</div>
-    <div class="form-actions"><button class="button primary">Создать и подготовить XLSX</button></div><p class="form-note">Файл содержит только вымышленные номера и ФИО. Создание запроса не меняет баланс.</p>
-  </form></div>` : '<div class="callout">Реестр карт для отправки создаёт главный администратор. Вы можете связать ответный реестр с готовым запросом.</div>';
+    <div class="surface tinted" style="margin-top:20px"><h3>ФИО и телефон для платежей</h3><p class="hint">Выберите запись справочника для всех строк, затем при необходимости измените отдельные строки.</p><div class="form-grid">${field('request-default-contact','Контакт по умолчанию',`<select id="request-default-contact">${option(contacts,item=>`${item.full_name} · ${item.phone}`)}</select>`)}<div class="field"><label>&nbsp;</label><div class="button-row"><button type="button" class="button secondary" id="apply-request-contact">Применить ко всем</button><button type="button" class="button quiet" id="toggle-request-contact">Добавить новый</button></div></div></div><div id="quick-request-contact" hidden><div class="form-grid">${field('quick-contact-name','Вымышленное ФИО',`<select id="quick-contact-name">${syntheticFIO.map(name=>`<option>${esc(name)}</option>`).join('')}</select>`)}${field('quick-contact-phone','Вымышленный телефон',input('quick-contact-phone','tel','placeholder="+7 000 000-00-01"'))}</div><div class="button-row"><button type="button" class="button secondary" id="save-request-contact">Сохранить в справочник</button></div></div></div>
+    <div id="request-contact-rows" style="margin-top:20px"></div>
+    <div class="form-actions"><button class="button primary">Создать и подготовить XLSX</button></div><p class="form-note">XLSX содержит вымышленные номер карты, ФИО и телефон. Создание запроса не меняет баланс.</p>
+  </form></div>` : '<div class="callout">Реестр карт для отправки создают главный администратор и операционист. Вы можете связать ответный реестр с готовым запросом.</div>';
   const list = table([
     {title:'Запрос',render:r => `<strong>${esc(r.external_ref)}</strong><br><small>${esc(r.merchant)}</small>`},
     {title:'Платежей',render:r => `<span class="numeric">${esc(r.payment_count)}</span>`},
@@ -180,6 +183,12 @@ async function requestsPage(selectedID = '') {
 }
 function bindRequestForm() {
   const form = $('#request-form');
+  const contactOptions = selected => (state.catalog.payment_contacts || []).filter(item=>item.active).map(item=>`<option value="${esc(item.id)}" ${item.id===selected?'selected':''}>${esc(item.full_name)} · ${esc(item.phone)}</option>`).join('');
+  const renderContacts = plan => {
+    const prior = $$('.request-row-contact').map(item=>item.value);
+    const defaultID = $('#request-default-contact').value;
+    $('#request-contact-rows').innerHTML = plan.length ? `<div class="table-wrap"><table><thead><tr><th>№</th><th>Сумма</th><th>ФИО и номер телефона</th></tr></thead><tbody>${plan.map((amount,index)=>`<tr><td>${index+1}</td><td class="numeric">${money((amount/100n).toString()+'.'+(amount%100n).toString().padStart(2,'0'))}</td><td><select class="request-row-contact" required>${contactOptions(prior[index]||defaultID)}</select></td></tr>`).join('')}</tbody></table></div>` : '';
+  };
   const refresh = () => {
     const v = values(form);
     const totalMode = v.mode === 'total';
@@ -193,15 +202,38 @@ function bindRequestForm() {
     const total = totalMode ? parseCents(v.total) : per === null ? null : BigInt(validCount) * per;
     const count = totalMode ? per && total ? Number((total + per - 1n) / per) : 0 : validCount;
     $('#request-preview').textContent = per && total && count > 0 && count <= 500 ? `${count} платежей. План: ${money((total / 100n).toString() + '.' + (total % 100n).toString().padStart(2,'0'))}. Карты будут распределены по строкам.` : 'Введите количество или общую сумму до 500 платежей.';
+    const plan = [];
+    if (per && total && count > 0 && count <= 500) {
+      let remaining = total;
+      for (let i=0;i<count;i++) { const value = remaining < per ? remaining : per; plan.push(value); remaining -= value; }
+    }
+    renderContacts(plan);
   };
-  form.addEventListener('input', refresh);
-  form.addEventListener('change', refresh);
+  const refreshIfPlanChanged = event => { if (['mode','payment_count','total','per_payment'].includes(event.target.name)) refresh(); };
+  form.addEventListener('input', refreshIfPlanChanged);
+  form.addEventListener('change', refreshIfPlanChanged);
+  $('#apply-request-contact').onclick = () => $$('.request-row-contact').forEach(item=>item.value=$('#request-default-contact').value);
+  $('#toggle-request-contact').onclick = () => { $('#quick-request-contact').hidden = !$('#quick-request-contact').hidden; };
+  $('#save-request-contact').onclick = async () => {
+    try {
+      const created = await api('/api/catalog/create',{kind:'payment_contact',full_name:$('#quick-contact-name').value,phone:$('#quick-contact-phone').value});
+      await loadCatalog();
+      $('#request-default-contact').innerHTML = contactOptions(created.id);
+      $$('.request-row-contact').forEach(item=>item.innerHTML=contactOptions(created.id));
+      $('#quick-request-contact').hidden = true;
+      $('#quick-contact-phone').value = '';
+      notify('ФИО и телефон сохранены в справочник и выбраны для строк.');
+    } catch(error) { notify(error.message,true); }
+  };
   form.onsubmit = async event => {
     event.preventDefault();
     const body = values(form);
+    body.contact_ids = $$('.request-row-contact').map(item=>item.value);
+    delete body.row_contact;
     try { const created = await api('/api/payment-request/create', body); notify('Запрос создан. Проверьте раскладку и скачайте файл.'); await requestsPage(created.id); }
     catch (error) { notify(error.message, true); }
   };
+  refresh();
 }
 function parseCents(value) {
   const text = String(value || '').replace(/\s/g,'').replace(',','.');
@@ -213,7 +245,7 @@ async function showRequest(id) {
   const item = state.requests.find(request => request.id === id);
   if (!item) return;
   const rows = await api('/api/payment-request/rows?id=' + encodeURIComponent(id));
-  $('#request-detail').innerHTML = section(`Запрос ${item.external_ref}`, `<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Мерчант</small><strong>${esc(item.merchant)}</strong></div><div><small>План</small><strong>${money(item.planned_total)}</strong></div><div><small>Подтверждено по ответам</small><strong>${money(item.received_total)}</strong></div></div><div class="button-row" style="margin:22px 0">${state.user.Role === 'chief' ? `<a class="button primary" href="/api/payment-request/export?id=${encodeURIComponent(id)}">Скачать XLSX для мерчанта</a>` : ''}<button class="button secondary" id="load-reply">Загрузить ответ</button></div>${table([{title:'№',key:'row_no'},{title:'Карта',render:r=>esc(r.mask)},{title:'Владелец',render:r=>esc(r.synthetic_name)},{title:'Плановая сумма',render:r=>money(r.amount)}],rows)}</div>`);
+  $('#request-detail').innerHTML = section(`Запрос ${item.external_ref}`, `<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Мерчант</small><strong>${esc(item.merchant)}</strong></div><div><small>План</small><strong>${money(item.planned_total)}</strong></div><div><small>Подтверждено по ответам</small><strong>${money(item.received_total)}</strong></div></div><div class="button-row" style="margin:22px 0">${state.user.Role === 'chief'||state.user.Role === 'operator' ? `<a class="button primary" href="/api/payment-request/export?id=${encodeURIComponent(id)}">Скачать XLSX для мерчанта</a>` : ''}<button class="button secondary" id="load-reply">Загрузить ответ</button></div>${table([{title:'№',key:'row_no'},{title:'Карта',render:r=>esc(r.mask)},{title:'ФИО',render:r=>esc(r.contact_name)},{title:'Телефон',render:r=>esc(r.contact_phone||'—')},{title:'Плановая сумма',render:r=>money(r.amount)}],rows)}</div>`);
   $('#load-reply').onclick = () => registriesPage(id);
   $('#request-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
@@ -521,15 +553,16 @@ async function showMoneyDraft(id) {
   $('#money-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-const catalogTabs = {merchants:'Мерчанты',cards:'Карты',banks:'Банки',custodians:'Ответственные',users:'Пользователи',tariffs:'Тарифы'};
+const catalogTabs = {merchants:'Мерчанты',cards:'Карты',payment_contacts:'ФИО и телефоны',banks:'Банки',custodians:'Ответственные',users:'Пользователи',tariffs:'Тарифы'};
 const syntheticFIO = ['Тестов Алексей Учебович','Демина Мария Примеровна','Образцов Илья Тестович','Учебная Анна Образцовна','Примеров Павел Демович','Тестова Елена Учебовна'];
 function catalogForm(tab) {
   const c = state.catalog;
   if (state.user.Role === 'sysadmin' && tab !== 'users') return '';
-  if (state.user.Role !== 'chief' && state.user.Role !== 'sysadmin') return '';
+  if (state.user.Role !== 'chief' && state.user.Role !== 'sysadmin' && !(state.user.Role === 'operator' && tab === 'payment_contacts')) return '';
   if (tab === 'merchants') return `<div class="surface"><h2>Добавить мерчанта</h2><form id="catalog-form" data-kind="merchant"><div class="form-grid">${field('code','Короткий код',input('code','text','required'))}${field('name','Название',input('name','text','required'))}</div><div class="form-actions"><button class="button primary">Добавить мерчанта</button></div></form></div>`;
   if (tab === 'banks') return `<div class="surface"><h2>Добавить банк</h2><form id="catalog-form" data-kind="bank"><div class="form-grid">${field('code','Короткий код',input('code','text','required'))}${field('name','Название банка',input('name','text','required'))}</div><div class="form-actions"><button class="button primary">Добавить банк</button></div></form></div>`;
   if (tab === 'cards') return `<div class="surface"><h2>Добавить учебную карту</h2><p class="hint">Хранится маска. Для демонстрационной выгрузки система создаст заведомо недействительный полный номер.</p><form id="catalog-form" data-kind="card"><div class="form-grid">${field('bank_id','Банк',select('bank_id',c.banks,item=>item.name,'required'))}${field('mask','Маска карты',input('mask','text','placeholder="000000******1234" pattern="[0-9]{6}\\*{6}[0-9]{4}" required'))}${field('owner_label','Вымышленное ФИО',`<select id="owner_label" name="owner_label" required>${syntheticFIO.map(name=>`<option>${esc(name)}</option>`).join('')}</select>`)}</div><div class="form-actions"><button class="button primary">Добавить карту</button></div></form></div>`;
+  if (tab === 'payment_contacts') return `<div class="surface"><h2>Добавить ФИО и телефон</h2><p class="hint">В демоверсии разрешены только вымышленные данные. Запись станет доступна при формировании реестра карт.</p><form id="catalog-form" data-kind="payment_contact"><div class="form-grid">${field('full_name','Вымышленное ФИО',`<select id="full_name" name="full_name" required>${syntheticFIO.map(name=>`<option>${esc(name)}</option>`).join('')}</select>`)}${field('phone','Вымышленный телефон',input('phone','tel','placeholder="+7 000 000-00-01" required'))}</div><div class="form-actions"><button class="button primary">Добавить в справочник</button></div></form></div>`;
   if (tab === 'custodians') return `<div class="surface"><h2>Добавить ответственного за наличные</h2><form id="catalog-form" data-kind="custodian"><div class="form-grid">${field('name','Имя или обозначение',input('name','text','required'))}${field('custodian_kind','Функция',`<select id="custodian_kind" name="custodian_kind"><option value="collector">Сборщик</option><option value="operator">Операционист</option></select>`)}</div><div class="form-actions"><button class="button primary">Добавить ответственного</button></div></form></div>`;
   if (tab === 'users' && state.user.Role === 'sysadmin') return `<div class="surface"><h2>Новый пользователь</h2><form id="catalog-form" data-kind="user"><div class="form-grid">${field('login','Логин',input('login','text','required'))}${field('name','Имя',input('name','text','required'))}${field('role','Роль',`<select id="role" name="role"><option value="collector">Сборщик</option><option value="operator">Операционист</option><option value="accountant">Бухгалтер</option><option value="auditor">Аудитор</option></select>`)}</div><div class="form-actions"><button class="button primary">Создать пользователя</button></div></form><div id="new-password"></div></div><div class="surface"><h2>Назначить карту</h2><form id="card-assign-form"><div class="form-grid">${field('assign-user','Сборщик или операционист',`<select id="assign-user" name="user_id">${option((c.users||[]).filter(u=>u.role==='operator'||u.role==='collector'),u=>u.name)}</select>`)}${field('assign-card','Карта',`<select id="assign-card" name="card_id">${option(c.cards,item=>item.mask)}</select>`)}</div><div class="form-actions"><button class="button secondary">Назначить</button></div></form></div><details><summary>Привязать Telegram ID и остаток наличных</summary><div class="details-body"><form id="telegram-link-form"><div class="form-grid">${field('telegram-user','Пользователь',`<select id="telegram-user" name="user_id">${option((c.users||[]).filter(u=>u.role==='collector'||u.role==='chief'),u=>u.name)}</select>`)}${field('telegram_id','Числовой Telegram ID',input('telegram_id','text','inputmode="numeric" required'))}${field('telegram-custodian','Ответственный за наличные',`<select id="telegram-custodian" name="custodian_id" required>${option((c.custodians||[]).filter(item=>item.kind==='collector'||item.kind==='chief'),item=>item.name)}</select>`)}</div><div class="form-actions"><button class="button secondary">Сохранить связь</button></div></form></div></details>`;
   return '';
@@ -538,6 +571,7 @@ function catalogRows(tab) {
   const c = state.catalog;
   if (tab === 'merchants') return table([{title:'Название',key:'name'},{title:'Код',key:'code'},{title:'Разбор реестра',render:r=>r.parser_status==='configured'?esc(r.parser_name):'<span class="muted">Ожидает образец</span>'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.merchants,'Мерчантов пока нет','Добавьте мерчанта перед созданием запроса на карты.');
   if (tab === 'cards') return table([{title:'Карта',render:r=>`<span class="mono">${esc(r.mask)}</span>`},{title:'Банк',key:'name'},{title:'Владелец',key:'owner_label'},{title:'Состояние',render:r=>r.status==='active'?'Активна':r.status==='blocked'?'Заблокирована':'Выведена'}],c.cards,'Карт пока нет','Добавьте учебную карту для формирования запроса.');
+  if (tab === 'payment_contacts') return table([{title:'ФИО',key:'full_name'},{title:'Телефон',render:r=>`<span class="mono">${esc(r.phone)}</span>`},{title:'Состояние',render:r=>r.active?'Доступен':'Неактивен'}],c.payment_contacts,'Контактов пока нет','Добавьте ФИО и телефон здесь или прямо при формировании реестра карт.');
   if (tab === 'banks') return table([{title:'Банк',key:'name'},{title:'Код',key:'code'}],c.banks,'Банков пока нет','Добавьте банк, чтобы создать карту.');
   if (tab === 'custodians') return table([{title:'Ответственный',key:'name'},{title:'Функция',render:r=>r.kind==='chief'?'Главный администратор':r.kind==='collector'?'Сборщик':'Операционист'},{title:'Состояние',render:r=>r.active?'Работает':'Неактивен'}],c.custodians,'Ответственных пока нет','Добавьте сборщика или операциониста.');
   if (tab === 'users') return table([{title:'Имя',key:'name'},{title:'Логин',key:'login'},{title:'Роль',render:r=>esc(roleNames[r.role]||'Пользователь')},{title:'Telegram ID',render:r=>esc(r.telegram_id||'—')},{title:'Наличные у',render:r=>esc(r.custodian_id ? custodianName(r.custodian_id) : 'Не привязан')},{title:'Состояние',render:r=>r.active?'Доступ открыт':'Доступ закрыт'}],c.users,'Пользователей пока нет','Системный администратор создаёт учётные записи.');
@@ -549,7 +583,7 @@ async function catalogPage(tab = 'merchants') {
   if (!catalogTabs[tab]) tab = 'merchants';
   const tabs = `<div class="tabs" role="tablist">${Object.entries(catalogTabs).filter(([key])=>key!=='users'||state.catalog.users).map(([key,label])=>`<button data-catalog-tab="${key}" class="${tab===key?'active':''}" role="tab" aria-selected="${tab===key}">${esc(label)}</button>`).join('')}</div>`;
   const form = catalogForm(tab);
-  page('Справочники','Отдельные формы для мерчантов, карт, банков и ответственных. Здесь нет денежных проводок.',tabs + (form ? `<div class="stack">${form}</div>` : '') + section(catalogTabs[tab],catalogRows(tab)));
+  page('Справочники','Отдельные формы для мерчантов, карт, ФИО и телефонов, банков и ответственных. Здесь нет денежных проводок.',tabs + (form ? `<div class="stack">${form}</div>` : '') + section(catalogTabs[tab],catalogRows(tab)));
   $$('[data-catalog-tab]').forEach(button=>button.onclick=()=>catalogPage(button.dataset.catalogTab));
   if ($('#catalog-form')) $('#catalog-form').onsubmit = async event => {
     event.preventDefault();
