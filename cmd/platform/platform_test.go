@@ -412,13 +412,13 @@ func TestDashboardScriptAllowedByCSP(t *testing.T) {
 	if !strings.Contains(page.Header().Get("Content-Security-Policy"), "script-src 'self'") {
 		t.Fatal("same-origin scripts are not allowed")
 	}
-	if !strings.Contains(page.Body.String(), `<script src="/assets/app.js" defer></script>`) || !strings.Contains(page.Body.String(), `/assets/app.css`) || strings.Contains(page.Body.String(), "<script>") || strings.Contains(page.Body.String(), "onclick=") {
+	if !strings.Contains(page.Body.String(), `<script type="module" src="/assets/app.js"></script>`) || !strings.Contains(page.Body.String(), `/assets/app.css`) || strings.Contains(page.Body.String(), "<script>") || strings.Contains(page.Body.String(), "onclick=") {
 		t.Fatal("page uses blocked inline JavaScript")
 	}
 
 	script := httptest.NewRecorder()
 	h.ServeHTTP(script, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
-	if script.Code != http.StatusOK || !strings.HasPrefix(script.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(script.Body.String(), "$('#login-form').addEventListener") || !strings.Contains(script.Body.String(), "$('#logout-button').addEventListener") {
+	if script.Code != http.StatusOK || !strings.HasPrefix(script.Header().Get("Content-Type"), "text/javascript") || !strings.Contains(script.Body.String(), `document.getElementById("root")`) {
 		t.Fatal("dashboard script is unavailable")
 	}
 }

@@ -1,0 +1,31 @@
+{
+  "name": "metallist-platform-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && esbuild ../cmd/platform/assets/app.js --minify --format=esm --outfile=../cmd/platform/assets/app.js --allow-overwrite && perl -pi -e 's/[ \\t]+$//' ../cmd/platform/assets/app.js",
+    "check": "vite build --mode check"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.6",
+    "@radix-ui/react-select": "^2.1.6",
+    "@radix-ui/react-slot": "^1.1.2",
+    "@radix-ui/react-tabs": "^1.1.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "cn": "^0.3.0",
+    "lucide-react": "^0.468.0",
+    "radix-ui": "^1.6.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.7",
+    "@vitejs/plugin-react": "^4.4.1",
+    "shadcn": "^2.4.0",
+    "tw-animate-css": "^1.3.0",
+    "vite": "^6.1.0"
+  }
+}
