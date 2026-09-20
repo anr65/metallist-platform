@@ -59,7 +59,7 @@ func (a *App) telegramCall(method string, payload M) error {
 }
 
 func telegramCommands() []M {
-	return []M{{"command": "start", "description": "Начать работу"}, {"command": "help", "description": "Форматы команд"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "expense", "description": "Расход по карте"}, {"command": "balance", "description": "Остаток — только главный администратор"}}
+	return []M{{"command": "start", "description": "Начать работу"}, {"command": "expense", "description": "Расход по карте"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "cancel", "description": "Отменить текущий ввод"}}
 }
 
 func (a *App) telegramSetGroupCommands(chatID int64) error {

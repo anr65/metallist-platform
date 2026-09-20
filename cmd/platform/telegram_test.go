@@ -560,6 +560,43 @@ func TestTelegramOnlyAllowsConfiguredGroup(t *testing.T) {
 	}
 }
 
+func TestTelegramCancelStopsPendingInputWithoutDraftOrPosting(t *testing.T) {
+	a := testApp(t)
+	_, _, _, card := fixtures(t, a)
+	_, collector, _, fake := telegramFixture(t, a, card)
+	if code := telegramRequest(t, a, telegramMessageUpdate(5001, 555, "/expense")); code != 200 {
+		t.Fatal(code)
+	}
+	var count int
+	if e := a.db.QueryRow("SELECT count(*) FROM telegram_dialogs WHERE user_id=$1 AND command='expense'", collector.ID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("expense input was not started", count, e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(5002, 555, "/cancel@metallist_test_bot")); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM telegram_dialogs WHERE user_id=$1", collector.ID).Scan(&count); e != nil || count != 0 {
+		t.Fatal("cancel left pending input", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE created_by=$1", collector.ID).Scan(&count); e != nil || count != 0 {
+		t.Fatal("cancel created a draft", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM postings").Scan(&count); e != nil || count != 0 {
+		t.Fatal("cancel created postings", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE actor_id=$1 AND action='input_cancel' AND outcome='success'", collector.ID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("cancel audit missing", count, e)
+	}
+	if !fake.contains("Ввод отменён. Обычные сообщения больше не обрабатываются.") {
+		t.Fatal("cancel acknowledgement missing")
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(5003, 555, "обычное сообщение после отмены")); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM telegram_updates WHERE update_id=5003").Scan(&count); e != nil || count != 0 {
+		t.Fatal("ordinary message after cancel was processed", count, e)
+	}
+}
+
 func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 	a := testApp(t)
 	_, _, _, card := fixtures(t, a)
@@ -572,6 +609,21 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 	call := fake.call("setMyCommands")
 	if call == nil || !fake.hasCommandScope("chat") || !fake.hasCommandScope("all_group_chats") {
 		t.Fatal("group command menus have wrong scopes", call)
+	}
+	commands, ok := call["commands"].([]interface{})
+	if !ok || len(commands) != 4 {
+		t.Fatal("group command menu has wrong size", call)
+	}
+	names := make([]string, 0, len(commands))
+	for _, raw := range commands {
+		command, ok := raw.(map[string]interface{})
+		if !ok {
+			t.Fatal("group command menu is malformed", call)
+		}
+		names = append(names, str(M(command), "command"))
+	}
+	if strings.Join(names, ",") != "start,expense,withdraw,cancel" {
+		t.Fatal("group command menu contains unexpected commands", names)
 	}
 }
 

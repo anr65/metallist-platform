@@ -196,38 +196,28 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	words := strings.Fields(text)
 	command := telegramCommand(words[0])
-	if command == "start" || command == "help" {
-		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. В обеих командах можно указать несколько операций — по одной в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
+	if command == "cancel" {
+		res, e := a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
+		if e != nil {
+			return errors.New("Не удалось отменить ввод")
 		}
-		return a.telegramReply(message.Chat.ID, "Выберите /withdraw, /expense или /balance в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу.", nil)
+		cancelled, _ := res.RowsAffected()
+		a.logAudit(u.ID, "telegram", "input_cancel", "command", "", "success", "", M{"update_id": updateID, "active": cancelled == 1})
+		if cancelled == 0 {
+			return a.telegramReply(message.Chat.ID, "Активного ввода нет.", nil)
+		}
+		return a.telegramReply(message.Chat.ID, "Ввод отменён. Обычные сообщения больше не обрабатываются.", nil)
 	}
-	if command == "balance" {
-		if u.Role != "chief" {
-			return errors.New("Ввод остатков доступен только главному администратору")
+	if command == "start" {
+		if telegramFieldRole(u.Role) {
+			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. В обеих командах можно указать несколько операций — по одной в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия». Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		if len(words) != 3 {
-			return errors.New("Формат: /balance <последние 4 цифры карты> <остаток>")
-		}
-		card, _, e := a.telegramCard(u, words[1])
-		if e != nil {
-			return e
-		}
-		v, e := nonnegative(words[2])
-		if e != nil {
-			return e
-		}
-		_, e = a.db.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,now(),$4,'telegram')", id(), card, v, u.ID)
-		if e != nil {
-			return errors.New("Не удалось сохранить остаток")
-		}
-		a.logAudit(u.ID, "telegram", "observation", "card", card, "success", "", M{})
-		return a.telegramReply(message.Chat.ID, "Остаток карты сохранён как наблюдение. Денежной проводки нет.", nil)
+		return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
 	args := ""
 	if strings.HasPrefix(words[0], "/") {
 		if command != "withdraw" && command != "expense" {
-			return errors.New("Выберите /withdraw или /expense в меню")
+			return errors.New("Доступны команды /start, /expense, /withdraw и /cancel")
 		}
 		if len(words) > 1 {
 			args = strings.TrimSpace(text[len(words[0]):])
@@ -245,9 +235,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return errors.New("Не удалось начать ввод")
 		}
 		if command == "withdraw" {
-			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100", nil)
+			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 банк. комиссия 25,50", nil)
+		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 банк. комиссия 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "withdraw" {
