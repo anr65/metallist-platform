@@ -171,6 +171,15 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 		t.Fatal("request creation", status, created)
 	}
 	requestID := created["id"].(string)
+	defaultsRecorder := httptest.NewRecorder()
+	a.catalog(defaultsRecorder, httptest.NewRequest("GET", "/api/catalog", nil), operator)
+	var defaultsCatalog M
+	_ = json.Unmarshal(defaultsRecorder.Body.Bytes(), &defaultsCatalog)
+	defaultCards := defaultsCatalog["request_cards"].([]interface{})
+	if len(defaultCards) != 1 || defaultCards[0].(map[string]interface{})["full_name"] != "Тестов Алексей Учебович" || defaultCards[0].(map[string]interface{})["phone"] != "+70000000001" {
+		t.Fatal("previous registry contact defaults missing", defaultsCatalog["request_cards"])
+	}
+
 	status, _ = req(t, a.createPaymentRequest, chief, requestBody)
 	if status != 409 {
 		t.Fatal("duplicate request accepted")
@@ -212,7 +221,8 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	a.catalog(catalogRecorder, httptest.NewRequest("GET", "/api/catalog", nil), accountant)
 	var accountantCatalog M
 	_ = json.Unmarshal(catalogRecorder.Body.Bytes(), &accountantCatalog)
-	if _, exposed := accountantCatalog["payment_contacts"]; catalogRecorder.Code != 200 || exposed {
+	_, exposedDefaults := accountantCatalog["request_cards"]
+	if _, exposed := accountantCatalog["payment_contacts"]; catalogRecorder.Code != 200 || exposed || exposedDefaults {
 		t.Fatal("accountant received payment contact directory", catalogRecorder.Code, accountantCatalog)
 	}
 	if _, e = a.db.Exec("UPDATE payment_contacts SET full_name='Изменённый Контакт Тестович',phone='+70000000009' WHERE id=$1", contactID); e != nil {

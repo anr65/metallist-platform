@@ -164,7 +164,9 @@ async function requestsPage(selectedID = '') {
     <div class="choice-grid" style="margin-top:18px"><label class="choice"><input type="radio" name="mode" value="count" checked> По количеству платежей</label><label class="choice"><input type="radio" name="mode" value="total"> По общей сумме</label></div>
     <div class="form-grid">${field('payment_count','Сколько платежей',input('payment_count','number','min="1" max="500" value="20" required'))}${field('total','Общая сумма',input('total','text','inputmode="decimal" placeholder="1 500 000,00" disabled'))}${field('per_payment','План на один платеж',input('per_payment','text','inputmode="decimal" value="250000.00" required'),'Можно изменить для этого запроса.')}</div>
     <div id="request-preview" class="callout" style="margin-top:20px">20 платежей по 250 000 ₽. Всего 5 000 000 ₽.</div>
-    <div class="surface tinted" style="margin-top:20px"><h3>ФИО и телефон для платежей</h3><p class="hint">Выберите запись справочника для всех строк, затем при необходимости измените отдельные строки.</p><div class="form-grid">${field('request-default-contact','Контакт по умолчанию',`<select id="request-default-contact">${option(contacts,item=>`${item.full_name} · ${item.phone}`)}</select>`)}<div class="field"><label>&nbsp;</label><div class="button-row"><button type="button" class="button secondary" id="apply-request-contact">Применить ко всем</button><button type="button" class="button quiet" id="toggle-request-contact">Добавить новый</button></div></div></div><div id="quick-request-contact" hidden><div class="form-grid">${field('quick-contact-name','Вымышленное ФИО',`<select id="quick-contact-name">${syntheticFIO.map(name=>`<option>${esc(name)}</option>`).join('')}</select>`)}${field('quick-contact-phone','Вымышленный телефон',input('quick-contact-phone','tel','placeholder="+7 000 000-00-01"'))}</div><div class="button-row"><button type="button" class="button secondary" id="save-request-contact">Сохранить в справочник</button></div></div></div>
+    <p class="hint" style="margin-top:20px">ФИО и телефон подставлены из последнего реестра для каждой карты. Можно изменить каждое поле или выбрать подсказку. Новые значения сохранятся в справочнике.</p>
+    <datalist id="request-name-options">${[...new Set([...syntheticFIO,...contacts.map(item=>item.full_name)])].map(value=>`<option value="${esc(value)}"></option>`).join('')}</datalist>
+    <datalist id="request-phone-options">${[...new Set(contacts.map(item=>item.phone))].map(value=>`<option value="${esc(value)}"></option>`).join('')}</datalist>
     <div id="request-contact-rows" style="margin-top:20px"></div>
     <div class="form-actions"><button class="button primary">Создать и подготовить XLSX</button></div><p class="form-note">XLSX содержит вымышленные номер карты, ФИО и телефон. Создание запроса не меняет баланс.</p>
   </form></div>` : '<div class="callout">Реестр карт для отправки создают главный администратор и операционист. Вы можете связать ответный реестр с готовым запросом.</div>';
@@ -176,18 +178,22 @@ async function requestsPage(selectedID = '') {
     {title:'',render:r => `<button class="button quiet" data-request="${esc(r.id)}">Открыть</button>`}
   ], state.requests, 'Запросов пока нет', 'Создайте первый запрос на карты для мерчанта.');
   page('Карты к оплате','Подготовьте для мерчанта файл с картами, затем привяжите его ответный реестр.',
-    `<div class="split">${form}<div class="surface tinted"><h2>Как это работает</h2><p><strong>1.</strong> Укажите число платежей или сумму.</p><p><strong>2.</strong> Проверьте раскладку и скачайте файл.</p><p><strong>3.</strong> Получив ответ, загрузите его в разделе «Реестры оплат» и выберите этот запрос.</p><p class="hint">Одна карта может встречаться в нескольких строках. Лимиты карт пока не настроены — проверьте раскладку перед отправкой.</p></div></div>` + section('Подготовленные запросы', list) + `<div id="request-detail"></div>`);
+    form + section('Подготовленные запросы', list) + `<div id="request-detail"></div>`);
   if (canCreate) bindRequestForm();
   $$('[data-request]').forEach(button => button.onclick = () => showRequest(button.dataset.request));
   if (selectedID) await showRequest(selectedID);
 }
 function bindRequestForm() {
   const form = $('#request-form');
-  const contactOptions = selected => (state.catalog.payment_contacts || []).filter(item=>item.active).map(item=>`<option value="${esc(item.id)}" ${item.id===selected?'selected':''}>${esc(item.full_name)} · ${esc(item.phone)}</option>`).join('');
+  const readContacts = () => $$('.request-contact-row').map(row=>({full_name:$('.request-row-name',row).value,phone:$('.request-row-phone',row).value}));
   const renderContacts = plan => {
-    const prior = $$('.request-row-contact').map(item=>item.value);
-    const defaultID = $('#request-default-contact').value;
-    $('#request-contact-rows').innerHTML = plan.length ? `<div class="table-wrap"><table><thead><tr><th>№</th><th>Сумма</th><th>ФИО и номер телефона</th></tr></thead><tbody>${plan.map((amount,index)=>`<tr><td>${index+1}</td><td class="numeric">${money((amount/100n).toString()+'.'+(amount%100n).toString().padStart(2,'0'))}</td><td><select class="request-row-contact" required>${contactOptions(prior[index]||defaultID)}</select></td></tr>`).join('')}</tbody></table></div>` : '';
+    const prior = readContacts();
+    const cards = state.catalog.request_cards || [];
+    $('#request-contact-rows').innerHTML = plan.length ? `<div class="request-rows">${plan.map((amount,index)=>{
+      const card = cards[index % cards.length] || {};
+      const contact = prior[index] || card;
+      return `<div class="request-contact-row"><div class="request-row-summary"><strong>Платёж ${index+1}</strong><span class="mono">${esc(card.mask || 'Нет доступных карт')}</span><span class="numeric">${money((amount/100n).toString()+'.'+(amount%100n).toString().padStart(2,'0'))}</span></div>${field('request-name-'+index,'ФИО',`<input id="request-name-${index}" class="request-row-name" list="request-name-options" value="${esc(contact.full_name||'')}" maxlength="200" required autocomplete="off" placeholder="Выберите или введите ФИО">`)}${field('request-phone-'+index,'Номер телефона',`<input id="request-phone-${index}" class="request-row-phone" type="tel" list="request-phone-options" value="${esc(contact.phone||'')}" required autocomplete="off" placeholder="+7 000 000-00-01">`)}</div>`;
+    }).join('')}</div>` : '';
   };
   const refresh = () => {
     const v = values(form);
@@ -212,26 +218,28 @@ function bindRequestForm() {
   const refreshIfPlanChanged = event => { if (['mode','payment_count','total','per_payment'].includes(event.target.name)) refresh(); };
   form.addEventListener('input', refreshIfPlanChanged);
   form.addEventListener('change', refreshIfPlanChanged);
-  $('#apply-request-contact').onclick = () => $$('.request-row-contact').forEach(item=>item.value=$('#request-default-contact').value);
-  $('#toggle-request-contact').onclick = () => { $('#quick-request-contact').hidden = !$('#quick-request-contact').hidden; };
-  $('#save-request-contact').onclick = async () => {
-    try {
-      const created = await api('/api/catalog/create',{kind:'payment_contact',full_name:$('#quick-contact-name').value,phone:$('#quick-contact-phone').value});
-      await loadCatalog();
-      $('#request-default-contact').innerHTML = contactOptions(created.id);
-      $$('.request-row-contact').forEach(item=>item.innerHTML=contactOptions(created.id));
-      $('#quick-request-contact').hidden = true;
-      $('#quick-contact-phone').value = '';
-      notify('ФИО и телефон сохранены в справочник и выбраны для строк.');
-    } catch(error) { notify(error.message,true); }
-  };
   form.onsubmit = async event => {
     event.preventDefault();
     const body = values(form);
-    body.contact_ids = $$('.request-row-contact').map(item=>item.value);
-    delete body.row_contact;
-    try { const created = await api('/api/payment-request/create', body); notify('Запрос создан. Проверьте раскладку и скачайте файл.'); await requestsPage(created.id); }
-    catch (error) { notify(error.message, true); }
+    const entries = readContacts();
+    const button = $('button[type="submit"], .form-actions button',form);
+    button.disabled = true;
+    try {
+      const saved = new Map();
+      body.contact_ids = [];
+      for (const entry of entries) {
+        const key = JSON.stringify(entry);
+        if (!saved.has(key)) {
+          const contact = await api('/api/catalog/create',{kind:'payment_contact',...entry});
+          saved.set(key,contact.id);
+        }
+        body.contact_ids.push(saved.get(key));
+      }
+      const created = await api('/api/payment-request/create', body);
+      notify('Запрос создан. Проверьте раскладку и скачайте файл.');
+      await requestsPage(created.id);
+    } catch (error) { notify(error.message, true); }
+    finally { button.disabled = false; }
   };
   refresh();
 }
