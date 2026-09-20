@@ -27,6 +27,58 @@ const actionNames = {registry_upload:'Загрузка реестра',registry_
 const reasonNames = {role:'Недостаточно прав',card_not_assigned:'Карта не назначена пользователю',card_not_unique_or_unknown:'Карта не найдена или неоднозначна'};
 const state = {user:null, page:'overview', catalog:{}, registries:[], drafts:[], requests:[]};
 const operatorHiddenPages = new Set(['overview','reports','expenses','audit']);
+const pages = new Set(['overview','requests','registries','expenses','money','catalog','reports','audit','account']);
+function setFormError(form, message = '') {
+  let box = $('.form-error', form);
+  if (!box) {
+    box = document.createElement('p');
+    box.className = 'form-error';
+    box.setAttribute('role', 'alert');
+    form.prepend(box);
+  }
+  box.textContent = message;
+  box.hidden = !message;
+}
+function setSubmitBusy(form, busy, label = '') {
+  const button = $('button[type="submit"], .form-actions button, .button-row button', form);
+  if (!button) return;
+  if (busy) {
+    button.dataset.label = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = label || 'Сохранение…';
+  } else {
+    button.disabled = false;
+    button.removeAttribute('aria-busy');
+    button.textContent = button.dataset.label || button.textContent;
+  }
+}
+async function submitForm(form, work, label) {
+  if (!form.reportValidity()) return;
+  setFormError(form);
+  setSubmitBusy(form, true, label);
+  try { await work(); }
+  catch (error) { setFormError(form, error.message); form.querySelector(':invalid')?.focus(); }
+  finally { setSubmitBusy(form, false); }
+}
+function enhanceSelects(root = document) {
+  $$('select[data-searchable]', root).forEach(select => {
+    if (select.dataset.enhanced) return;
+    select.dataset.enhanced = 'true';
+    const label = document.querySelector(`label[for="${CSS.escape(select.id)}"]`)?.textContent || 'Поиск по списку';
+    const search = document.createElement('input');
+    search.type = 'search'; search.className = 'select-search'; search.autocomplete = 'off'; search.spellcheck = false;
+    search.placeholder = 'Поиск…'; search.setAttribute('aria-label', `${label}: поиск`); search.setAttribute('aria-controls', select.id);
+    const sync = () => { search.value = select.selectedOptions[0]?.textContent || ''; };
+    search.addEventListener('focus', () => { search.value = ''; [...select.options].forEach(item => { item.hidden = false; }); });
+    search.addEventListener('input', () => {
+      const query = search.value.trim().toLocaleLowerCase('ru-RU');
+      [...select.options].forEach(item => { item.hidden = !!query && !item.textContent.toLocaleLowerCase('ru-RU').includes(query); });
+    });
+    search.addEventListener('keydown', event => { if (event.key === 'ArrowDown') { event.preventDefault(); select.focus(); } });
+    select.addEventListener('change', sync); select.before(search); sync();
+  });
+}
 function friendlyError(message) {
   const known = {card_not_assigned:'Эта карта не назначена вам.',card_not_unique_or_unknown:'Карта не найдена или её маска неоднозначна.',invalid_amount:'Проверьте сумму.',"invalid input syntax for type uuid":'Выберите запись из списка.',"duplicate key value violates unique constraint":'Такая запись уже существует.',"permission denied":'У вас нет прав на это действие.'};
   const text = String(message || '');
@@ -67,6 +119,14 @@ function page(title, subtitle, body, actions = '') {
     button.setAttribute('aria-current', active ? 'page' : 'false');
   });
   $('#sidebar').classList.remove('open');
+  if (matchMedia('(max-width: 768px)').matches) {
+    $('#sidebar').setAttribute('aria-hidden', 'true');
+    $('#menu-backdrop').hidden = true;
+    $('.workspace').inert = false;
+    $('#open-menu').setAttribute('aria-expanded', 'false');
+  }
+  enhanceSelects($('#main-content'));
+  $('#main-content').focus({preventScroll:true});
 }
 function section(title, content, caption = '') {
   return `<section class="section"><div class="section-title"><h2>${esc(title)}</h2>${caption ? `<p>${esc(caption)}</p>` : ''}</div>${content}</section>`;
@@ -75,7 +135,7 @@ function field(name, title, input, hint = '', wide = false) {
   return `<div class="field${wide ? ' wide' : ''}"><label for="${esc(name)}">${esc(title)}</label>${input}${hint ? `<small>${esc(hint)}</small>` : ''}</div>`;
 }
 function input(name, type = 'text', attrs = '') { return `<input id="${esc(name)}" ${/\bname=/.test(attrs) ? '' : `name="${esc(name)}"`} type="${esc(type)}" ${attrs}>`; }
-function select(name, items, label, attrs = '') { return `<select id="${esc(name)}" name="${esc(name)}" ${attrs}>${option(items, label)}</select>`; }
+function select(name, items, label, attrs = '') { return `<select id="${esc(name)}" name="${esc(name)}" data-searchable ${attrs}>${option(items, label)}</select>`; }
 function status(value) { return `<span class="status ${value === 'posted' ? 'good' : value === 'reversed' || value === 'rejected' ? 'bad' : 'pending'}">${esc(statusNames[value] || 'Требует проверки')}</span>`; }
 function sourceLabel(kind, id) { return kind === 'card' ? `Карта ${cardName(id)}` : `Наличные · ${custodianName(id)}`; }
 async function loadCatalog() { state.catalog = await api('/api/catalog'); return state.catalog; }
@@ -90,6 +150,8 @@ async function start() {
     $('#app-shell').hidden = false;
     $('#sidebar-user').textContent = state.user.Name;
     $('#role-label').textContent = roleNames[state.user.Role] || 'Пользователь';
+    const requestedPage = location.hash.slice(1);
+    if (pages.has(requestedPage)) state.page = requestedPage;
     if (state.user.Role === 'operator') {
       $$('[data-page]').filter(button => operatorHiddenPages.has(button.dataset.page)).forEach(button => button.hidden = true);
       if (operatorHiddenPages.has(state.page)) state.page = 'registries';
@@ -102,10 +164,10 @@ async function start() {
       $$('[data-page]').filter(button => button.dataset.page !== 'account').forEach(button => button.hidden = true);
       state.page = 'account';
     }
-    await show(state.page);
+    await show(state.page, false);
   } catch { $('#login-view').hidden = false; }
 }
-async function show(name) {
+async function show(name, syncURL = true) {
   if (state.user?.Role === 'collector' && name !== 'account') {
     notify('Сборщик работает с назначенными картами через Telegram.', true);
     return;
@@ -115,6 +177,7 @@ async function show(name) {
     return;
   }
   state.page = name;
+  if (syncURL && location.hash !== `#${name}`) history.pushState({page:name}, '', `#${name}`);
   try {
     if (name === 'overview') await overviewPage();
     else if (name === 'requests') await requestsPage();
@@ -130,13 +193,37 @@ async function show(name) {
 $('#login-form').addEventListener('submit', async event => {
   event.preventDefault();
   $('#login-error').hidden = true;
-  try { await api('/login', values(event.target)); await start(); }
-  catch (error) { $('#login-error').textContent = error.message; $('#login-error').hidden = false; }
+  const form = event.target;
+  if (!form.reportValidity()) return;
+  setSubmitBusy(form, true, 'Вход…');
+  try { await api('/login', values(form)); await start(); }
+  catch (error) { $('#login-error').textContent = error.message; $('#login-error').hidden = false; $('#login-name').focus(); }
+  finally { setSubmitBusy(form, false); }
 });
 $$('[data-page]').forEach(button => button.addEventListener('click', () => show(button.dataset.page)));
 $('#logout-button').addEventListener('click', async () => { try { await api('/logout', {}); location.reload(); } catch (error) { notify(error.message, true); } });
-$('#open-menu').addEventListener('click', () => $('#sidebar').classList.add('open'));
-$('#close-menu').addEventListener('click', () => $('#sidebar').classList.remove('open'));
+function setMenu(open) {
+  if (!matchMedia('(max-width: 768px)').matches) return;
+  $('#sidebar').classList.toggle('open', open);
+  $('#sidebar').setAttribute('aria-hidden', String(!open));
+  $('#open-menu').setAttribute('aria-expanded', String(open));
+  $('#menu-backdrop').hidden = !open;
+  $('.workspace').inert = open;
+  if (open) $('#close-menu').focus(); else $('#open-menu').focus();
+}
+function syncMenuState() {
+  const mobile = matchMedia('(max-width: 768px)').matches;
+  if (mobile) $('#sidebar').setAttribute('aria-hidden', 'true'); else $('#sidebar').removeAttribute('aria-hidden');
+  $('#menu-backdrop').hidden = true;
+  $('.workspace').inert = false;
+  $('#open-menu').setAttribute('aria-expanded', 'false');
+}
+$('#open-menu').addEventListener('click', () => setMenu(true));
+$('#close-menu').addEventListener('click', () => setMenu(false));
+$('#menu-backdrop').addEventListener('click', () => setMenu(false));
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && $('#sidebar').classList.contains('open')) setMenu(false); });
+addEventListener('resize', () => { $('#sidebar').classList.remove('open'); syncMenuState(); });
+addEventListener('popstate', () => { const page = location.hash.slice(1); if (pages.has(page) && page !== state.page) show(page, false); });
 
 async function overviewPage() {
   const report = await api('/api/report');
@@ -220,11 +307,9 @@ function bindRequestForm() {
   form.addEventListener('change', refreshIfPlanChanged);
   form.onsubmit = async event => {
     event.preventDefault();
-    const body = values(form);
-    const entries = readContacts();
-    const button = $('button[type="submit"], .form-actions button',form);
-    button.disabled = true;
-    try {
+    submitForm(form, async () => {
+      const body = values(form);
+      const entries = readContacts();
       const saved = new Map();
       body.contact_ids = [];
       for (const entry of entries) {
@@ -238,8 +323,7 @@ function bindRequestForm() {
       const created = await api('/api/payment-request/create', body);
       notify('Запрос создан. Проверьте раскладку и скачайте файл.');
       await requestsPage(created.id);
-    } catch (error) { notify(error.message, true); }
-    finally { button.disabled = false; }
+    }, 'Создание…');
   };
   refresh();
 }
@@ -262,8 +346,8 @@ async function registriesPage(selectedRequest = '', selectedRegistry = '') {
   await Promise.all([loadCatalog(), loadRequests(), loadRegistries()]);
   const requestOptions = `<option value="">Без связи с запросом</option>${option(state.requests, item => `${item.external_ref} · ${item.merchant}`)}`;
   const upload = `<div class="surface"><h2>Получен ответный реестр</h2><p class="hint">Загрузите XLSX от мерчанта или банковский CSV. Сначала появится предпросмотр; деньги не изменятся.</p><form id="upload-form" enctype="multipart/form-data"><div class="form-grid">
-    ${field('upload-merchant','Мерчант',`<select id="upload-merchant" name="merchant_id" required>${option(state.catalog.merchants,item => item.name)}</select>`)}
-    ${field('payment_request_id','Запрос на карты',`<select id="payment_request_id" name="payment_request_id">${requestOptions}</select>`,'Если файл относится к подготовленному запросу, выберите его.')}
+    ${field('upload-merchant','Мерчант',`<select id="upload-merchant" name="merchant_id" data-searchable required>${option(state.catalog.merchants,item => item.name)}</select>`)}
+    ${field('payment_request_id','Запрос на карты',`<select id="payment_request_id" name="payment_request_id" data-searchable>${requestOptions}</select>`,'Если файл относится к подготовленному запросу, выберите его.')}
     ${field('external_ref','Номер ответного реестра',input('external_ref','text','required placeholder="Номер от мерчанта"'))}
     ${field('file','Файл XLSX, XLS или CSV',input('file','file','accept=".xlsx,.xls,.csv" required'))}
     </div><div class="form-actions"><button class="button primary">Загрузить и проверить</button></div></form>
@@ -280,19 +364,19 @@ async function registriesPage(selectedRequest = '', selectedRegistry = '') {
   if (selectedRequest) {
     $('#payment_request_id').value = selectedRequest;
     const item = state.requests.find(x => x.id === selectedRequest);
-    if (item) $('#upload-merchant').value = item.merchant_id;
+    if (item) { $('#upload-merchant').value = item.merchant_id; $('#upload-merchant').dispatchEvent(new Event('change')); }
   }
   $('#payment_request_id').onchange = event => {
     const item = state.requests.find(x => x.id === event.target.value);
-    if (item) $('#upload-merchant').value = item.merchant_id;
+    if (item) { $('#upload-merchant').value = item.merchant_id; $('#upload-merchant').dispatchEvent(new Event('change')); }
   };
   $('#upload-form').onsubmit = async event => {
     event.preventDefault();
-    try {
+    submitForm(event.currentTarget, async () => {
       const result = await api('/api/registry/upload', new FormData(event.target), true);
       notify('Файл загружен. Проверьте строки перед подтверждением.');
       await registriesPage('', result.id);
-    } catch (error) { notify(error.message, true); }
+    }, 'Загрузка…');
   };
   $$('[data-registry]').forEach(button => button.onclick = () => showRegistry(button.dataset.registry));
   if (state.user.Role === 'chief') bindTariffControls();
@@ -318,18 +402,15 @@ async function showRegistry(id) {
   $('#registry-detail').innerHTML = section(`Реестр ${item.external_ref}`,`<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Мерчант</small><strong>${esc(item.merchant)}</strong></div><div><small>Статус</small><strong>${status(item.status)}</strong></div><div><small>Сумма</small><strong>${money(item.total)}</strong></div><div><small>Ошибки</small><strong>${errors.length}</strong></div>${linkedRequest ? `<div><small>Запрос на карты</small><strong>${esc(linkedRequest.external_ref)}</strong></div>` : ''}</div><div style="margin-top:22px">${rowTable}</div>${actions}</div>`);
   if ($('#confirm-registry')) $('#confirm-registry').onsubmit = async event => {
     event.preventDefault();
-    try { await api('/api/registry/confirm',{id,version:String(item.version),confirm_total:$('#confirm_total').value,confirm_commission:$('#confirm_commission').value,confirm_rate_bp:String(item.rate_bp)}); notify('Поступление подтверждено. Проводки опубликованы.'); await registriesPage('',id); }
-    catch (error) { notify(error.message,true); }
+    submitForm(event.currentTarget, async () => { await api('/api/registry/confirm',{id,version:String(item.version),confirm_total:$('#confirm_total').value,confirm_commission:$('#confirm_commission').value,confirm_rate_bp:String(item.rate_bp)}); notify('Поступление подтверждено. Проводки опубликованы.'); await registriesPage('',id); }, 'Подтверждение…');
   };
   if ($('#manual-rate-form')) $('#manual-rate-form').onsubmit = async event => {
     event.preventDefault();
-    try { await api('/api/registry/manual-rate',{id,version:String(item.version),rate_bp:$('#manual_rate_bp').value,reason:$('#manual_reason').value}); notify('Разовая ставка сохранена. Предпросмотр обновлён.'); await registriesPage('',id); }
-    catch (error) { notify(error.message,true); }
+    submitForm(event.currentTarget, async () => { await api('/api/registry/manual-rate',{id,version:String(item.version),rate_bp:$('#manual_rate_bp').value,reason:$('#manual_reason').value}); notify('Разовая ставка сохранена. Предпросмотр обновлён.'); await registriesPage('',id); }, 'Сохранение…');
   };
   if ($('#reverse-registry-form')) $('#reverse-registry-form').onsubmit = async event => {
     event.preventDefault();
-    try { await api('/api/registry/reverse',{id,reason:$('#reverse-reason').value}); notify('Реестр сторнирован.'); await registriesPage(); }
-    catch (error) { notify(error.message,true); }
+    submitForm(event.currentTarget, async () => { await api('/api/registry/reverse',{id,reason:$('#reverse-reason').value}); notify('Реестр сторнирован.'); await registriesPage(); }, 'Сторнирование…');
   };
   if ($('#manual-correction-form')) $('#manual-correction-form').onsubmit = async event => {
     event.preventDefault();
@@ -368,7 +449,7 @@ async function expensesPage(selectedDraft = '') {
   const expenseList = state.drafts.filter(item => item.kind === 'expense');
   const form = `<div class="surface"><h2>Новый расход</h2><p class="hint">Заполнение занимает несколько секунд. После сохранения сумма ещё не списана.</p><form id="expense-form"><div class="form-grid">
     ${field('expense-amount','Сумма, ₽',input('expense-amount','text','name="amount" inputmode="decimal" autocomplete="off" placeholder="Например, 1 500,00" required'))}
-    ${field('expense-category','Тип расхода',`<select id="expense-category" name="category" required><option value="">Выберите тип</option>${newExpenseTypes.map(key=>`<option value="${key}">${esc(expenseTypes[key])}</option>`).join('')}</select>`)}
+    ${field('expense-category','Тип расхода',`<select id="expense-category" name="category" data-searchable required><option value="">Выберите тип</option>${newExpenseTypes.map(key=>`<option value="${key}">${esc(expenseTypes[key])}</option>`).join('')}</select>`)}
     ${field('expense-reason','Комментарий',input('expense-reason','text','name="reason" placeholder="Можно не заполнять"'))}
     ${field('expense-date','Дата расхода',input('expense-date','date',`name="date" value="${todayMoscow()}" required`))}
   </div><div id="expense-type-guidance" class="callout" hidden></div><div class="source-line"><div><small>Списать из</small><strong id="expense-source-label">${esc(sourceLabel(defaultKind,defaultID))}</strong></div><button type="button" class="text-button" id="change-expense-source">Изменить</button></div><div id="expense-source-fields" hidden><div class="form-grid">${field('expense-source-kind','Где находятся деньги',`<select id="expense-source-kind"><option value="cash">Наличные</option><option value="card">На карте</option></select>`)}${field('expense-source-id','Ответственный или карта',`<select id="expense-source-id"></select>`)}</div></div><div class="form-actions"><button id="save-expense" class="button primary">Сохранить расход</button></div></form></div>`;
@@ -412,12 +493,12 @@ async function expensesPage(selectedDraft = '') {
     event.preventDefault();
     if (['repayment','dividends','losses'].includes($('#expense-category').value)) { notify('Для этого типа требуется отдельный сценарий.',true); return; }
     if (!sourceID) { notify('Сначала добавьте карту или ответственного за наличные.',true); return; }
-    try {
+    submitForm(event.currentTarget, async () => {
       const body = {kind:'expense',amount:$('#expense-amount').value,category:$('#expense-category').value,reason:$('#expense-reason').value,date:$('#expense-date').value,source_kind:sourceKind,source_id:sourceID};
       const result = await api('/api/draft',body);
       notify('Расход сохранён как черновик. Деньги ещё не списаны.');
       await expensesPage(result.id);
-    } catch (error) { notify(error.message,true); }
+    }, 'Сохранение…');
   };
   $$('[data-expense]').forEach(button => button.onclick = () => showExpense(button.dataset.expense));
   if (selectedDraft) await showExpense(selectedDraft);
@@ -427,17 +508,11 @@ async function showExpense(id) {
   if (!draft) return;
   const p = draft.payload || {};
   const source = sourceLabel(p.source_kind,p.source_id);
-  const review = draft.status === 'draft' && state.user.Role === 'chief' ? `<div class="review-box"><h3>Проверка перед списанием</h3><p>С карты или наличных будет списано ровно <strong class="amount">${money(p.amount)}</strong>.</p>${field('expense-confirm-amount','Введите точную сумму для подтверждения',input('expense-confirm-amount','text','inputmode="decimal" placeholder="Сумма из черновика" required'))}<div class="button-row"><button id="confirm-expense" class="button primary">Подтвердить расход</button></div></div>` : draft.status === 'draft' ? '<div class="callout">Ожидает подтверждения главного администратора. Баланс пока не меняется.</div>' : '';
-  const reverse = draft.status === 'posted' && state.user.Role === 'chief' ? `<details><summary>Исправить через сторно</summary><div class="details-body"><p class="hint">Исходная запись сохранится в истории. Новый правильный расход создайте отдельно.</p>${field('expense-reverse-reason','Причина сторно',input('expense-reverse-reason','text','required'))}<div class="form-actions"><button id="reverse-expense" class="button danger">Сторнировать расход</button></div></div></details>` : '';
+  const review = draft.status === 'draft' && state.user.Role === 'chief' ? `<form id="confirm-expense" class="review-box"><h3>Проверка перед списанием</h3><p>С карты или наличных будет списано ровно <strong class="amount">${money(p.amount)}</strong>.</p>${field('expense-confirm-amount','Введите точную сумму для подтверждения',input('expense-confirm-amount','text','inputmode="decimal" placeholder="Сумма из черновика…" required'))}<div class="button-row"><button type="submit" class="button primary">Подтвердить расход</button></div></form>` : draft.status === 'draft' ? '<div class="callout">Ожидает подтверждения главного администратора. Баланс пока не меняется.</div>' : '';
+  const reverse = draft.status === 'posted' && state.user.Role === 'chief' ? `<details><summary>Исправить через сторно</summary><div class="details-body"><p class="hint">Исходная запись сохранится в истории. Новый правильный расход создайте отдельно.</p><form id="reverse-expense">${field('expense-reverse-reason','Причина сторно',input('expense-reverse-reason','text','required'))}<div class="form-actions"><button type="submit" class="button danger">Сторнировать расход</button></div></form></div></details>` : '';
   $('#expense-detail').innerHTML = section('Детали расхода',`<div class="surface"><div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Сумма</small><strong>${money(p.amount)}</strong></div><div><small>Тип</small><strong>${esc(expenseTypes[p.category] || 'Тип не указан')}</strong></div><div><small>Дата</small><strong>${esc(p.date || 'Дата подтверждения')}</strong></div><div><small>Источник</small><strong>${esc(source)}</strong></div></div>${p.reason ? `<p style="margin-top:20px">Комментарий: ${esc(p.reason)}</p>` : ''}<p style="margin-top:15px">${status(draft.status)}</p>${review}${reverse}</div>`);
-  if ($('#confirm-expense')) $('#confirm-expense').onclick = async () => {
-    try { await api('/api/draft/confirm',{id,version:String(draft.version),confirm_amount:$('#expense-confirm-amount').value}); notify('Расход подтверждён и учтён.'); await expensesPage(id); }
-    catch (error) { notify(error.message,true); }
-  };
-  if ($('#reverse-expense')) $('#reverse-expense').onclick = async () => {
-    try { await api('/api/draft/reverse',{id,reason:$('#expense-reverse-reason').value}); notify('Расход сторнирован.'); await expensesPage(); }
-    catch (error) { notify(error.message,true); }
-  };
+  if ($('#confirm-expense')) $('#confirm-expense').onsubmit = event => { event.preventDefault(); submitForm(event.currentTarget, async () => { await api('/api/draft/confirm',{id,version:String(draft.version),confirm_amount:$('#expense-confirm-amount').value}); notify('Расход подтверждён и учтён.'); await expensesPage(id); }, 'Подтверждение…'); };
+  if ($('#reverse-expense')) $('#reverse-expense').onsubmit = event => { event.preventDefault(); submitForm(event.currentTarget, async () => { await api('/api/draft/reverse',{id,reason:$('#expense-reverse-reason').value}); notify('Расход сторнирован.'); await expensesPage(); }, 'Сторнирование…'); };
   $('#expense-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -466,9 +541,9 @@ function operationField([key,label,type], form) {
   else if (type === 'merchant') control = select(key,c.merchants,item=>item.name);
   else if (type === 'custodian') control = select(key,c.custodians,item=>item.name,'required');
   else if (type === 'chief') control = select(key,(c.custodians || []).filter(item=>item.kind==='chief'),item=>item.name,'required');
-  else if (type === 'source_kind' || type === 'destination_kind') control = `<select name="${key}" id="${key}"><option value="cash">Наличные</option><option value="card">Карта</option></select>`;
-  else if (type === 'source_id' || type === 'destination_id') control = `<select name="${key}" id="${key}"></select>`;
-  else if (type === 'receivable') control = `<select name="${key}" id="${key}"><option value="1300">Переплата мерчанту</option><option value="1400">Недостача ответственного</option></select>`;
+  else if (type === 'source_kind' || type === 'destination_kind') control = `<select name="${key}" id="${key}" data-searchable><option value="cash">Наличные</option><option value="card">Карта</option></select>`;
+  else if (type === 'source_id' || type === 'destination_id') control = `<select name="${key}" id="${key}" data-searchable></select>`;
+  else if (type === 'receivable') control = `<select name="${key}" id="${key}" data-searchable><option value="1300">Переплата мерчанту</option><option value="1400">Недостача ответственного</option></select>`;
   else {
     const matches = state.drafts.filter(item=>item.status==='posted' && (type==='surplus' ? item.kind==='surplus' : type==='shortage' ? item.kind==='shortage' : type==='writeoff' ? item.kind==='writeoff' : item.kind==='surplus_merchant'));
     control = type === 'surplus_merchant'
@@ -480,7 +555,7 @@ function operationField([key,label,type], form) {
 async function moneyPage(selectedKind = 'withdrawal', selectedDraft = '', initialAmount = '', advancedKind = '') {
   await Promise.all([loadCatalog(),loadDrafts()]);
   const kind = operationGroups[selectedKind] && !(state.user.Role === 'operator' && selectedKind === 'observation') ? selectedKind : 'withdrawal';
-  const tabs = `<div class="tabs" role="tablist">${Object.entries(operationGroups).filter(([key])=>!(state.user.Role === 'operator' && key === 'observation')).map(([key,label])=>`<button data-money-tab="${key}" class="${kind===key?'active':''}" role="tab" aria-selected="${kind===key}">${esc(label)}</button>`).join('')}</div>`;
+  const tabs = `<nav class="tabs" aria-label="Типы денежных операций">${Object.entries(operationGroups).filter(([key])=>!(state.user.Role === 'operator' && key === 'observation')).map(([key,label])=>`<button data-money-tab="${key}" class="${kind===key?'active':''}" aria-pressed="${kind===key}">${esc(label)}</button>`).join('')}</nav>`;
   const active = kind === 'advanced' ? 'injection' : kind;
   const form = kind === 'observation' ? `<div class="surface"><h2>Фактический остаток карты</h2><p class="hint">Наблюдение помогает найти расхождение, но само по себе не меняет баланс.</p><form id="observation-form"><div class="form-grid">${field('card_id','Карта',select('card_id',state.catalog.cards,item=>item.mask,'required'))}${field('amount','Остаток, ₽',input('amount','text','inputmode="decimal" required'))}</div><div class="form-actions"><button class="button primary">Сохранить остаток</button></div></form></div>` : `<div class="surface"><h2>${esc(kind === 'advanced' ? 'Другие операции' : kindNames[active])}</h2><p class="hint">Сохраните черновик. Главный администратор проверит точную сумму перед проведением.</p><form id="money-form">${kind==='advanced' ? field('advanced_kind','Операция',`<select id="advanced_kind">${Object.keys(operationFields).filter(k=>!['withdrawal','handover','repayment'].includes(k)).map(k=>`<option value="${k}">${esc(kindNames[k])}</option>`).join('')}</select>`) : ''}<div id="operation-fields" class="form-grid"></div><div class="form-grid" style="margin-top:16px">${field('op-amount','Сумма, ₽',input('op-amount','text','name="amount" inputmode="decimal" required'))}${field('op-reason','Основание или комментарий',input('op-reason','text','name="reason" placeholder="При необходимости"'))}</div><div class="form-actions"><button class="button primary">Сохранить черновик</button></div></form></div>`;
   const relevantDrafts = state.drafts.filter(item=>item.kind!=='expense');
@@ -523,6 +598,7 @@ function bindOperationForm(tab) {
         refresh();
       }
     }
+    enhanceSelects(form);
     if (kind==='handover') {
       const from=$('#from_custodian_id');
       const firstCollector=(state.catalog.custodians||[]).find(item=>item.kind==='collector');
@@ -536,8 +612,7 @@ function bindOperationForm(tab) {
     const kind = tab==='advanced' ? $('#advanced_kind').value : tab;
     const body = values(form);
     body.kind = kind;
-    try { const result = await api('/api/draft',body); notify('Черновик сохранён. Деньги ещё не перемещены.'); await moneyPage(tab,result.id); }
-    catch(error) { notify(error.message,true); }
+    submitForm(form, async () => { const result = await api('/api/draft',body); notify('Черновик сохранён. Деньги ещё не перемещены.'); await moneyPage(tab,result.id); }, 'Сохранение…');
   };
 }
 async function showMoneyDraft(id) {
@@ -553,11 +628,11 @@ async function showMoneyDraft(id) {
   if (p.destination_kind) fields.push(['Получатель денег',sourceLabel(p.destination_kind,p.destination_id)]);
   if (p.merchant_id) fields.push(['Мерчант',entityName(state.catalog.merchants,p.merchant_id)]);
   const details = `<div class="summary-strip" style="border-top:0;padding-top:0"><div><small>Действие</small><strong>${esc(kindNames[draft.kind] || 'Операция')}</strong></div><div><small>Заявленная сумма</small><strong>${money(p.amount)}</strong></div>${fields.map(([label,value])=>`<div><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`).join('')}</div>${p.reason ? `<p style="margin-top:18px">Основание: ${esc(p.reason)}</p>`:''}`;
-  const confirm = draft.status==='draft' && state.user.Role==='chief' ? `<div class="review-box"><h3>Подтвердить фактическое движение</h3><p>${draft.kind==='handover'?'Укажите фактически принятую сумму. Она может отличаться от заявленной.':'Введите точную сумму из черновика.'}</p>${field('money-confirm','Подтверждаемая сумма, ₽',input('money-confirm','text','inputmode="decimal" required'))}<div class="button-row"><button id="confirm-money" class="button primary">Подтвердить ${esc(kindNames[draft.kind] || 'операцию').toLowerCase()}</button></div></div>` : draft.status==='draft' ? '<div class="callout">Ожидает подтверждения главным администратором.</div>' : '';
-  const reverse = draft.status==='posted' && state.user.Role==='chief' ? `<details><summary>Сторнировать эту операцию</summary><div class="details-body">${field('money-reverse-reason','Причина',input('money-reverse-reason','text','required'))}<div class="form-actions"><button id="reverse-money" class="button danger">Сторнировать</button></div></div></details>` : '';
+  const confirm = draft.status==='draft' && state.user.Role==='chief' ? `<form id="confirm-money" class="review-box"><h3>Подтвердить фактическое движение</h3><p>${draft.kind==='handover'?'Укажите фактически принятую сумму. Она может отличаться от заявленной.':'Введите точную сумму из черновика.'}</p>${field('money-confirm','Подтверждаемая сумма, ₽',input('money-confirm','text','inputmode="decimal" required'))}<div class="button-row"><button type="submit" class="button primary">Подтвердить ${esc(kindNames[draft.kind] || 'операцию').toLowerCase()}</button></div></form>` : draft.status==='draft' ? '<div class="callout">Ожидает подтверждения главным администратором.</div>' : '';
+  const reverse = draft.status==='posted' && state.user.Role==='chief' ? `<details><summary>Сторнировать эту операцию</summary><div class="details-body"><form id="reverse-money">${field('money-reverse-reason','Причина',input('money-reverse-reason','text','required'))}<div class="form-actions"><button type="submit" class="button danger">Сторнировать</button></div></form></div></details>` : '';
   $('#money-detail').innerHTML = section('Детали операции',`<div class="surface">${details}<p style="margin-top:20px">${status(draft.status)}</p>${confirm}${reverse}</div>`);
-  if ($('#confirm-money')) $('#confirm-money').onclick = async () => { try { await api('/api/draft/confirm',{id,version:String(draft.version),confirm_amount:$('#money-confirm').value}); notify('Операция подтверждена.'); await moneyPage('withdrawal',id); } catch(error) { notify(error.message,true); } };
-  if ($('#reverse-money')) $('#reverse-money').onclick = async () => { try { await api('/api/draft/reverse',{id,reason:$('#money-reverse-reason').value}); notify('Операция сторнирована.'); await moneyPage('withdrawal'); } catch(error) { notify(error.message,true); } };
+  if ($('#confirm-money')) $('#confirm-money').onsubmit = event => { event.preventDefault(); submitForm(event.currentTarget, async () => { await api('/api/draft/confirm',{id,version:String(draft.version),confirm_amount:$('#money-confirm').value}); notify('Операция подтверждена.'); await moneyPage('withdrawal',id); }, 'Подтверждение…'); };
+  if ($('#reverse-money')) $('#reverse-money').onsubmit = event => { event.preventDefault(); submitForm(event.currentTarget, async () => { await api('/api/draft/reverse',{id,reason:$('#money-reverse-reason').value}); notify('Операция сторнирована.'); await moneyPage('withdrawal'); }, 'Сторнирование…'); };
   $('#money-detail').scrollIntoView({behavior:'smooth',block:'start'});
 }
 
@@ -589,7 +664,7 @@ async function catalogPage(tab = 'merchants') {
   await loadCatalog();
   if (state.user.Role === 'sysadmin') tab = 'users';
   if (!catalogTabs[tab]) tab = 'merchants';
-  const tabs = `<div class="tabs" role="tablist">${Object.entries(catalogTabs).filter(([key])=>key!=='users'||state.catalog.users).map(([key,label])=>`<button data-catalog-tab="${key}" class="${tab===key?'active':''}" role="tab" aria-selected="${tab===key}">${esc(label)}</button>`).join('')}</div>`;
+  const tabs = `<nav class="tabs" aria-label="Разделы справочников">${Object.entries(catalogTabs).filter(([key])=>key!=='users'||state.catalog.users).map(([key,label])=>`<button data-catalog-tab="${key}" class="${tab===key?'active':''}" aria-pressed="${tab===key}">${esc(label)}</button>`).join('')}</nav>`;
   const form = catalogForm(tab);
   page('Справочники','Отдельные формы для мерчантов, карт, ФИО и телефонов, банков и ответственных. Здесь нет денежных проводок.',tabs + (form ? `<div class="stack">${form}</div>` : '') + section(catalogTabs[tab],catalogRows(tab)));
   $$('[data-catalog-tab]').forEach(button=>button.onclick=()=>catalogPage(button.dataset.catalogTab));
@@ -654,4 +729,5 @@ async function accountPage() {
   page('Настройки входа','Смените пароль; после смены все прежние сеансы завершатся.',`<div class="surface" style="max-width:610px"><h2>Сменить пароль</h2><form id="password-form"><div class="stack">${field('current','Текущий пароль',input('current','password','autocomplete="current-password" required'))}${field('new','Новый пароль',input('new','password','autocomplete="new-password" minlength="16" required'),'Не короче 16 символов.')}</div><div class="form-actions"><button class="button primary">Сохранить новый пароль</button></div></form></div>`);
   $('#password-form').onsubmit = async event => { event.preventDefault(); try { await api('/api/password',values(event.target)); notify('Пароль изменён. Войдите заново.'); location.reload(); } catch(error) { notify(error.message,true); } };
 }
+syncMenuState();
 start();
