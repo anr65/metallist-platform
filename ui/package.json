@@ -7,6 +7,8 @@
     "check": "vite build --mode check"
   },
   "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@gsap/react": "^2.1.2",
     "@radix-ui/react-dialog": "^1.1.6",
     "@radix-ui/react-select": "^2.1.6",
     "@radix-ui/react-slot": "^1.1.2",
@@ -15,6 +17,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "cn": "^0.3.0",
+    "gsap": "^3.15.0",
     "lucide-react": "^0.468.0",
     "radix-ui": "^1.6.7",
     "react": "^19.0.0",

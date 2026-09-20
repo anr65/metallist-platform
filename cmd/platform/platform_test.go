@@ -123,6 +123,55 @@ func TestPaymentPlanAndSyntheticIdentity(t *testing.T) {
 		t.Fatal("synthetic export identity")
 	}
 }
+
+func TestPaymentRequestNextReferenceAndContactSearch(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, _ := fixtures(t, a)
+	w := httptest.NewRecorder()
+	a.paymentRequestNextReference(w, httptest.NewRequest("GET", "/api/payment-request/next-reference", nil), chief)
+	var next M
+	_ = json.Unmarshal(w.Body.Bytes(), &next)
+	if w.Code != 200 || next["next_reference"] != "ЗК-2026-0001" {
+		t.Fatal("initial automatic reference", w.Code, next)
+	}
+	for _, ref := range []string{"ЗК-2026-0002", "Свободное название", "ЗК-2026-0010"} {
+		if _, e := a.db.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,per_payment_cents,requested_total_cents,export_path,export_sha256,created_by) VALUES($1,$2,$3,'count',1,25000000,25000000,$4,'hash',$5)", id(), merchant, ref, t.TempDir()+"/request.xlsx", chief.ID); e != nil {
+			t.Fatal(e)
+		}
+	}
+	w = httptest.NewRecorder()
+	a.paymentRequestNextReference(w, httptest.NewRequest("GET", "/api/payment-request/next-reference", nil), chief)
+	next = nil
+	_ = json.Unmarshal(w.Body.Bytes(), &next)
+	if w.Code != 200 || next["next_reference"] != "ЗК-2026-0011" {
+		t.Fatal("sequential automatic reference", w.Code, next)
+	}
+	for _, contact := range []struct{ name, phone string }{{"Альфа Тест Тестович", "+70000000001"}, {"Бета Тест Тестович", "+70000000002"}, {"Гамма Тест Тестович", "+70000000003"}} {
+		if _, e := a.db.Exec("INSERT INTO payment_contacts(id,full_name,phone,created_by) VALUES($1,$2,$3,$4)", id(), contact.name, contact.phone, chief.ID); e != nil {
+			t.Fatal(e)
+		}
+	}
+	w = httptest.NewRecorder()
+	a.paymentContacts(w, httptest.NewRequest("GET", "/api/payment-contacts?page=1&page_size=2&q=Тест", nil), chief)
+	var page M
+	_ = json.Unmarshal(w.Body.Bytes(), &page)
+	if w.Code != 200 || page["total"] != float64(3) || page["has_more"] != true || len(page["items"].([]interface{})) != 2 {
+		t.Fatal("paginated contact search", w.Code, page)
+	}
+	w = httptest.NewRecorder()
+	a.paymentContacts(w, httptest.NewRequest("GET", "/api/payment-contacts?page=1&page_size=10&q=%2B7+000+000-00-03", nil), chief)
+	page = nil
+	_ = json.Unmarshal(w.Body.Bytes(), &page)
+	if w.Code != 200 || page["total"] != float64(1) {
+		t.Fatal("normalized phone search", w.Code, page)
+	}
+	accountant := User{ID: id(), Role: "accountant"}
+	w = httptest.NewRecorder()
+	a.paymentContacts(w, httptest.NewRequest("GET", "/api/payment-contacts", nil), accountant)
+	if w.Code != 403 {
+		t.Fatal("contact search exposed to accountant", w.Code)
+	}
+}
 func TestPaymentContactPhoneNormalizationAndDemoBoundary(t *testing.T) {
 	t.Setenv("APP_ENV", "testing")
 	phone, e := normalizePaymentPhone("8 (999) 123-45-67")
@@ -200,7 +249,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	defer book.Close()
 	lines, e := book.GetRows("Карты к оплате")
-	if e != nil || len(lines) != 24 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
+	if e != nil || len(lines) != 24 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
 		t.Fatal("unsafe or incomplete export", e)
 	}
 	rowsRecorder := httptest.NewRecorder()

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -21,6 +22,7 @@ import (
 const defaultPaymentCents int64 = 25_000_000
 
 var requestReferencePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,79}$`)
+var autoRequestReferencePattern = regexp.MustCompile(`^ЗК-[0-9]{4}-([0-9]{4,})$`)
 var paymentPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{10,14}$`)
 var demoPaymentPhonePattern = regexp.MustCompile(`^\+7000000[0-9]{4}$`)
 var syntheticNames = []string{
@@ -73,6 +75,87 @@ func paymentContactIDs(m M, count int) ([]string, error) {
 		out[i] = contactID
 	}
 	return out, nil
+}
+
+func (a *App) paymentRequestNextReference(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator") {
+		return
+	}
+	year := time.Now().In(a.location).Year()
+	prefix := fmt.Sprintf("ЗК-%d-", year)
+	rows, e := a.db.Query("SELECT external_ref FROM payment_requests WHERE external_ref LIKE $1", prefix+"%")
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer rows.Close()
+	maxNumber := 0
+	for rows.Next() {
+		var ref string
+		if e = rows.Scan(&ref); e != nil {
+			fail(w, 500, e)
+			return
+		}
+		match := autoRequestReferencePattern.FindStringSubmatch(ref)
+		if len(match) != 2 {
+			continue
+		}
+		n, parseError := strconv.Atoi(match[1])
+		if parseError == nil && n > maxNumber {
+			maxNumber = n
+		}
+	}
+	if e = rows.Err(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"next_reference": fmt.Sprintf("%s%04d", prefix, maxNumber+1)})
+}
+
+func (a *App) paymentContacts(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator") {
+		return
+	}
+	page, e := strconv.Atoi(r.URL.Query().Get("page"))
+	if e != nil || page < 1 {
+		page = 1
+	}
+	pageSize, e := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if e != nil || pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 50 {
+		pageSize = 50
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	namePattern := "%" + query + "%"
+	phoneQuery := strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(query)
+	phonePattern := "%" + phoneQuery + "%"
+	var total int
+	if e = a.db.QueryRow("SELECT count(*) FROM payment_contacts WHERE active AND (full_name ILIKE $1 OR phone ILIKE $2)", namePattern, phonePattern).Scan(&total); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	rows, e := a.db.Query("SELECT id,full_name,phone FROM payment_contacts WHERE active AND (full_name ILIKE $1 OR phone ILIKE $2) ORDER BY full_name,phone,id LIMIT $3 OFFSET $4", namePattern, phonePattern, pageSize, (page-1)*pageSize)
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer rows.Close()
+	items := []M{}
+	for rows.Next() {
+		var contactID, fullName, phone string
+		if e = rows.Scan(&contactID, &fullName, &phone); e != nil {
+			fail(w, 500, e)
+			return
+		}
+		items = append(items, M{"id": contactID, "full_name": fullName, "phone": phone})
+	}
+	if e = rows.Err(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"items": items, "page": page, "page_size": pageSize, "total": total, "has_more": page*pageSize < total})
 }
 
 func demoCardIdentity(cardID, mask string) (string, string, error) {
@@ -158,13 +241,13 @@ func paymentPlan(mode, countText, totalText, perText string) ([]int64, error) {
 	return out, nil
 }
 
-func requestWorkbook(reference, merchant string, rows []plannedPayment) ([]byte, error) {
+func requestWorkbook(reference string, rows []plannedPayment) ([]byte, error) {
 	f := excelize.NewFile()
 	defer f.Close()
 	sheet := "Карты к оплате"
 	f.SetSheetName("Sheet1", sheet)
 	f.SetCellStr(sheet, "A1", "ДЕМО: вымышленные данные, платежи по этим номерам невозможны")
-	f.SetCellStr(sheet, "A2", "Мерчант: "+merchant+" · Запрос: "+reference)
+	f.SetCellStr(sheet, "A2", "Запрос: "+reference)
 	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "НОМЕР ТЕЛЕФОНА", "СУММА, ₽", "БАНК"} {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 4)
 		f.SetCellStr(sheet, cell, title)
@@ -236,8 +319,8 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	}
 	defer tx.Rollback()
 	merchantID := str(m, "merchant_id")
-	var merchant string
-	if e = tx.QueryRow("SELECT name FROM merchants WHERE id=$1 AND active", merchantID).Scan(&merchant); e != nil {
+	var merchantExists bool
+	if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM merchants WHERE id=$1 AND active)", merchantID).Scan(&merchantExists); e != nil || !merchantExists {
 		fail(w, 400, errors.New("выберите действующего мерчанта"))
 		return
 	}
@@ -317,7 +400,7 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	for _, v := range plan {
 		total += v
 	}
-	file, e := requestWorkbook(ref, merchant, selected)
+	file, e := requestWorkbook(ref, selected)
 	if e != nil {
 		fail(w, 500, e)
 		return

@@ -195,6 +195,8 @@ func main() {
 	mux.HandleFunc("/api/user/telegram", app.auth(app.linkTelegram))
 	mux.HandleFunc("/api/registry/upload", app.auth(app.upload))
 	mux.HandleFunc("/api/payment-request/create", app.auth(app.createPaymentRequest))
+	mux.HandleFunc("/api/payment-request/next-reference", app.auth(app.paymentRequestNextReference))
+	mux.HandleFunc("/api/payment-contacts", app.auth(app.paymentContacts))
 	mux.HandleFunc("/api/payment-requests", app.auth(app.paymentRequests))
 	mux.HandleFunc("/api/payment-request/rows", app.auth(app.paymentRequestRows))
 	mux.HandleFunc("/api/payment-request/export", app.auth(app.paymentRequestExport))
