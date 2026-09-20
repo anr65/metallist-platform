@@ -331,14 +331,14 @@ func (a *App) linkTelegram(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("укажите ответственного за наличные"))
 		return
 	}
-	res, e := a.db.Exec("UPDATE users SET telegram_id=$1,custodian_id=$2 FROM custodians c WHERE users.id=$3 AND users.active AND c.id=$2 AND c.active AND ((users.role='collector' AND c.kind='collector') OR (users.role='chief' AND c.kind='chief'))", tid, custodian, str(m, "user_id"))
+	res, e := a.db.Exec("UPDATE users SET telegram_id=$1,custodian_id=$2 FROM custodians c WHERE users.id=$3 AND users.active AND c.id=$2 AND c.active AND ((users.role IN ('collector','operator') AND c.kind=users.role) OR (users.role='chief' AND c.kind='chief'))", tid, custodian, str(m, "user_id"))
 	if e != nil {
 		fail(w, 409, e)
 		return
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		fail(w, 400, errors.New("свяжите активного сборщика или главного администратора с соответствующим ответственным за наличные"))
+		fail(w, 400, errors.New("свяжите активного сборщика, операциониста или главного администратора с соответствующим ответственным за наличные"))
 		return
 	}
 	a.logAudit(u.ID, "web", "telegram_link", "user", str(m, "user_id"), "success", "", M{"telegram_id": tid, "custodian_id": custodian})

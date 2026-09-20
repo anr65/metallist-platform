@@ -26,7 +26,7 @@ func (a *App) telegramCard(u telegramActor, lastFour string) (string, string, er
 	}
 	query := "SELECT c.id,c.mask FROM cards c WHERE c.status='active' AND c.last4=$1"
 	args := []interface{}{lastFour}
-	if u.Role == "collector" {
+	if telegramFieldRole(u.Role) {
 		query += " AND EXISTS(SELECT 1 FROM card_assignments x WHERE x.card_id=c.id AND x.user_id=$2)"
 		args = append(args, u.ID)
 	}
@@ -83,8 +83,8 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 		if e != nil {
 			return out, e
 		}
-		if u.Role == "collector" && category != "warmup" && category != "bank_fee" {
-			return out, errors.New("Сборщику доступны только расходы «Прогрев» и «Банк. Комиссия»")
+		if telegramFieldRole(u.Role) && category != "warmup" && category != "bank_fee" {
+			return out, errors.New("Доступны только расходы «Прогрев» и «Банк. Комиссия»")
 		}
 		amount, e := telegramAmount(words[len(words)-1])
 		if e != nil {

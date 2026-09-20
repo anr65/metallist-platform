@@ -190,6 +190,55 @@ func TestTelegramCollectorWithdrawalConfirmationAndRetry(t *testing.T) {
 	}
 }
 
+func TestTelegramOperatorUsesAssignedCardsWithFieldRestrictions(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	admin, _, _, fake := telegramFixture(t, a, card)
+	operator := User{ID: id(), Login: "field-operator", Name: "Операционист", Role: "operator"}
+	operatorCustodian := id()
+	if _, e := a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,$2,'operator')", operatorCustodian, operator.Name); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x')", operator.ID, operator.Login, operator.Name); e != nil {
+		t.Fatal(e)
+	}
+	if status, _ := req(t, a.assignCard, admin, M{"user_id": operator.ID, "card_id": card}); status != 200 {
+		t.Fatal("operator card assignment failed", status)
+	}
+	if status, _ := req(t, a.linkTelegram, admin, M{"user_id": operator.ID, "custodian_id": operatorCustodian, "telegram_id": "557"}); status != 200 {
+		t.Fatal("operator Telegram link failed", status)
+	}
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_funding", id(), "tg-operator-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 1_000_000, Card: card}, {Account: "3100", Side: "credit", Amount: 1_000_000}}, "")
+	if e != nil || tx.Commit() != nil {
+		t.Fatal("funding failed", e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(1051, 557, "/expense 1234 зарплата 230")); code != 200 {
+		t.Fatal(code)
+	}
+	var count int
+	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:1051'").Scan(&count); e != nil || count != 0 || !fake.contains("только расходы «Прогрев» и «Банк. Комиссия»") {
+		t.Fatal("operator created forbidden expense", count, e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(1052, 557, "/withdraw 1234 1000/0")); code != 200 {
+		t.Fatal(code)
+	}
+	var draftID string
+	if e := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:1052'").Scan(&draftID); e != nil {
+		t.Fatal(e)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(1053, 557, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
+	}
+	var cash int64
+	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings WHERE account='1200' AND custodian_id=$1", operatorCustodian).Scan(&cash); e != nil || cash != 100_000 {
+		t.Fatal("operator cash balance wrong", cash, e)
+	}
+}
+
 func TestTelegramCollectorWithdrawalBatchIsAtomicIdempotentAndReversible(t *testing.T) {
 	a := testApp(t)
 	chief, _, _, card := fixtures(t, a)

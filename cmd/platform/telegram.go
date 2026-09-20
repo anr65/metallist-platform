@@ -43,6 +43,10 @@ type telegramActor struct {
 	CustodianID string
 }
 
+func telegramFieldRole(role string) bool {
+	return role == "collector" || role == "operator"
+}
+
 var errTelegramDelivery = errors.New("Telegram временно недоступен")
 
 // Reject full card numbers both as one string and in groups separated by spaces or hyphens.
@@ -148,7 +152,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	}
 	var u telegramActor
 	e = a.db.QueryRow("SELECT id,login,name,role,COALESCE(custodian_id::text,'') FROM users WHERE telegram_id=$1 AND active", sender).Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.CustodianID)
-	if e != nil || (u.Role != "collector" && u.Role != "chief") || u.CustodianID == "" {
+	if e != nil || (!telegramFieldRole(u.Role) && u.Role != "chief") || u.CustodianID == "" {
 		_ = a.telegramReply(chat, "Доступ не настроен. Попросите системного администратора связать ваш Telegram ID и ответственного за наличные.", nil)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -193,7 +197,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	words := strings.Fields(text)
 	command := telegramCommand(words[0])
 	if command == "start" || command == "help" {
-		if u.Role == "collector" {
+		if telegramFieldRole(u.Role) {
 			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. В обеих командах можно указать несколько операций — по одной в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия».", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Выберите /withdraw, /expense или /balance в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу.", nil)

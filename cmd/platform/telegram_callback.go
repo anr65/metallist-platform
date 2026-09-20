@@ -124,7 +124,7 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind string, p M) error {
 	var currentCustodian, role string
 	e := tx.QueryRow("SELECT role,COALESCE(custodian_id::text,'') FROM users WHERE id=$1 AND active FOR SHARE", u.ID).Scan(&role, &currentCustodian)
-	if e != nil || currentCustodian != u.CustodianID || (role != "collector" && role != "chief") {
+	if e != nil || currentCustodian != u.CustodianID || (!telegramFieldRole(role) && role != "chief") {
 		return errors.New("Связь Telegram с ответственным изменилась")
 	}
 	if kind == "withdrawal" {
@@ -132,7 +132,7 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 			return errors.New("Получатель наличных изменился")
 		}
 		var kind string
-		if e = tx.QueryRow("SELECT kind FROM custodians WHERE id=$1 AND active", currentCustodian).Scan(&kind); e != nil || (role == "collector" && kind != "collector") || (role == "chief" && kind != "chief") {
+		if e = tx.QueryRow("SELECT kind FROM custodians WHERE id=$1 AND active", currentCustodian).Scan(&kind); e != nil || (telegramFieldRole(role) && kind != role) || (role == "chief" && kind != "chief") {
 			return errors.New("Ответственный за наличные недоступен")
 		}
 		items, itemsErr := telegramWithdrawalItems(p)
@@ -184,8 +184,8 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 		if _, e = expenseAccount(category); e != nil {
 			return errors.New("Категория недоступна")
 		}
-		if role == "collector" && category != "warmup" && category != "bank_fee" {
-			return errors.New("Сборщику доступен только прогрев и банковская комиссия")
+		if telegramFieldRole(role) && category != "warmup" && category != "bank_fee" {
+			return errors.New("Доступны только прогрев и банковская комиссия")
 		}
 		itemAmount, amountErr := telegramInt(item["amount_cents"])
 		if amountErr != nil || itemAmount <= 0 || itemAmount > math.MaxInt64-total || itemAmount > math.MaxInt64-byCard[cardID] {
@@ -212,10 +212,10 @@ func (a *App) telegramValidateCard(tx *sql.Tx, userID, role, cardID string) erro
 	if e := tx.QueryRow("SELECT status FROM cards WHERE id=$1", cardID).Scan(&status); e != nil || status != "active" {
 		return errors.New("Карта недоступна")
 	}
-	if role == "collector" {
+	if telegramFieldRole(role) {
 		var assigned bool
 		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM card_assignments WHERE user_id=$1 AND card_id=$2)", userID, cardID).Scan(&assigned); e != nil || !assigned {
-			return errors.New("Карта больше не назначена сборщику")
+			return errors.New("Карта больше не назначена пользователю")
 		}
 	}
 	return nil
