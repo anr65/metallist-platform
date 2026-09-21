@@ -239,7 +239,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	var defaultsCatalog M
 	_ = json.Unmarshal(defaultsRecorder.Body.Bytes(), &defaultsCatalog)
 	defaultCards := defaultsCatalog["request_cards"].([]interface{})
-	if len(defaultCards) != 1 || defaultCards[0].(map[string]interface{})["full_name"] != "Тестов Алексей Учебович" || defaultCards[0].(map[string]interface{})["phone"] != "+70000000001" {
+	if len(defaultCards) != 1 || defaultCards[0].(map[string]interface{})["bank"] != "Вымышленный банк" || defaultCards[0].(map[string]interface{})["full_name"] != "Тестов Алексей Учебович" || defaultCards[0].(map[string]interface{})["phone"] != "+70000000001" {
 		t.Fatal("previous registry contact defaults missing", defaultsCatalog["request_cards"])
 	}
 

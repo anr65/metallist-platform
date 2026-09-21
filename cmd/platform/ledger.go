@@ -160,7 +160,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	result := M{}
 	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code ORDER BY m.name", "banks": "SELECT id,code,name FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status FROM cards c JOIN banks b ON b.id=c.bank_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id FROM users ORDER BY name"}
-	specs["request_cards"] = `SELECT c.id,c.mask,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone
+	specs["request_cards"] = `SELECT c.id,c.mask,b.name AS bank,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone
 		FROM cards c JOIN banks b ON b.id=c.bank_id
 		LEFT JOIN LATERAL (SELECT r.contact_name,r.contact_phone FROM payment_request_rows r JOIN payment_requests p ON p.id=r.request_id
 		WHERE r.card_id=c.id AND r.contact_id IS NOT NULL ORDER BY p.created_at DESC,p.id DESC,r.row_no DESC LIMIT 1) previous ON true
