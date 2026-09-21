@@ -142,6 +142,7 @@ export function PaymentRequests({ role }) {
   const cards = data?.catalog.request_cards || [];
   const editRow = (key, changes) => setDraftRows(current => current.map(row => row.key === key ? { ...row, ...changes } : row));
   const usedCards = new Set(draftRows.map(row => row.card_id).filter(Boolean));
+  const selectedCardCount = usedCards.size;
   function generateRows() {
     const quantity = Number(count);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
@@ -169,14 +170,14 @@ export function PaymentRequests({ role }) {
         requestRows.push({ card_id: row.card_id, contact_id: saved.get(key) });
       }
       const created = await post('/api/payment-request/create', { merchant_id: merchant, external_ref: reference, mode: 'cards', rows: requestRows });
-      setMessage(`Запрос создан: ${created.card_count} карт. XLSX готов к скачиванию.`);
+      setMessage(`Запрос создан: ${created.card_count} карт. Учебный XLSX не подходит для отправки мерчанту.`);
       setDraftRows([]);
       await load(true);
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
-  return <PageState title="Карты к оплате" subtitle="Подготовьте запрос для мерчанта, затем свяжите с ним ответный реестр. Создание запроса не меняет баланс.">
+  return <PageState title="Карты к оплате" subtitle="Подготовьте список карт, затем свяжите запрос с ответным реестром. Создание запроса не меняет баланс.">
     {canCreate && <Card className="mb-7 rounded-2xl">
-      <CardHeader><CardTitle>Новый запрос мерчанта</CardTitle><CardDescription>Выберите карты и заполните реквизиты получателей. В демо выгружаются только учебные данные.</CardDescription></CardHeader>
+      <CardHeader><CardTitle>Новый запрос мерчанта</CardTitle><CardDescription>Выберите карты и заполните контакты. Экспорт пока содержит учебные номера карт и не подходит для оплаты.</CardDescription></CardHeader>
       <CardContent>{data ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
         <label className="grid gap-2 text-sm font-medium">Мерчант<Select value={merchant} onValueChange={setMerchant}><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(data.catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
         <label className="grid gap-2 text-sm font-medium">Название запроса<Input value={reference} onChange={e => setReference(e.target.value)} maxLength="80" placeholder="ЗК-2026-0001" required /><small className="font-normal text-muted-foreground">Следующий номер заполнен автоматически — название можно изменить.</small></label>
@@ -190,15 +191,15 @@ export function PaymentRequests({ role }) {
               <label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => editRow(row.key, { phone: value })} onContactSelect={contact => editRow(row.key, { full_name: contact.full_name, phone: contact.phone })} /></label>
             </div>
           </div>)}</div> : <p className="mt-5 rounded-xl bg-muted p-5 text-sm text-muted-foreground">Пока нет строк. Нажмите «Добавить реквизит +».</p>}
-          <p className="mt-4 text-sm text-muted-foreground">Выбрано карт: {draftRows.length}</p>
+          <p className="mt-4 text-sm text-muted-foreground">Выбрано карт: {selectedCardCount} из {draftRows.length}</p>
         </div>
         <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5"><Button type="button" variant="outline" onClick={() => setShowAuto(current => !current)}>Подобрать карты по количеству</Button>
           {showAuto && <div className="mt-4 grid gap-4 md:grid-cols-2"><p className="md:col-span-2 text-sm text-muted-foreground">Автоподбор использует активные карты без учёта исторических оборотов. Проверьте каждую строку перед созданием запроса. Текущие строки будут заменены.</p><label className="grid gap-2 text-sm font-medium">Сколько карт<Input value={count} onChange={e => setCount(e.target.value)} type="number" min="1" max="500" /></label><div className="md:col-span-2"><Button type="button" onClick={generateRows}>Сформировать строки</Button></div></div>}
         </div>
-        <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" type="submit" disabled={busy || !draftRows.length}>{busy ? 'Создание…' : 'Создать и подготовить XLSX'}</Button></div>
+        <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" type="submit" disabled={busy || !draftRows.length}>{busy ? 'Создание…' : 'Создать запрос'}</Button></div>
       </form> : <p>Загрузка…</p>}</CardContent>
     </Card>}
-    <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы скачать XLSX и проверить выбранные карты.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">Карт: {item.card_count}</span><span className="text-sm text-muted-foreground">Ответных реестров: {item.response_count}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
-    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}.</CardDescription></CardHeader><CardContent><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a><div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div></CardContent></Card>}
+    <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы проверить выбранные карты и скачать учебный XLSX.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">Карт: {item.card_count}</span><span className="text-sm text-muted-foreground">Ответных реестров: {item.response_count}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
+    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}. Выгрузка содержит учебные номера и не подходит для оплаты.</CardDescription></CardHeader><CardContent><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать учебный XLSX</a><div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div></CardContent></Card>}
   </PageState>;
 }
