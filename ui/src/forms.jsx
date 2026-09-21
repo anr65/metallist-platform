@@ -195,7 +195,7 @@ export function PaymentRequests({ role }) {
   const [data, setData] = useState(null), [merchant, setMerchant] = useState(''), [reference, setReference] = useState('');
   const [draftRows, setDraftRows] = useState([]), [showAuto, setShowAuto] = useState(false);
   const [count, setCount] = useState('');
-  const [selected, setSelected] = useState(null), [rows, setRows] = useState([]), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState(null), [rows, setRows] = useState([]), [editRows, setEditRows] = useState([]), [editing, setEditing] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false);
   const load = (refreshReference = false) => Promise.all([get('/api/catalog'), get('/api/payment-requests'), canCreate ? get('/api/payment-request/next-reference') : Promise.resolve({ next_reference: '' })]).then(([catalog, requests, next]) => {
     setData({ catalog, requests });
     setMerchant(current => current || catalog.merchants?.[0]?.id || '');
@@ -215,7 +215,31 @@ export function PaymentRequests({ role }) {
     setDraftRows(Array.from({ length: quantity }, (_, index) => ({ ...blankRow(), card_id: cards[index].id })));
     setError(''); setShowAuto(false);
   }
-  async function open(item) { setSelected(item); setRows([]); setError(''); try { setRows(await get('/api/payment-request/rows?id=' + encodeURIComponent(item.id))); } catch (e) { setError(e.message); } }
+  async function open(item) { setSelected(item); setRows([]); setEditing(false); setError(''); setMessage(''); try { const loaded = await get('/api/payment-request/rows?id=' + encodeURIComponent(item.id)); setRows(loaded); setEditRows(loaded.map(row => ({ key: crypto.randomUUID(), card_id: row.card_id || '', full_name: row.contact_name, phone: row.contact_phone }))); } catch (e) { setError(e.message); } }
+  async function saveEdit(event) {
+    event.preventDefault();
+    if (!editRows.length || editRows.length > 500 || editRows.some(row => !row.card_id || !row.full_name.trim() || !row.phone.trim()) || new Set(editRows.map(row => row.card_id)).size !== editRows.length) { setError('Добавьте от 1 до 500 строк с разными картами, ФИО и телефоном.'); return; }
+    setBusy(true); setError('');
+    try {
+      const saved = new Map(), requestRows = [];
+      for (const row of editRows) {
+        const contact = { full_name: row.full_name.trim(), phone: row.phone.trim() }, key = JSON.stringify(contact);
+        if (!saved.has(key)) saved.set(key, (await post('/api/catalog/create', { kind: 'payment_contact', ...contact })).id);
+        requestRows.push({ card_id: row.card_id, contact_id: saved.get(key) });
+      }
+      await post('/api/payment-request/update', { id: selected.id, version: String(selected.version), rows: requestRows });
+      await load();
+      const fresh = (await get('/api/payment-requests')).find(item => item.id === selected.id);
+      if (fresh) await open(fresh);
+      setMessage('Изменения сохранены. Скачайте обновлённый XLSX перед передачей мерчанту.');
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+  async function removeRequest() {
+    if (!window.confirm(`Удалить запрос «${selected.external_ref}»? Он исчезнет из списка, действие останется в аудите.`)) return;
+    setBusy(true); setError('');
+    try { await post('/api/payment-request/delete', { id: selected.id, version: String(selected.version) }); setSelected(null); setRows([]); setEditing(false); await load(); setMessage('Запрос удалён.'); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
   async function submit(event) {
     event.preventDefault();
     if (!draftRows.length || draftRows.length > 500) { setError('Добавьте от 1 до 500 реквизитов.'); return; }
@@ -264,6 +288,11 @@ export function PaymentRequests({ role }) {
       </form> : <p>Загрузка…</p>}</CardContent>
     </Card>}
     <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы проверить карты и скачать XLSX для мерчанта.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">Карт: {item.card_count}</span><span className="text-sm text-muted-foreground">Ответных реестров: {item.response_count}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
-    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}.</CardDescription></CardHeader><CardContent><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a><div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div></CardContent></Card>}
+    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}.</CardDescription></CardHeader><CardContent>
+      <div className="flex flex-wrap gap-2"><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a>{canCreate && selected.mode === 'cards' && selected.response_count === 0 && <><Button type="button" variant="outline" onClick={() => { setEditing(value => !value); setError(''); }}> {editing ? 'Отмена редактирования' : 'Изменить карты'} </Button><Button type="button" variant="destructive" disabled={busy} onClick={removeRequest}>Удалить запрос</Button></>}</div>
+      {selected.response_count > 0 && <p className="mt-4 text-sm text-muted-foreground">К запросу привязан ответный реестр. Его состав сохранён для истории и сверки.</p>}
+      {editing ? <form className="mt-5 grid gap-3" onSubmit={saveEdit}><p className="text-sm text-muted-foreground">Добавьте или удалите реквизиты. После сохранения прежний XLSX замените обновлённым.</p>{editRows.map((row, index) => <div key={row.key} className="grid gap-3 rounded-xl border p-4"><div className="flex items-center justify-between"><strong>Реквизит {index + 1}</strong><Button type="button" variant="outline" size="sm" onClick={() => setEditRows(current => current.filter(item => item.key !== row.key))}>Удалить строку</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={new Set(editRows.map(item => item.card_id).filter(Boolean))} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, card_id: value } : item))} /></label><label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: value } : item))} onContactSelect={contact => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: contact.full_name, phone: contact.phone } : item))} /></label><label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, phone: value } : item))} onContactSelect={contact => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: contact.full_name, phone: contact.phone } : item))} /></label></div></div>)}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={editRows.length >= 500} onClick={() => setEditRows(current => [...current, blankRow()])}>Добавить реквизит +</Button><Button type="submit" disabled={busy || !editRows.length}>{busy ? 'Сохранение…' : 'Сохранить изменения'}</Button></div></form> : <div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div>}
+    </CardContent></Card>}
+    {(error || message) && <div className="mt-4"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}</div>}
   </PageState>;
 }

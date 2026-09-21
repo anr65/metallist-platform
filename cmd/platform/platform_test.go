@@ -485,6 +485,12 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	if responseStatus != 201 {
 		t.Fatal("linked response rejected", responseStatus, responseData)
 	}
+	if editStatus, _ := req(t, a.updatePaymentRequest, operator, M{"id": requestID, "version": "1", "rows": []M{{"card_id": card, "contact_id": contactID}}}); editStatus != 409 {
+		t.Fatal("linked request edited", editStatus)
+	}
+	if deleteStatus, _ := req(t, a.deletePaymentRequest, operator, M{"id": requestID, "version": "1"}); deleteStatus != 409 {
+		t.Fatal("linked request deleted", deleteStatus)
+	}
 	var leaked string
 	if e = a.db.QueryRow("SELECT raw::text FROM registry_rows ORDER BY row_no LIMIT 1").Scan(&leaked); e != nil || strings.Contains(leaked, lines[4][1]) {
 		t.Fatal("full card number stored in import rows", e)
@@ -501,7 +507,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)
 	var requests []M
 	_ = json.Unmarshal(w.Body.Bytes(), &requests)
-	if w.Code != 200 || len(requests) != 1 || requests[0]["response_count"] != float64(0) || requests[0]["planned_total"] != nil {
+	if w.Code != 200 || len(requests) != 1 || requests[0]["response_count"] != float64(1) || requests[0]["planned_total"] != nil {
 		t.Fatal("preview changed financial totals", w.Body.String())
 	}
 	registryID := responseData["id"].(string)
@@ -514,6 +520,95 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &requests)
 	if w.Code != 200 || len(requests) != 1 || requests[0]["response_count"] != float64(1) || requests[0]["difference"] != nil {
 		t.Fatal("confirmed response changed the card request plan", w.Body.String())
+	}
+}
+
+func TestOperatorCanEditAndDeleteUnlinkedCardRequest(t *testing.T) {
+	a := testApp(t)
+	_, merchant, bank, firstCard := fixtures(t, a)
+	operator := User{ID: id(), Login: "operator", Name: "Операционист", Role: "operator"}
+	accountant := User{ID: id(), Role: "accountant"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x'),($4,'accountant','Бухгалтер','accountant','x')", operator.ID, operator.Login, operator.Name, accountant.ID); e != nil {
+		t.Fatal(e)
+	}
+	secondCard := id()
+	pan := ""
+	for digit := byte('0'); digit <= '9'; digit++ {
+		candidate := "000000000006124" + string(digit)
+		if validLuhn(candidate) {
+			pan = candidate
+			break
+		}
+	}
+	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Другой владелец',$3,$4)", secondCard, bank, "000000******"+pan[12:], pan[12:]); e != nil {
+		t.Fatal(e)
+	}
+	if e := savePAN(secondCard, pan); e != nil {
+		t.Fatal(e)
+	}
+	status, contact := req(t, a.catalogCreate, operator, M{"kind": "payment_contact", "full_name": "Тестов Алексей Учебович", "phone": "+70000000001"})
+	if status != 201 {
+		t.Fatal(status, contact)
+	}
+	contactID := contact["id"].(string)
+	status, created := req(t, a.createPaymentRequest, operator, M{"merchant_id": merchant, "external_ref": "EDIT-1", "mode": "cards", "rows": []M{{"card_id": firstCard, "contact_id": contactID}}})
+	if status != 201 {
+		t.Fatal(status, created)
+	}
+	requestID := created["id"].(string)
+	update := M{"id": requestID, "version": "1", "rows": []M{{"card_id": secondCard, "contact_id": contactID}, {"card_id": firstCard, "contact_id": contactID}}}
+	if status, _ := req(t, a.updatePaymentRequest, accountant, update); status != 403 {
+		t.Fatal("accountant edited request", status)
+	}
+	if status, _ := req(t, a.updatePaymentRequest, operator, M{"id": requestID, "version": "1", "rows": []M{{"card_id": firstCard, "contact_id": contactID}, {"card_id": firstCard, "contact_id": contactID}}}); status != 400 {
+		t.Fatal("duplicate card accepted", status)
+	}
+	if status, updated := req(t, a.updatePaymentRequest, operator, update); status != 200 || updated["card_count"] != float64(2) || updated["version"] != float64(2) {
+		t.Fatal("update failed", status, updated)
+	}
+	if status, _ := req(t, a.updatePaymentRequest, operator, update); status != 409 {
+		t.Fatal("stale update accepted", status)
+	}
+	var count, version int
+	if e := a.db.QueryRow("SELECT payment_count,version FROM payment_requests WHERE id=$1", requestID).Scan(&count, &version); e != nil || count != 2 || version != 2 {
+		t.Fatal("request state", count, version, e)
+	}
+	update = M{"id": requestID, "version": "2", "rows": []M{{"card_id": secondCard, "contact_id": contactID}}}
+	if status, updated := req(t, a.updatePaymentRequest, operator, update); status != 200 || updated["card_count"] != float64(1) {
+		t.Fatal("card removal failed", status, updated)
+	}
+	var remaining string
+	if e := a.db.QueryRow("SELECT card_id FROM payment_request_rows WHERE request_id=$1", requestID).Scan(&remaining); e != nil || remaining != secondCard {
+		t.Fatal("removed card remains", remaining, e)
+	}
+	if status, _ := req(t, a.deletePaymentRequest, accountant, M{"id": requestID, "version": "3"}); status != 403 {
+		t.Fatal("accountant deleted request", status)
+	}
+	if status, _ := req(t, a.deletePaymentRequest, operator, M{"id": requestID, "version": "3"}); status != 200 {
+		t.Fatal("delete failed", status)
+	}
+	if status, _ := req(t, a.deletePaymentRequest, operator, M{"id": requestID, "version": "3"}); status != 409 {
+		t.Fatal("repeat delete accepted", status)
+	}
+	w := httptest.NewRecorder()
+	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), operator)
+	var listed []M
+	_ = json.Unmarshal(w.Body.Bytes(), &listed)
+	if w.Code != 200 || len(listed) != 0 {
+		t.Fatal("deleted request still listed", w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+requestID, nil), operator)
+	if w.Code != 404 {
+		t.Fatal("deleted request exported", w.Code)
+	}
+	var audited int
+	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE object_id=$1 AND action IN ('payment_request_update','payment_request_delete')", requestID).Scan(&audited); e != nil || audited != 3 {
+		t.Fatal("missing edit audit", audited, e)
+	}
+	var postings int
+	if e := a.db.QueryRow("SELECT count(*) FROM postings").Scan(&postings); e != nil || postings != 0 {
+		t.Fatal("edit changed ledger", postings, e)
 	}
 }
 func TestExpenseDateAndSource(t *testing.T) {

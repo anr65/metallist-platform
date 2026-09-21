@@ -163,7 +163,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 	specs["request_cards"] = `SELECT c.id,c.mask,b.name AS bank,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone,c.pan_ciphertext IS NOT NULL AS pan_in_db
 		FROM cards c JOIN banks b ON b.id=c.bank_id
 		LEFT JOIN LATERAL (SELECT r.contact_name,r.contact_phone FROM payment_request_rows r JOIN payment_requests p ON p.id=r.request_id
-		WHERE r.card_id=c.id AND r.contact_id IS NOT NULL ORDER BY p.created_at DESC,p.id DESC,r.row_no DESC LIMIT 1) previous ON true
+		WHERE r.card_id=c.id AND r.contact_id IS NOT NULL AND p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC,r.row_no DESC LIMIT 1) previous ON true
 		WHERE c.status='active' ORDER BY b.name,c.mask,c.id`
 	for name, q := range specs {
 		if u.Role == "collector" && name != "cards" {

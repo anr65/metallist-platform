@@ -18,6 +18,9 @@ import (
 var requestReferencePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,79}$`)
 var autoRequestReferencePattern = regexp.MustCompile(`^ЗК-[0-9]{4}-([0-9]{4,})$`)
 var paymentPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{10,14}$`)
+var requestIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func validID(value string) bool { return requestIDPattern.MatchString(value) }
 
 type requestCard struct {
 	cardID, mask, bank, number, name, phone, contactID string
@@ -351,13 +354,191 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	respond(w, 201, M{"id": requestID, "card_count": len(selected)})
 }
 
+// A linked response may already have been checked against the exact card set.
+// Locking the request also serializes this check with registry upload.
+func lockEditableRequest(tx *sql.Tx, requestID string) (int, error) {
+	var version int
+	var mode string
+	var deletedAt sql.NullTime
+	if e := tx.QueryRow("SELECT version,mode,deleted_at FROM payment_requests WHERE id=$1 FOR UPDATE", requestID).Scan(&version, &mode, &deletedAt); e != nil {
+		return 0, errors.New("запрос не найден")
+	}
+	if mode != "cards" || deletedAt.Valid {
+		return 0, errors.New("этот запрос нельзя изменить")
+	}
+	var linked bool
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM registries WHERE payment_request_id=$1)", requestID).Scan(&linked); e != nil {
+		return 0, e
+	}
+	if linked {
+		return 0, errors.New("к запросу уже привязан ответный реестр")
+	}
+	return version, nil
+}
+
+func (a *App) updatePaymentRequest(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
+		return
+	}
+	m, e := jsonBody(r)
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	requestID := str(m, "id")
+	if !validID(requestID) {
+		fail(w, 400, errors.New("неверный запрос"))
+		return
+	}
+	expectedVersion, e := strconv.Atoi(str(m, "version"))
+	if e != nil || expectedVersion < 1 {
+		fail(w, 400, errors.New("обновите запрос перед сохранением"))
+		return
+	}
+	manualRows, e := cardRequestRows(m)
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	tx, e := a.tx()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer tx.Rollback()
+	version, e := lockEditableRequest(tx, requestID)
+	if e != nil {
+		fail(w, 409, e)
+		return
+	}
+	if version != expectedVersion {
+		fail(w, 409, errors.New("запрос уже изменён; откройте его заново"))
+		return
+	}
+	oldRows := []M{}
+	prior, e := tx.Query("SELECT card_id,contact_id FROM payment_request_rows WHERE request_id=$1 ORDER BY row_no", requestID)
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	for prior.Next() {
+		var cardID, contactID string
+		if e = prior.Scan(&cardID, &contactID); e != nil {
+			break
+		}
+		oldRows = append(oldRows, M{"card_id": cardID, "contact_id": contactID})
+	}
+	if e == nil {
+		e = prior.Err()
+	}
+	prior.Close()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	newRows := []M{}
+	for i, row := range manualRows {
+		var mask, name, phone string
+		var ciphertext []byte
+		e = tx.QueryRow(`SELECT c.mask,c.pan_ciphertext,p.full_name,p.phone FROM cards c
+			JOIN payment_contacts p ON p.id=$2 AND p.active
+			WHERE c.id=$1 AND c.status='active' FOR SHARE OF c,p`, row.cardID, row.contactID).Scan(&mask, &ciphertext, &name, &phone)
+		if e != nil {
+			fail(w, 400, fmt.Errorf("строка %d: карта или контакт недоступны", i+1))
+			return
+		}
+		if _, e = readCardPAN(row.cardID, ciphertext); e != nil {
+			fail(w, 409, fmt.Errorf("строка %d: полный номер карты не сохранён", i+1))
+			return
+		}
+		newRows = append(newRows, M{"card_id": row.cardID, "contact_id": row.contactID})
+	}
+	if _, e = tx.Exec("DELETE FROM payment_request_rows WHERE request_id=$1", requestID); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	for i, row := range manualRows {
+		var name, phone string
+		if e = tx.QueryRow("SELECT full_name,phone FROM payment_contacts WHERE id=$1", row.contactID).Scan(&name, &phone); e != nil {
+			fail(w, 500, e)
+			return
+		}
+		if _, e = tx.Exec("INSERT INTO payment_request_rows(id,request_id,row_no,card_id,contact_id,contact_name,contact_phone) VALUES($1,$2,$3,$4,$5,$6,$7)", id(), requestID, i+1, row.cardID, row.contactID, name, phone); e != nil {
+			fail(w, 500, e)
+			return
+		}
+	}
+	if _, e = tx.Exec("UPDATE payment_requests SET payment_count=$2,version=version+1 WHERE id=$1", requestID, len(manualRows)); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = txAudit(tx, u.ID, "web", "payment_request_update", "payment_request", requestID, "success", "", M{"before": oldRows, "after": newRows, "version": version + 1}); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"id": requestID, "card_count": len(manualRows), "version": version + 1})
+}
+
+func (a *App) deletePaymentRequest(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
+		return
+	}
+	m, e := jsonBody(r)
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	requestID := str(m, "id")
+	if !validID(requestID) {
+		fail(w, 400, errors.New("неверный запрос"))
+		return
+	}
+	expectedVersion, e := strconv.Atoi(str(m, "version"))
+	if e != nil || expectedVersion < 1 {
+		fail(w, 400, errors.New("обновите запрос перед удалением"))
+		return
+	}
+	tx, e := a.tx()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer tx.Rollback()
+	version, e := lockEditableRequest(tx, requestID)
+	if e != nil {
+		fail(w, 409, e)
+		return
+	}
+	if version != expectedVersion {
+		fail(w, 409, errors.New("запрос уже изменён; откройте его заново"))
+		return
+	}
+	if _, e = tx.Exec("UPDATE payment_requests SET deleted_at=now(),deleted_by=$2,version=version+1 WHERE id=$1", requestID, u.ID); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = txAudit(tx, u.ID, "web", "payment_request_delete", "payment_request", requestID, "success", "", M{"version": version + 1}); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"id": requestID})
+}
+
 func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.mode,p.payment_count,p.created_at,
-		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id AND r.status='posted')
-		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id ORDER BY p.created_at DESC LIMIT 100`)
+	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.mode,p.payment_count,p.created_at,p.version,
+		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id)
+		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100`)
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -366,13 +547,13 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	out := []M{}
 	for rows.Next() {
 		var reqID, merchantID, merchant, ref, mode string
-		var count, postedCount int
+		var count, linkedCount, version int
 		var createdAt interface{}
-		if e = rows.Scan(&reqID, &merchantID, &merchant, &ref, &mode, &count, &createdAt, &postedCount); e != nil {
+		if e = rows.Scan(&reqID, &merchantID, &merchant, &ref, &mode, &count, &createdAt, &version, &linkedCount); e != nil {
 			fail(w, 500, e)
 			return
 		}
-		out = append(out, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "mode": mode, "card_count": count, "response_count": postedCount, "created_at": createdAt})
+		out = append(out, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "mode": mode, "card_count": count, "response_count": linkedCount, "version": version, "created_at": createdAt})
 	}
 	respond(w, 200, out)
 }
@@ -381,7 +562,7 @@ func (a *App) paymentRequestRows(w http.ResponseWriter, r *http.Request, u User)
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	rows, e := a.db.Query("SELECT x.row_no,c.mask,b.name,COALESCE(x.contact_name,x.synthetic_name),COALESCE(x.contact_phone,'') FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", r.URL.Query().Get("id"))
+	rows, e := a.db.Query("SELECT x.row_no,x.card_id,COALESCE(x.contact_id::text,''),c.mask,b.name,COALESCE(x.contact_name,x.synthetic_name),COALESCE(x.contact_phone,'') FROM payment_request_rows x JOIN payment_requests p ON p.id=x.request_id AND p.deleted_at IS NULL JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", r.URL.Query().Get("id"))
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -391,15 +572,19 @@ func (a *App) paymentRequestRows(w http.ResponseWriter, r *http.Request, u User)
 	canSeePhone := u.Role == "chief" || u.Role == "operator"
 	for rows.Next() {
 		var n int
-		var mask, bank, name, phone string
-		if e = rows.Scan(&n, &mask, &bank, &name, &phone); e != nil {
+		var cardID, contactID, mask, bank, name, phone string
+		if e = rows.Scan(&n, &cardID, &contactID, &mask, &bank, &name, &phone); e != nil {
 			fail(w, 500, e)
 			return
 		}
 		if !canSeePhone {
 			phone = ""
 		}
-		out = append(out, M{"row_no": n, "mask": mask, "bank": bank, "contact_name": name, "contact_phone": phone})
+		item := M{"row_no": n, "mask": mask, "bank": bank, "contact_name": name, "contact_phone": phone}
+		if canSeePhone {
+			item["card_id"], item["contact_id"] = cardID, contactID
+		}
+		out = append(out, item)
 	}
 	respond(w, 200, out)
 }
@@ -410,7 +595,7 @@ func (a *App) paymentRequestExport(w http.ResponseWriter, r *http.Request, u Use
 	}
 	requestID := r.URL.Query().Get("id")
 	var reference string
-	if e := a.db.QueryRow("SELECT external_ref FROM payment_requests WHERE id=$1 AND mode='cards'", requestID).Scan(&reference); e != nil {
+	if e := a.db.QueryRow("SELECT external_ref FROM payment_requests WHERE id=$1 AND mode='cards' AND deleted_at IS NULL", requestID).Scan(&reference); e != nil {
 		fail(w, 404, errors.New("запрос не найден"))
 		return
 	}
@@ -463,7 +648,7 @@ func (a *App) logExport(actor, requestID, hash string) error {
 
 func verifyRequest(tx *sql.Tx, requestID, merchantID string) (map[string]string, map[string]string, error) {
 	var owner string
-	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1", requestID).Scan(&owner); e != nil || owner != merchantID {
+	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1 AND deleted_at IS NULL FOR SHARE", requestID).Scan(&owner); e != nil || owner != merchantID {
 		return nil, nil, errors.New("запрос на карты не принадлежит выбранному мерчанту")
 	}
 	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)

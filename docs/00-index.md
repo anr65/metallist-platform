@@ -69,6 +69,7 @@
 - [Миграция ФИО и телефонов запросов карт](operations/payment-contact-migration.md)
 - [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
 - [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
+- [Редактирование запросов карт](operations/card-request-edit-migration.md)
 - [Загрузка полных номеров существующих карт](operations/card-pan-import.md)
 - [Исправление номера карты операционистом](operations/card-pan-correction.md)
 - [Справочник банков НСПК для новых карт](operations/nspk-bank-directory.md)
