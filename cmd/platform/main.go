@@ -287,6 +287,7 @@ func main() {
 	mux.HandleFunc("/api/draft/reverse", app.auth(app.reverseDraft))
 	mux.HandleFunc("/api/observation", app.auth(app.observation))
 	mux.HandleFunc("/api/report", app.auth(app.report))
+	mux.HandleFunc("/api/balances", app.auth(app.balances))
 	mux.HandleFunc("/api/report/approve", app.auth(app.approveReport))
 	mux.HandleFunc("/api/audit", app.auth(app.audit))
 	mux.HandleFunc("/telegram/webhook", app.telegram)

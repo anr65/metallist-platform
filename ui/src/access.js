@@ -1,8 +1,8 @@
 export const navigationByRole = {
-  chief: ['overview', 'requests', 'registries', 'expenses', 'money', 'catalog', 'reports', 'audit'],
+  chief: ['overview', 'requests', 'registries', 'expenses', 'money', 'balances', 'catalog', 'reports', 'audit'],
   operator: ['requests', 'registries', 'money', 'catalog'],
-  accountant: ['overview', 'requests', 'registries', 'catalog', 'reports', 'audit'],
-  auditor: ['overview', 'requests', 'registries', 'catalog', 'reports', 'audit'],
+  accountant: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
+  auditor: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
   sysadmin: ['catalog', 'audit'],
   collector: ['catalog'],
 };

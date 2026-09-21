@@ -4,7 +4,7 @@ import { allowedPages, pageForRole, stripQueryFromLocation } from './access.js';
 
 test('operator starts on card requests and cannot open restricted sections by URL', () => {
   assert.equal(pageForRole('operator', ''), 'requests');
-  for (const hash of ['#overview', '#expenses', '#reports', '#audit']) {
+  for (const hash of ['#overview', '#expenses', '#balances', '#reports', '#audit']) {
     assert.equal(pageForRole('operator', hash), 'requests');
   }
   assert.equal(pageForRole('operator', '#registries'), 'registries');
@@ -14,6 +14,9 @@ test('operator starts on card requests and cannot open restricted sections by UR
 
 test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('chief', ''), 'overview');
+  assert.equal(pageForRole('chief', '#balances'), 'balances');
+  assert.equal(pageForRole('accountant', '#balances'), 'balances');
+  assert.equal(pageForRole('auditor', '#balances'), 'balances');
   assert.equal(pageForRole('sysadmin', ''), 'catalog');
   assert.equal(pageForRole('collector', '#reports'), 'catalog');
   assert.equal(pageForRole('accountant', '#expenses'), 'overview');
