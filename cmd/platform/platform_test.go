@@ -149,14 +149,23 @@ func TestPANValidationAndEncryption(t *testing.T) {
 func TestCardPANCreationAndAccess(t *testing.T) {
 	a := testApp(t)
 	chief, _, bank, _ := fixtures(t, a)
-	operator := User{ID: id(), Role: "operator"}
-	body := M{"kind": "card", "bank_id": bank, "owner_label": "Тестовый владелец", "pan": "4111111111111111"}
-	if status, _ := req(t, a.catalogCreate, operator, body); status != 403 {
-		t.Fatal("operator added full card number", status)
+	operator := User{ID: id(), Login: "new-card-operator", Name: "Операционист", Role: "operator"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x')", operator.ID, operator.Login, operator.Name); e != nil {
+		t.Fatal(e)
 	}
-	status, created := req(t, a.catalogCreate, chief, body)
+	body := M{"kind": "card", "bank_id": bank, "owner_label": "Тестовый владелец", "pan": "4111111111111111"}
+	if status, _ := req(t, a.catalogCreate, User{Role: "accountant"}, body); status != 403 {
+		t.Fatal("accountant added card", status)
+	}
+	if status, _ := req(t, a.catalogCreate, operator, M{"kind": "bank", "code": "NEW", "name": "Новый банк"}); status != 403 {
+		t.Fatal("operator added bank", status)
+	}
+	if status, _ := req(t, a.catalogCreate, operator, M{"kind": "card", "bank_id": bank, "owner_label": "  ", "pan": "4111111111111111"}); status != 400 {
+		t.Fatal("empty card owner accepted", status)
+	}
+	status, created := req(t, a.catalogCreate, operator, body)
 	if status != 201 {
-		t.Fatal("chief could not add card", status, created)
+		t.Fatal("operator could not add card", status, created)
 	}
 	cardID := created["id"].(string)
 	var mask string
@@ -166,6 +175,16 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	pan, e := loadPAN(cardID)
 	if e != nil || pan != "4111111111111111" {
 		t.Fatal("full number not encrypted and recoverable", e)
+	}
+	if status, _ := req(t, a.catalogCreate, operator, body); status != 400 {
+		t.Fatal("duplicate card accepted", status)
+	}
+	var operatorAudit int
+	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE actor_id=$1 AND action='catalog_create' AND object_type='card' AND outcome='success'", operator.ID).Scan(&operatorAudit); e != nil || operatorAudit != 1 {
+		t.Fatal("operator card creation not audited", operatorAudit, e)
+	}
+	if status, _ := req(t, a.catalogCreate, chief, M{"kind": "card", "bank_id": bank, "owner_label": "Карта администратора", "pan": "4242424242424242"}); status != 201 {
+		t.Fatal("chief could not add card", status)
 	}
 	if status, _ := req(t, a.setCardPAN, operator, M{"card_id": cardID, "pan": pan}); status != 403 {
 		t.Fatal("operator changed full number", status)

@@ -249,7 +249,7 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		if !a.require(w, u, "sysadmin") {
 			return
 		}
-	} else if kind == "payment_contact" {
+	} else if kind == "payment_contact" || kind == "card" {
 		if !a.require(w, u, "chief", "operator") {
 			return
 		}
@@ -277,6 +277,12 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		_, e = a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,$2,$3)", newID, str(m, "name"), str(m, "custodian_kind"))
 	case "card":
 		pan := str(m, "pan")
+		bankID := str(m, "bank_id")
+		ownerLabel := strings.TrimSpace(str(m, "owner_label"))
+		if !cardIDPattern.MatchString(bankID) || len([]rune(ownerLabel)) == 0 || len([]rune(ownerLabel)) > 200 {
+			e = errors.New("выберите банк и укажите ФИО владельца карты")
+			break
+		}
 		if !panPattern.MatchString(pan) || !validLuhn(pan) {
 			e = errors.New("укажите действительный полный номер карты")
 			break
@@ -289,7 +295,7 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		if e = savePAN(newID, pan); e != nil {
 			break
 		}
-		_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, str(m, "bank_id"), str(m, "owner_label"), mask, mask[len(mask)-4:])
+		_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, bankID, ownerLabel, mask, mask[len(mask)-4:])
 		if e != nil {
 			path, _ := vaultPath(newID)
 			_ = os.Remove(path)
