@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up Metallist production database and encrypted files
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/metallist-platform/current/scripts/backup-production.sh

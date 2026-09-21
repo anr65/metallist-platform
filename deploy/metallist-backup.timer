@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Metallist production backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=metallist-backup.service
+
+[Install]
+WantedBy=timers.target
