@@ -196,15 +196,16 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
-	cents := claimed
-	if kind == "handover" {
-		cents, e = amount(str(m, "confirm_amount"))
-		if e != nil {
-			fail(w, 400, e)
-			return
-		}
+	cents, e := amount(str(m, "confirm_amount"))
+	if e != nil {
+		fail(w, 400, e)
+		return
 	}
-	if str(m, "confirm_amount") != rub(cents) || (kind != "handover" && cents != claimed) {
+	if kind == "handover" && cents > claimed {
+		fail(w, 409, errors.New("подтверждённая сумма превышает заявленную"))
+		return
+	}
+	if kind != "handover" && cents != claimed {
 		fail(w, 409, errors.New("подтвердите точную сумму"))
 		return
 	}
@@ -247,6 +248,59 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	respond(w, 200, M{"status": "posted"})
+}
+func (a *App) rejectDraft(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != "POST" || !a.require(w, u, "chief") {
+		return
+	}
+	m, e := jsonBody(r)
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	reason := str(m, "reason")
+	if reason == "" {
+		fail(w, 400, errors.New("укажите причину отклонения"))
+		return
+	}
+	tx, e := a.tx()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer tx.Rollback()
+	var kind, status string
+	var version int
+	e = tx.QueryRow("SELECT kind,status,version FROM drafts WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&kind, &status, &version)
+	if e != nil {
+		fail(w, 404, e)
+		return
+	}
+	if status == "rejected" {
+		respond(w, 200, M{"status": "already_rejected"})
+		return
+	}
+	if status != "draft" {
+		fail(w, 409, errors.New("отклонить можно только черновик"))
+		return
+	}
+	if fmt.Sprint(version) != str(m, "version") {
+		fail(w, 409, errors.New("устаревший предпросмотр"))
+		return
+	}
+	if _, e = tx.Exec("UPDATE drafts SET status='rejected',version=version+1 WHERE id=$1", str(m, "id")); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = txAudit(tx, u.ID, "web", "draft_reject", kind, str(m, "id"), "success", reason, M{}); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 409, e)
+		return
+	}
+	respond(w, 200, M{"status": "rejected"})
 }
 func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, error) {
 	debit := func(account, merchant, card, custodian, ref, category string) Posting {
@@ -325,8 +379,12 @@ func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, erro
 		if e != nil {
 			return nil, e
 		}
-		if e = need(fa, "custodian", from); e != nil {
+		availableCash, e := balance(tx, fa, "custodian", from)
+		if e != nil {
 			return nil, e
+		}
+		if availableCash < v {
+			return nil, fmt.Errorf("у отправителя учтено %s ₽, для передачи не хватает %s ₽", rub(availableCash), rub(v-availableCash))
 		}
 		ta, _ := cashAccount(tx, to)
 		return []Posting{debit(ta, "", "", to, "", ""), credit(fa, "", "", from, "", "")}, nil

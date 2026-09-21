@@ -1257,6 +1257,93 @@ func TestManualRateAndDraftMoney(t *testing.T) {
 		t.Fatal(cash)
 	}
 }
+func TestHandoverConfirmationAmountAndDraftRejection(t *testing.T) {
+	a := testApp(t)
+	u, _, _, _ := fixtures(t, a)
+	var collector, chief string
+	if e := a.db.QueryRow("SELECT id FROM custodians WHERE kind='collector'").Scan(&collector); e != nil {
+		t.Fatal(e)
+	}
+	if e := a.db.QueryRow("SELECT id FROM custodians WHERE kind='chief'").Scan(&chief); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_funding", id(), "handover-funding-"+id(), u.ID, time.Now(), time.Now(), []Posting{{Account: "1200", Side: "debit", Amount: 156000000, Custodian: collector}, {Account: "3100", Side: "credit", Amount: 156000000}}, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	code, created := req(t, a.draft, u, M{"kind": "handover", "from_custodian_id": collector, "to_custodian_id": chief, "amount": "1560000"})
+	if code != 201 {
+		t.Fatal(created)
+	}
+	draftID := created["id"].(string)
+	code, _ = req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "1560001"})
+	if code != 409 {
+		t.Fatal("handover greater than requested amount accepted")
+	}
+	code, result := req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "1560000"})
+	if code != 200 || result["status"] != "posted" {
+		t.Fatal("whole-ruble amount rejected", code, result)
+	}
+	code, result = req(t, a.confirmDraft, u, M{"id": draftID, "version": "1", "confirm_amount": "1560000.00"})
+	if code != 200 || result["status"] != "already_posted" {
+		t.Fatal("confirmation retry failed", code, result)
+	}
+	tx, e = a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	left, _ := balance(tx, "1200", "custodian", collector)
+	received, _ := balance(tx, "1210", "custodian", chief)
+	tx.Rollback()
+	if left != 0 || received != 156000000 {
+		t.Fatal("handover balance mismatch", left, received)
+	}
+	code, _ = req(t, a.rejectDraft, u, M{"id": draftID, "version": "1", "reason": "ошибка"})
+	if code != 409 {
+		t.Fatal("posted draft rejected")
+	}
+
+	code, created = req(t, a.draft, u, M{"kind": "handover", "from_custodian_id": collector, "to_custodian_id": chief, "amount": "100.00"})
+	if code != 201 {
+		t.Fatal(created)
+	}
+	rejectedID := created["id"].(string)
+	code, result = req(t, a.confirmDraft, u, M{"id": rejectedID, "version": "1", "confirm_amount": "100"})
+	if code != 409 || !strings.Contains(result["error"].(string), "не хватает 100.00 ₽") {
+		t.Fatal("cash shortfall not explained", code, result)
+	}
+	code, _ = req(t, a.rejectDraft, u, M{"id": rejectedID, "version": "2", "reason": "дубль"})
+	if code != 409 {
+		t.Fatal("stale rejection accepted")
+	}
+	code, result = req(t, a.rejectDraft, u, M{"id": rejectedID, "version": "1", "reason": "дубль"})
+	if code != 200 || result["status"] != "rejected" {
+		t.Fatal("draft rejection failed", code, result)
+	}
+	code, result = req(t, a.rejectDraft, u, M{"id": rejectedID, "version": "1", "reason": "дубль"})
+	if code != 200 || result["status"] != "already_rejected" {
+		t.Fatal("draft rejection retry failed", code, result)
+	}
+	code, _ = req(t, a.confirmDraft, u, M{"id": rejectedID, "version": "1", "confirm_amount": "100"})
+	if code != 409 {
+		t.Fatal("rejected draft posted")
+	}
+	var entries, audits int
+	if e = a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", rejectedID).Scan(&entries); e != nil || entries != 0 {
+		t.Fatal("rejection created ledger entry", entries, e)
+	}
+	if e = a.db.QueryRow("SELECT count(*) FROM audit_events WHERE object_id=$1 AND action='draft_reject' AND outcome='success' AND reason='дубль'", rejectedID).Scan(&audits); e != nil || audits != 1 {
+		t.Fatal("rejection audit mismatch", audits, e)
+	}
+}
+
 func TestShortageWriteoffRecoveryAndSurplus(t *testing.T) {
 	a := testApp(t)
 	u, _, _, _ := fixtures(t, a)

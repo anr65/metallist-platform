@@ -283,6 +283,7 @@ func main() {
 	mux.HandleFunc("/api/draft", app.auth(app.draft))
 	mux.HandleFunc("/api/drafts", app.auth(app.drafts))
 	mux.HandleFunc("/api/draft/confirm", app.auth(app.confirmDraft))
+	mux.HandleFunc("/api/draft/reject", app.auth(app.rejectDraft))
 	mux.HandleFunc("/api/draft/reverse", app.auth(app.reverseDraft))
 	mux.HandleFunc("/api/observation", app.auth(app.observation))
 	mux.HandleFunc("/api/report", app.auth(app.report))
