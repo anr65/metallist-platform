@@ -75,7 +75,7 @@ func (a *App) telegramSetupCommands() {
 		return
 	}
 	url := os.Getenv("TELEGRAM_WEBHOOK_URL")
-	if url == "" && os.Getenv("APP_ENV") == "demo" {
+	if url == "" && os.Getenv("APP_ENV") == "production" {
 		url = "https://metallcash.work/telegram/webhook"
 	}
 	if url != "" {

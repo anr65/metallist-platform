@@ -165,6 +165,11 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	sourceID, regID := id(), id()
 	path := filepath.Join(a.storage, sum)
+	encrypted, encryptErr := sealSensitive(data, []byte(sum))
+	if encryptErr != nil {
+		fail(w, 500, errors.New("защищённое хранение документов недоступно"))
+		return
+	}
 	stored, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if openErr != nil {
 		fail(w, 409, errors.New("этот файл уже обрабатывается или загружен"))
@@ -176,7 +181,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			_ = os.Remove(path)
 		}
 	}()
-	if written, writeErr := stored.Write(data); writeErr != nil || written != len(data) {
+	if written, writeErr := stored.Write(encrypted); writeErr != nil || written != len(encrypted) {
 		_ = stored.Close()
 		if writeErr == nil {
 			writeErr = io.ErrShortWrite

@@ -3,13 +3,10 @@ package main
 import (
 	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,21 +18,6 @@ import (
 var requestReferencePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,79}$`)
 var autoRequestReferencePattern = regexp.MustCompile(`^ЗК-[0-9]{4}-([0-9]{4,})$`)
 var paymentPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{10,14}$`)
-var demoPaymentPhonePattern = regexp.MustCompile(`^\+7000000[0-9]{4}$`)
-var syntheticNames = []string{
-	"Тестов Алексей Учебович", "Демина Мария Примеровна",
-	"Образцов Илья Тестович", "Учебная Анна Образцовна",
-	"Примеров Павел Демович", "Тестова Елена Учебовна",
-}
-
-func approvedSyntheticName(name string) bool {
-	for _, candidate := range syntheticNames {
-		if name == candidate {
-			return true
-		}
-	}
-	return false
-}
 
 type requestCard struct {
 	cardID, mask, bank, number, name, phone, contactID string
@@ -50,9 +32,6 @@ func normalizePaymentPhone(raw string) (string, error) {
 	}
 	if !paymentPhonePattern.MatchString(s) {
 		return "", errors.New("номер телефона должен содержать от 11 до 15 цифр и код страны")
-	}
-	if os.Getenv("APP_ENV") == "demo" && !demoPaymentPhonePattern.MatchString(s) {
-		return "", errors.New("в демо используйте только вымышленный номер вида +7 000 000-00-01")
 	}
 	return s, nil
 }
@@ -174,25 +153,6 @@ func (a *App) paymentContacts(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, M{"items": items, "page": page, "page_size": pageSize, "total": total, "has_more": page*pageSize < total})
 }
 
-func demoCardIdentity(cardID, mask string) (string, string, error) {
-	if !cardMaskPattern.MatchString(mask) {
-		return "", "", errors.New("неверная маска карты")
-	}
-	h := sha256.Sum256([]byte(cardID))
-	middle := binary.BigEndian.Uint32(h[:4]) % 1_000_000
-	number := mask[:6] + fmt.Sprintf("%06d", middle) + mask[len(mask)-4:]
-	if validLuhn(number) {
-		b := []byte(number)
-		if b[6] == '9' {
-			b[6] = '0'
-		} else {
-			b[6]++
-		}
-		number = string(b)
-	}
-	return number, syntheticNames[int(h[4])%len(syntheticNames)], nil
-}
-
 func validLuhn(number string) bool {
 	sum := 0
 	for i := len(number) - 1; i >= 0; i-- {
@@ -213,8 +173,8 @@ func requestWorkbook(reference string, rows []requestCard) ([]byte, error) {
 	defer f.Close()
 	sheet := "Карты к оплате"
 	f.SetSheetName("Sheet1", sheet)
-	f.SetCellStr(sheet, "A1", "ДЕМО: вымышленные данные, платежи по этим номерам невозможны")
-	f.SetCellStr(sheet, "A2", "Запрос: "+reference)
+	f.SetCellStr(sheet, "A1", "Запрос: "+reference)
+	f.SetCellStr(sheet, "A2", "Суммы указывает мерчант в ответном реестре")
 	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "НОМЕР ТЕЛЕФОНА", "БАНК"} {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 4)
 		f.SetCellStr(sheet, cell, title)
@@ -247,10 +207,6 @@ func requestWorkbook(reference string, rows []requestCard) ([]byte, error) {
 
 func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
-		return
-	}
-	if os.Getenv("APP_ENV") != "demo" && os.Getenv("APP_ENV") != "testing" {
-		fail(w, 403, errors.New("выгрузка полных номеров доступна только в демонстрационном окружении"))
 		return
 	}
 	m, e := jsonBody(r)
@@ -291,31 +247,17 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 400, errors.New("выберите действующего мерчанта"))
 		return
 	}
-	cardRows, e := tx.Query("SELECT c.id,c.mask,b.name,c.owner_label FROM cards c JOIN banks b ON b.id=c.bank_id WHERE c.status='active' ORDER BY b.name,c.mask,c.id")
+	cardRows, e := tx.Query("SELECT c.id,c.mask,b.name FROM cards c JOIN banks b ON b.id=c.bank_id WHERE c.status='active' ORDER BY b.name,c.mask,c.id")
 	if e != nil {
 		fail(w, 500, e)
 		return
 	}
 	cards := []requestCard{}
-	seenNumbers := map[string]bool{}
 	for cardRows.Next() {
 		var card requestCard
-		var ownerLabel string
-		if e = cardRows.Scan(&card.cardID, &card.mask, &card.bank, &ownerLabel); e != nil {
+		if e = cardRows.Scan(&card.cardID, &card.mask, &card.bank); e != nil {
 			break
 		}
-		card.number, card.name, e = demoCardIdentity(card.cardID, card.mask)
-		if e != nil {
-			break
-		}
-		if approvedSyntheticName(ownerLabel) {
-			card.name = ownerLabel
-		}
-		if seenNumbers[card.number] {
-			e = errors.New("для двух карт получился одинаковый учебный номер; измените состав карт")
-			break
-		}
-		seenNumbers[card.number] = true
 		cards = append(cards, card)
 	}
 	if e == nil {
@@ -371,39 +313,27 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 			fail(w, 400, fmt.Errorf("строка %d: выбранный контакт недоступен", i+1))
 			return
 		}
+		if _, e = loadPAN(card.cardID); e != nil {
+			fail(w, 409, fmt.Errorf("строка %d: полный номер карты не сохранён", i+1))
+			return
+		}
 		card.contactID, card.name, card.phone = contact.contactID, contact.name, contact.phone
 		selected = append(selected, card)
 	}
-	file, e := requestWorkbook(ref, selected)
-	if e != nil {
-		fail(w, 500, e)
-		return
-	}
 	requestID := id()
-	path := filepath.Join(a.storage, "payment-request-"+requestID+".xlsx")
-	if e = os.WriteFile(path, file, 0600); e != nil {
-		fail(w, 500, e)
-		return
-	}
-	defer func() {
-		if e != nil {
-			_ = os.Remove(path)
-		}
-	}()
-	hash := sha256.Sum256(file)
-	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,export_path,export_sha256,created_by) VALUES($1,$2,$3,'cards',$4,$5,$6,$7)", requestID, merchantID, ref, len(selected), path, hex.EncodeToString(hash[:]), u.ID)
+	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,created_by) VALUES($1,$2,$3,'cards',$4,$5)", requestID, merchantID, ref, len(selected), u.ID)
 	if e != nil {
 		fail(w, 409, errors.New("такой номер запроса уже есть у мерчанта"))
 		return
 	}
 	for i, row := range selected {
-		_, e = tx.Exec("INSERT INTO payment_request_rows(id,request_id,row_no,card_id,synthetic_number,synthetic_name,contact_id,contact_name,contact_phone) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)", id(), requestID, i+1, row.cardID, row.number, row.name, row.contactID, row.name, row.phone)
+		_, e = tx.Exec("INSERT INTO payment_request_rows(id,request_id,row_no,card_id,contact_id,contact_name,contact_phone) VALUES($1,$2,$3,$4,$5,$6,$7)", id(), requestID, i+1, row.cardID, row.contactID, row.name, row.phone)
 		if e != nil {
 			fail(w, 500, e)
 			return
 		}
 	}
-	if e = txAudit(tx, u.ID, "web", "payment_request_create", "payment_request", requestID, "success", "", M{"card_count": len(selected), "export_sha256": hex.EncodeToString(hash[:])}); e != nil {
+	if e = txAudit(tx, u.ID, "web", "payment_request_create", "payment_request", requestID, "success", "", M{"card_count": len(selected)}); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -471,31 +401,44 @@ func (a *App) paymentRequestExport(w http.ResponseWriter, r *http.Request, u Use
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator") {
 		return
 	}
-	if os.Getenv("APP_ENV") != "demo" && os.Getenv("APP_ENV") != "testing" {
-		fail(w, 403, errors.New("экспорт доступен только в демо"))
-		return
-	}
 	requestID := r.URL.Query().Get("id")
-	var path, expected string
-	if e := a.db.QueryRow("SELECT export_path,export_sha256 FROM payment_requests WHERE id=$1", requestID).Scan(&path, &expected); e != nil {
+	var reference string
+	if e := a.db.QueryRow("SELECT external_ref FROM payment_requests WHERE id=$1 AND mode='cards'", requestID).Scan(&reference); e != nil {
 		fail(w, 404, errors.New("запрос не найден"))
 		return
 	}
-	if filepath.Clean(filepath.Dir(path)) != filepath.Clean(a.storage) || filepath.Base(path) != "payment-request-"+requestID+".xlsx" {
-		fail(w, 500, errors.New("недопустимый путь выгрузки"))
+	rows, e := a.db.Query("SELECT x.card_id,c.mask,b.name,x.contact_name,x.contact_phone FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", requestID)
+	if e != nil {
+		fail(w, 500, e)
 		return
 	}
-	file, e := os.ReadFile(path)
+	selected := []requestCard{}
+	for rows.Next() {
+		var card requestCard
+		if e = rows.Scan(&card.cardID, &card.mask, &card.bank, &card.name, &card.phone); e != nil {
+			break
+		}
+		card.number, e = loadPAN(card.cardID)
+		if e != nil {
+			break
+		}
+		selected = append(selected, card)
+	}
+	if e == nil {
+		e = rows.Err()
+	}
+	rows.Close()
+	if e != nil || len(selected) == 0 {
+		fail(w, 500, errors.New("полные номера карт недоступны для экспорта"))
+		return
+	}
+	file, e := requestWorkbook(reference, selected)
 	if e != nil {
-		fail(w, 500, errors.New("файл выгрузки недоступен"))
+		fail(w, 500, e)
 		return
 	}
 	hash := sha256.Sum256(file)
-	if hex.EncodeToString(hash[:]) != expected {
-		fail(w, 500, errors.New("контрольная сумма выгрузки не совпала"))
-		return
-	}
-	if e = a.logExport(u.ID, requestID, expected); e != nil {
+	if e = a.logExport(u.ID, requestID, hex.EncodeToString(hash[:])); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -515,18 +458,22 @@ func verifyRequest(tx *sql.Tx, requestID, merchantID string) (map[string]string,
 	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1", requestID).Scan(&owner); e != nil || owner != merchantID {
 		return nil, nil, errors.New("запрос на карты не принадлежит выбранному мерчанту")
 	}
-	rows, e := tx.Query("SELECT x.synthetic_number,c.mask,x.card_id FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
+	rows, e := tx.Query("SELECT c.mask,x.card_id FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
 	if e != nil {
 		return nil, nil, e
 	}
 	defer rows.Close()
 	numbers, masks := map[string]string{}, map[string]string{}
 	for rows.Next() {
-		var number, mask, card string
-		if e = rows.Scan(&number, &mask, &card); e != nil {
+		var mask, card string
+		if e = rows.Scan(&mask, &card); e != nil {
 			return nil, nil, e
 		}
-		numbers[strings.TrimSpace(number)] = card
+		pan, panErr := loadPAN(card)
+		if panErr != nil {
+			return nil, nil, errors.New("полный номер карты из запроса недоступен")
+		}
+		numbers[pan] = card
 		if prior, ok := masks[mask]; ok && prior != card {
 			masks[mask] = ""
 		} else if !ok {

@@ -7,11 +7,11 @@ if [[ $(id -u) != 0 || ! -t 0 ]]; then
 fi
 
 set -a
-. /etc/metallist-platform/demo-owner.env
+. /etc/metallist-platform/production-owner.env
 set +a
 identity=$(psql "$DATABASE_URL" -Atqc 'SELECT current_database()')
-if [[ "$APP_ENV" != demo || "$identity" != metallist_demo ]]; then
-  echo 'Ожидалась отдельная демонстрационная база metallist_demo.' >&2
+if [[ "$APP_ENV" != production || "$identity" != metallist_demo ]]; then
+  echo 'Ожидалась действующая база metallist_demo в production.' >&2
   exit 1
 fi
 

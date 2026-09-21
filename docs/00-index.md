@@ -68,6 +68,8 @@
 - [Миграция профилей импорта мерчантов](operations/merchant-import-profiles-migration.md)
 - [Миграция ФИО и телефонов запросов карт](operations/payment-contact-migration.md)
 - [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
+- [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
+- [Переключение production на main](operations/production-cutover.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
 - [Границы доверия](security/trust-boundaries.md)

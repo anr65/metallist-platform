@@ -1,5 +1,5 @@
 [Unit]
-Description=Metallist demo platform
+Description=Metallist platform
 After=network-online.target postgresql.service
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 User=deploy
 Group=metallist
 WorkingDirectory=/opt/metallist-platform/current
-EnvironmentFile=/etc/metallist-platform/demo.env
+EnvironmentFile=/etc/metallist-platform/production.env
 ExecStart=/opt/metallist-platform/current/platform
 Restart=on-failure
 RestartSec=3

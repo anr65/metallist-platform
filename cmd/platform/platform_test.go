@@ -44,6 +44,13 @@ func testApp(t *testing.T) *App {
 	if name != "metallist_platform_test" || user != "metallist_qa" {
 		t.Fatal("effective database mismatch")
 	}
+	vaultDir := t.TempDir()
+	keyFile := t.TempDir() + "/pan.key"
+	if e = os.WriteFile(keyFile, []byte(strings.Repeat("a", 64)), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PAN_VAULT_DIR", vaultDir)
+	t.Setenv("PAN_KEY_FILE", keyFile)
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	return &App{db: db, storage: t.TempDir(), location: loc}
 }
@@ -86,6 +93,9 @@ func fixtures(t *testing.T, a *App) (User, string, string, string) {
 			t.Fatal(e)
 		}
 	}
+	if e := savePAN(card, "0000000000061234"); e != nil {
+		t.Fatal(e)
+	}
 	return u, merchant, bank, card
 }
 func TestMoneyExact(t *testing.T) {
@@ -102,10 +112,77 @@ func TestMoneyExact(t *testing.T) {
 		t.Fatal(v, e)
 	}
 }
-func TestSyntheticCardIdentity(t *testing.T) {
-	number, name, e := demoCardIdentity("f2d280ba-f209-428f-8e13-16329db63679", "000000******1001")
-	if e != nil || len(number) != 16 || number[:6] != "000000" || number[12:] != "1001" || validLuhn(number) || !strings.Contains(name, " ") {
-		t.Fatal("synthetic export identity")
+func TestPANValidationAndEncryption(t *testing.T) {
+	if e := validatePAN("0000000000061234", "000000******1234"); e != nil {
+		t.Fatal(e)
+	}
+	if e := validatePAN("0000000000061234", "000000******9999"); e == nil {
+		t.Fatal("mismatched PAN accepted")
+	}
+	if e := validatePAN("0000000000061230", "000000******1230"); e == nil {
+		t.Fatal("invalid checksum accepted")
+	}
+	card := id()
+	keyFile := t.TempDir() + "/pan.key"
+	if e := os.WriteFile(keyFile, []byte(strings.Repeat("a", 64)), 0600); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PAN_KEY_FILE", keyFile)
+	t.Setenv("PAN_VAULT_DIR", t.TempDir())
+	if e := savePAN(card, "0000000000061234"); e != nil {
+		t.Fatal(e)
+	}
+	path, _ := vaultPath(card)
+	data, e := os.ReadFile(path)
+	if e != nil || bytes.Contains(data, []byte("0000000000061234")) {
+		t.Fatal("PAN stored in plaintext", e)
+	}
+	read, e := loadPAN(card)
+	if e != nil || read != "0000000000061234" {
+		t.Fatal("PAN decrypt failed", e)
+	}
+	if e := savePAN(card, "0000000000061234"); e == nil {
+		t.Fatal("PAN overwrite accepted")
+	}
+}
+
+func TestCardPANCreationAndAccess(t *testing.T) {
+	a := testApp(t)
+	chief, _, bank, _ := fixtures(t, a)
+	operator := User{ID: id(), Role: "operator"}
+	body := M{"kind": "card", "bank_id": bank, "owner_label": "Тестовый владелец", "pan": "4111111111111111"}
+	if status, _ := req(t, a.catalogCreate, operator, body); status != 403 {
+		t.Fatal("operator added full card number", status)
+	}
+	status, created := req(t, a.catalogCreate, chief, body)
+	if status != 201 {
+		t.Fatal("chief could not add card", status, created)
+	}
+	cardID := created["id"].(string)
+	var mask string
+	if e := a.db.QueryRow("SELECT mask FROM cards WHERE id=$1", cardID).Scan(&mask); e != nil || mask != "411111******1111" {
+		t.Fatal("card mask mismatch", mask, e)
+	}
+	pan, e := loadPAN(cardID)
+	if e != nil || pan != "4111111111111111" {
+		t.Fatal("full number not encrypted and recoverable", e)
+	}
+	if status, _ := req(t, a.setCardPAN, operator, M{"card_id": cardID, "pan": pan}); status != 403 {
+		t.Fatal("operator changed full number", status)
+	}
+	if status, _ := req(t, a.setCardPAN, chief, M{"card_id": cardID, "pan": pan}); status != 409 {
+		t.Fatal("full number overwrite accepted", status)
+	}
+	legacyID := id()
+	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Ранее заведённая карта','555555******4444','4444')", legacyID, bank); e != nil {
+		t.Fatal(e)
+	}
+	if status, _ := req(t, a.setCardPAN, chief, M{"card_id": legacyID, "pan": "5555555555554444"}); status != 201 {
+		t.Fatal("could not fill existing card number", status)
+	}
+	var auditText string
+	if e := a.db.QueryRow("SELECT coalesce(string_agg(detail::text, ''),'') FROM audit_events").Scan(&auditText); e != nil || strings.Contains(auditText, pan) {
+		t.Fatal("full number appeared in audit", e)
 	}
 }
 
@@ -175,19 +252,14 @@ func TestPaymentRequestNextReferenceAndContactSearch(t *testing.T) {
 		t.Fatal("contact search exposed to accountant", w.Code)
 	}
 }
-func TestPaymentContactPhoneNormalizationAndDemoBoundary(t *testing.T) {
-	t.Setenv("APP_ENV", "testing")
+func TestPaymentContactPhoneNormalization(t *testing.T) {
 	phone, e := normalizePaymentPhone("8 (999) 123-45-67")
 	if e != nil || phone != "+79991234567" {
 		t.Fatal("phone normalization", phone, e)
 	}
-	t.Setenv("APP_ENV", "demo")
-	phone, e = normalizePaymentPhone("+7 000 000-00-01")
-	if e != nil || phone != "+70000000001" {
-		t.Fatal("synthetic demo phone rejected", phone, e)
-	}
-	if _, e = normalizePaymentPhone("+7 999 123-45-67"); e == nil {
-		t.Fatal("real-looking phone accepted in demo")
+	phone, e = normalizePaymentPhone("+7 999 123-45-67")
+	if e != nil || phone != "+79991234567" {
+		t.Fatal("international phone normalization", phone, e)
 	}
 }
 func TestPaymentRequestExportAndResponse(t *testing.T) {
@@ -207,7 +279,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	if duplicateStatus != 201 || duplicateContact["id"] != contactID {
 		t.Fatal("repeat payment contact did not reuse directory entry", duplicateStatus, duplicateContact)
 	}
-	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "cards", "rows": []M{{"card_id": card, "contact_id": contactID}}}
+	requestBody := M{"merchant_id": merchant, "external_ref": "REQ-20", "mode": "cards", "rows": []M{{"card_id": card, "contact_id": contactID}}}
 	if status, _ := req(t, a.createPaymentRequest, accountant, requestBody); status != 403 {
 		t.Fatal("accountant issued card file")
 	}
@@ -255,7 +327,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	defer book.Close()
 	lines, e := book.GetRows("Карты к оплате")
-	if e != nil || len(lines) != 5 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || len(lines[3]) != 5 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[3][4] != "БАНК" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
+	if e != nil || len(lines) != 5 || lines[0][0] != "Запрос: REQ-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || len(lines[3]) != 5 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[3][4] != "БАНК" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || lines[4][1] != "0000000000061234" || !validLuhn(lines[4][1]) {
 		t.Fatal("unsafe or incomplete export", e)
 	}
 	rowsRecorder := httptest.NewRecorder()
@@ -324,7 +396,15 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	var leaked string
 	if e = a.db.QueryRow("SELECT raw::text FROM registry_rows ORDER BY row_no LIMIT 1").Scan(&leaked); e != nil || strings.Contains(leaked, lines[4][1]) {
-		t.Fatal("full synthetic number stored in import rows", e)
+		t.Fatal("full card number stored in import rows", e)
+	}
+	var sourcePath string
+	if e = a.db.QueryRow("SELECT s.storage_path FROM source_documents s JOIN registries r ON r.source_id=s.id WHERE r.id=$1", responseData["id"]).Scan(&sourcePath); e != nil {
+		t.Fatal(e)
+	}
+	storedSource, e := os.ReadFile(sourcePath)
+	if e != nil || bytes.Contains(storedSource, []byte(lines[4][1])) || bytes.Equal(storedSource[:min(len(storedSource), 4)], []byte("PK\x03\x04")) {
+		t.Fatal("linked response stored unencrypted", e)
 	}
 	w = httptest.NewRecorder()
 	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)

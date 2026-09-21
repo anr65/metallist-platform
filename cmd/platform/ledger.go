@@ -209,6 +209,18 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 					m[c] = v
 				}
 			}
+			if name == "cards" || name == "request_cards" {
+				cardID, _ := m["id"].(string)
+				path, pathErr := vaultPath(cardID)
+				_, statErr := os.Stat(path)
+				panSaved := pathErr == nil && statErr == nil
+				if name == "cards" && u.Role == "chief" {
+					m["pan_saved"] = panSaved
+				}
+				if name == "request_cards" && !panSaved {
+					continue
+				}
+			}
 			arr = append(arr, m)
 		}
 		rows.Close()
@@ -262,13 +274,23 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 	case "custodian":
 		_, e = a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,$2,$3)", newID, str(m, "name"), str(m, "custodian_kind"))
 	case "card":
-		mask := str(m, "mask")
-		if !cardMaskPattern.MatchString(mask) {
-			e = errors.New("нужна маска формата 000000******1234; полный номер запрещён")
-		} else if os.Getenv("APP_ENV") == "demo" && !approvedSyntheticName(str(m, "owner_label")) {
-			e = errors.New("в демо выберите вымышленное ФИО из списка")
-		} else {
-			_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, str(m, "bank_id"), str(m, "owner_label"), mask, mask[len(mask)-4:])
+		pan := str(m, "pan")
+		if !panPattern.MatchString(pan) || !validLuhn(pan) {
+			e = errors.New("укажите действительный полный номер карты")
+			break
+		}
+		mask := pan[:6] + "******" + pan[len(pan)-4:]
+		if supplied := str(m, "mask"); supplied != "" && supplied != mask {
+			e = errors.New("маска не соответствует полному номеру")
+			break
+		}
+		if e = savePAN(newID, pan); e != nil {
+			break
+		}
+		_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, str(m, "bank_id"), str(m, "owner_label"), mask, mask[len(mask)-4:])
+		if e != nil {
+			path, _ := vaultPath(newID)
+			_ = os.Remove(path)
 		}
 	case "payment_contact":
 		fullName := strings.TrimSpace(str(m, "full_name"))
@@ -276,9 +298,6 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		phone, e = normalizePaymentPhone(str(m, "phone"))
 		if e == nil && len([]rune(fullName)) < 5 {
 			e = errors.New("укажите полное ФИО")
-		}
-		if e == nil && os.Getenv("APP_ENV") == "demo" && !approvedSyntheticName(fullName) {
-			e = errors.New("в демо выберите вымышленное ФИО из списка")
 		}
 		if e == nil {
 			_, e = a.db.Exec(`INSERT INTO payment_contacts(id,full_name,phone,created_by) VALUES($1,$2,$3,$4)

@@ -155,14 +155,38 @@ func main() {
 	if e = os.MkdirAll(storage, 0700); e != nil {
 		log.Fatal(e)
 	}
+	if os.Getenv("APP_ENV") == "production" {
+		if _, e = panAEAD(); e != nil {
+			log.Fatal("защищённое хранение карт не настроено")
+		}
+		vaultDir := os.Getenv("PAN_VAULT_DIR")
+		if vaultDir == "" || !filepath.IsAbs(vaultDir) {
+			log.Fatal("каталог номеров карт не настроен")
+		}
+		if e = os.MkdirAll(vaultDir, 0700); e != nil {
+			log.Fatal("каталог номеров карт недоступен")
+		}
+		info, statErr := os.Stat(vaultDir)
+		if statErr != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+			log.Fatal("каталог номеров карт должен быть закрыт для других пользователей")
+		}
+		entries, readErr := os.ReadDir(vaultDir)
+		if readErr != nil {
+			log.Fatal("не удалось проверить каталог номеров карт")
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".pan") {
+				log.Fatal("неожиданный файл в каталоге номеров карт")
+			}
+			cardID := strings.TrimSuffix(entry.Name(), ".pan")
+			if _, e = loadPAN(cardID); e != nil {
+				log.Fatal("ключ не открывает сохранённые номера карт")
+			}
+		}
+	}
 	app := &App{db, storage, loc}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "seed-demo":
-			if e = app.seedDemo(); e != nil {
-				log.Fatal(e)
-			}
-			return
 		case "migrate":
 			log.Fatal("use the guarded deployment migration procedure")
 		case "set-password":
@@ -191,6 +215,7 @@ func main() {
 	mux.HandleFunc("/api/password", app.auth(app.changePassword))
 	mux.HandleFunc("/api/catalog", app.auth(app.catalog))
 	mux.HandleFunc("/api/catalog/create", app.auth(app.catalogCreate))
+	mux.HandleFunc("/api/card/pan", app.auth(app.setCardPAN))
 	mux.HandleFunc("/api/card/assign", app.auth(app.assignCard))
 	mux.HandleFunc("/api/user/telegram", app.auth(app.linkTelegram))
 	mux.HandleFunc("/api/registry/upload", app.auth(app.upload))
@@ -200,7 +225,6 @@ func main() {
 	mux.HandleFunc("/api/payment-requests", app.auth(app.paymentRequests))
 	mux.HandleFunc("/api/payment-request/rows", app.auth(app.paymentRequestRows))
 	mux.HandleFunc("/api/payment-request/export", app.auth(app.paymentRequestExport))
-	mux.HandleFunc("/api/demo/sample", app.auth(app.sample))
 	mux.HandleFunc("/api/registries", app.auth(app.registries))
 	mux.HandleFunc("/api/registry/rows", app.auth(app.registryRows))
 	mux.HandleFunc("/api/registry/manual-rate", app.auth(app.manualRate))
