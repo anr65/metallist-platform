@@ -124,6 +124,24 @@ func TestPaymentPlanAndSyntheticIdentity(t *testing.T) {
 	}
 }
 
+func TestManualPaymentRows(t *testing.T) {
+	good := M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "250000.00"}}}
+	rows, e := manualPaymentRows(good)
+	if e != nil || len(rows) != 1 || rows[0].amount != 25000000 {
+		t.Fatal("valid manual row rejected", rows, e)
+	}
+	duplicate := M{"rows": []interface{}{
+		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "250000.00"},
+		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "100.00"},
+	}}
+	if _, e := manualPaymentRows(duplicate); e == nil {
+		t.Fatal("same card accepted twice")
+	}
+	if _, e := manualPaymentRows(M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "0.00"}}}); e == nil {
+		t.Fatal("zero amount accepted")
+	}
+}
+
 func TestPaymentRequestNextReferenceAndContactSearch(t *testing.T) {
 	a := testApp(t)
 	chief, merchant, _, _ := fixtures(t, a)
@@ -189,7 +207,7 @@ func TestPaymentContactPhoneNormalizationAndDemoBoundary(t *testing.T) {
 }
 func TestPaymentRequestExportAndResponse(t *testing.T) {
 	a := testApp(t)
-	chief, merchant, _, _ := fixtures(t, a)
+	chief, merchant, _, card := fixtures(t, a)
 	operator := User{ID: id(), Login: "op", Name: "Операционист", Role: "operator"}
 	accountant := User{ID: id(), Login: "accountant", Name: "Бухгалтер", Role: "accountant"}
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x'),($5,$6,$7,$8,'x')", operator.ID, operator.Login, operator.Name, operator.Role, accountant.ID, accountant.Login, accountant.Name, accountant.Role); e != nil {
@@ -204,11 +222,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	if duplicateStatus != 201 || duplicateContact["id"] != contactID {
 		t.Fatal("repeat payment contact did not reuse directory entry", duplicateStatus, duplicateContact)
 	}
-	contacts := make([]string, 20)
-	for i := range contacts {
-		contacts[i] = contactID
-	}
-	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "count", "payment_count": "20", "contact_ids": contacts}
+	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "manual", "rows": []M{{"card_id": card, "contact_id": contactID, "amount": "5000000.00"}}}
 	if status, _ := req(t, a.createPaymentRequest, accountant, requestBody); status != 403 {
 		t.Fatal("accountant issued card file")
 	}
@@ -216,7 +230,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 		t.Fatal("request without mandatory contact accepted", missingStatus)
 	}
 	status, created := req(t, a.createPaymentRequest, operator, requestBody)
-	if status != 201 || created["payment_count"] != float64(20) || created["planned_total"] != "5000000.00" {
+	if status != 201 || created["payment_count"] != float64(1) || created["planned_total"] != "5000000.00" {
 		t.Fatal("request creation", status, created)
 	}
 	requestID := created["id"].(string)
@@ -249,14 +263,14 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	defer book.Close()
 	lines, e := book.GetRows("Карты к оплате")
-	if e != nil || len(lines) != 24 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
+	if e != nil || len(lines) != 5 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
 		t.Fatal("unsafe or incomplete export", e)
 	}
 	rowsRecorder := httptest.NewRecorder()
 	a.paymentRequestRows(rowsRecorder, httptest.NewRequest("GET", "/api/payment-request/rows?id="+requestID, nil), operator)
 	var requestRows []M
 	_ = json.Unmarshal(rowsRecorder.Body.Bytes(), &requestRows)
-	if rowsRecorder.Code != 200 || len(requestRows) != 20 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" {
+	if rowsRecorder.Code != 200 || len(requestRows) != 1 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" {
 		t.Fatal("saved contact snapshot missing", rowsRecorder.Code, requestRows)
 	}
 	rowsRecorder = httptest.NewRecorder()

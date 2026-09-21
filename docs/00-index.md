@@ -67,6 +67,7 @@
 - [Миграция Telegram-сборщиков](operations/telegram-collector-migration.md)
 - [Миграция профилей импорта мерчантов](operations/merchant-import-profiles-migration.md)
 - [Миграция ФИО и телефонов запросов карт](operations/payment-contact-migration.md)
+- [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
 - [Границы доверия](security/trust-boundaries.md)

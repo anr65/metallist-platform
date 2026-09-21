@@ -77,6 +77,39 @@ func paymentContactIDs(m M, count int) ([]string, error) {
 	return out, nil
 }
 
+type manualPaymentRow struct {
+	cardID, contactID string
+	amount            int64
+}
+
+func manualPaymentRows(m M) ([]manualPaymentRow, error) {
+	raw, ok := m["rows"].([]interface{})
+	if !ok || len(raw) < 1 || len(raw) > 500 {
+		return nil, errors.New("добавьте от 1 до 500 строк")
+	}
+	rows := make([]manualPaymentRow, 0, len(raw))
+	seen := map[string]bool{}
+	for i, value := range raw {
+		item, ok := value.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("строка %d: неверные данные", i+1)
+		}
+		cardID, _ := item["card_id"].(string)
+		contactID, _ := item["contact_id"].(string)
+		amountText, _ := item["amount"].(string)
+		cents, e := amount(amountText)
+		if cardID == "" || contactID == "" || e != nil || cents <= 0 {
+			return nil, fmt.Errorf("строка %d: выберите карту, контакт и положительную сумму", i+1)
+		}
+		if seen[cardID] {
+			return nil, fmt.Errorf("строка %d: карта уже есть в запросе", i+1)
+		}
+		seen[cardID] = true
+		rows = append(rows, manualPaymentRow{cardID, contactID, cents})
+	}
+	return rows, nil
+}
+
 func (a *App) paymentRequestNextReference(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator") {
 		return
@@ -298,18 +331,32 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 400, errors.New("номер запроса: до 80 букв, цифр и знаков . _ / -"))
 		return
 	}
-	plan, e := paymentPlan(str(m, "mode"), str(m, "payment_count"), str(m, "total"), str(m, "per_payment"))
-	if e != nil {
-		fail(w, 400, e)
-		return
+	mode := str(m, "mode")
+	var plan []int64
+	var contactIDs []string
+	var manualRows []manualPaymentRow
+	if mode == "manual" {
+		manualRows, e = manualPaymentRows(m)
+		if e == nil {
+			plan = make([]int64, len(manualRows))
+			for i, row := range manualRows {
+				plan[i] = row.amount
+			}
+		}
+	} else {
+		plan, e = paymentPlan(mode, str(m, "payment_count"), str(m, "total"), str(m, "per_payment"))
+		if e == nil {
+			contactIDs, e = paymentContactIDs(m, len(plan))
+		}
 	}
-	contactIDs, e := paymentContactIDs(m, len(plan))
 	if e != nil {
 		fail(w, 400, e)
 		return
 	}
 	perPayment := defaultPaymentCents
-	if value := str(m, "per_payment"); value != "" {
+	if mode == "manual" {
+		perPayment = plan[0]
+	} else if value := str(m, "per_payment"); value != "" {
 		perPayment, _ = amount(value)
 	}
 	tx, e := a.tx()
@@ -363,6 +410,14 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 409, errors.New("нет доступных карт"))
 		return
 	}
+	if len(plan) > len(cards) {
+		fail(w, 409, fmt.Errorf("нужно %d разных карт, доступно %d", len(plan), len(cards)))
+		return
+	}
+	cardsByID := make(map[string]plannedPayment, len(cards))
+	for _, card := range cards {
+		cardsByID[card.cardID] = card
+	}
 	contacts := map[string]plannedPayment{}
 	contactRows, e := tx.Query("SELECT id,full_name,phone FROM payment_contacts WHERE active")
 	if e != nil {
@@ -386,8 +441,20 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	}
 	selected := []plannedPayment{}
 	for i, cents := range plan {
-		card := cards[i%len(cards)]
-		contact, ok := contacts[contactIDs[i]]
+		card := cards[i]
+		contactID := ""
+		if mode == "manual" {
+			var ok bool
+			card, ok = cardsByID[manualRows[i].cardID]
+			if !ok {
+				fail(w, 400, fmt.Errorf("строка %d: карта недоступна", i+1))
+				return
+			}
+			contactID = manualRows[i].contactID
+		} else {
+			contactID = contactIDs[i]
+		}
+		contact, ok := contacts[contactID]
 		if !ok {
 			fail(w, 400, fmt.Errorf("строка %d: выбранный контакт недоступен", i+1))
 			return
@@ -398,6 +465,10 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	}
 	var total int64
 	for _, v := range plan {
+		if v > math.MaxInt64-total {
+			fail(w, 400, errors.New("общая сумма слишком велика"))
+			return
+		}
 		total += v
 	}
 	file, e := requestWorkbook(ref, selected)
@@ -417,7 +488,7 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		}
 	}()
 	hash := sha256.Sum256(file)
-	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,per_payment_cents,requested_total_cents,export_path,export_sha256,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", requestID, merchantID, ref, str(m, "mode"), len(plan), perPayment, total, path, hex.EncodeToString(hash[:]), u.ID)
+	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,per_payment_cents,requested_total_cents,export_path,export_sha256,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", requestID, merchantID, ref, mode, len(plan), perPayment, total, path, hex.EncodeToString(hash[:]), u.ID)
 	if e != nil {
 		fail(w, 409, errors.New("такой номер запроса уже есть у мерчанта"))
 		return
@@ -437,7 +508,7 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 409, e)
 		return
 	}
-	respond(w, 201, M{"id": requestID, "payment_count": len(plan), "planned_total": rub(total), "card_count": len(cards), "repeated_cards": len(plan) > len(cards)})
+	respond(w, 201, M{"id": requestID, "payment_count": len(plan), "planned_total": rub(total), "card_count": len(cards), "repeated_cards": false})
 }
 
 func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
