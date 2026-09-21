@@ -70,7 +70,7 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 		if e != nil {
 			return out, e
 		}
-		observed, e := nonnegative(parts[1])
+		observed, e := telegramObservedAmount(parts[1])
 		if e != nil {
 			return out, errors.New("Некорректный остаток карты")
 		}
@@ -156,6 +156,20 @@ func telegramAmount(raw string) (int64, error) {
 	v, e := amount(s)
 	if e != nil || v > math.MaxInt64/multiplier {
 		return 0, errors.New("Некорректная сумма")
+	}
+	return v * multiplier, nil
+}
+
+func telegramObservedAmount(raw string) (int64, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	multiplier := int64(1)
+	if strings.HasSuffix(s, "к") || strings.HasSuffix(s, "k") {
+		multiplier = 1000
+		s = strings.TrimSuffix(strings.TrimSuffix(s, "к"), "k")
+	}
+	v, e := nonnegative(s)
+	if e != nil || v > math.MaxInt64/multiplier {
+		return 0, errors.New("некорректный остаток")
 	}
 	return v * multiplier, nil
 }

@@ -18,6 +18,32 @@ type fakeTelegram struct {
 
 const telegramTestGroup int64 = -100777000111
 
+func TestTelegramObservedAmount(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int64
+		valid bool
+	}{
+		{"139к", 13_900_000, true},
+		{"95k", 9_500_000, true},
+		{"1,5к", 150_000, true},
+		{"200", 20_000, true},
+		{"0к", 0, true},
+		{"0", 0, true},
+		{"-1к", 0, false},
+		{"92233720368548к", 0, false},
+		{"abcк", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := telegramObservedAmount(tt.input)
+			if (err == nil) != tt.valid || (tt.valid && got != tt.want) {
+				t.Fatalf("telegramObservedAmount(%q) = %d, %v; want %d, valid=%v", tt.input, got, err, tt.want, tt.valid)
+			}
+		})
+	}
+}
+
 func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fakeTelegram) {
 	t.Helper()
 	fake := &fakeTelegram{}
@@ -251,11 +277,11 @@ func TestTelegramCollectorWithdrawalBatchIsAtomicIdempotentAndReversible(t *test
 	if e != nil || tx.Commit() != nil {
 		t.Fatal("funding failed", e)
 	}
-	message := "/withdraw 1234 100к/200\n1234 50к/100"
+	message := "/withdraw 1234 100к/139к\n1234 50к/95к"
 	if code := telegramRequest(t, a, telegramMessageUpdate(1101, 555, message)); code != 200 {
 		t.Fatal(code)
 	}
-	if !fake.contains("Подтвердите снятия и остатки по картам") || !fake.contains("1. ****1234 · снято 100 000 ₽ · остаток 200 ₽") || !fake.contains("2. ****1234 · снято 50 000 ₽ · остаток 100 ₽") || !fake.contains("Итого снято: 150 000 ₽") {
+	if !fake.contains("Подтвердите снятия и остатки по картам") || !fake.contains("1. ****1234 · снято 100 000 ₽ · остаток 139 000 ₽") || !fake.contains("2. ****1234 · снято 50 000 ₽ · остаток 95 000 ₽") || !fake.contains("Итого снято: 150 000 ₽") {
 		t.Fatal("withdrawal batch preview is incomplete")
 	}
 	var draftID, status string
@@ -282,7 +308,7 @@ func TestTelegramCollectorWithdrawalBatchIsAtomicIdempotentAndReversible(t *test
 		t.Fatal("withdrawal observations duplicated or missing", count, e)
 	}
 	var latestObserved int64
-	if e := a.db.QueryRow("SELECT observed_cents FROM observations WHERE source=$1 ORDER BY observed_at DESC,id DESC LIMIT 1", "telegram:"+draftID).Scan(&latestObserved); e != nil || latestObserved != 10_000 {
+	if e := a.db.QueryRow("SELECT observed_cents FROM observations WHERE source=$1 ORDER BY observed_at DESC,id DESC LIMIT 1", "telegram:"+draftID).Scan(&latestObserved); e != nil || latestObserved != 9_500_000 {
 		t.Fatal("latest withdrawal observation is wrong", latestObserved, e)
 	}
 	var cash, cardBalance int64
