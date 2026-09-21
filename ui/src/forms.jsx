@@ -134,6 +134,45 @@ function CardCombobox({ cards, value, usedCards, onValueChange }) {
   </Combobox>;
 }
 
+export function CardPANCorrection({ role }) {
+  const [catalog, setCatalog] = useState(null);
+  const [cardID, setCardID] = useState('');
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canEdit = role === 'chief' || role === 'operator';
+  useEffect(() => { if (canEdit) get('/api/catalog').then(setCatalog).catch(e => setError(e.message)); }, [canEdit]);
+  if (!canEdit) return null;
+  const cards = role === 'chief'
+    ? (catalog?.cards || []).filter(card => card.status === 'active' && card.pan_saved).map(card => ({ ...card, bank: card.name }))
+    : catalog?.request_cards || [];
+  const selected = cards.find(card => card.id === cardID);
+  async function submit(event) {
+    event.preventDefault();
+    if (!selected) { setError('Выберите карту.'); return; }
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await post('/api/card/pan/replace', { card_id: cardID, expected_mask: selected.mask, pan: data.pan, reason: data.reason });
+      setMessage(`Номер исправлен. Новая маска: ${result.mask}.`);
+      setCardID('');
+      form.reset();
+      setCatalog(await get('/api/catalog'));
+    } catch (e) { setError(e.message); }
+    finally { const panInput = form.querySelector('[name="pan"]'); if (panInput) panInput.value = ''; setBusy(false); }
+  }
+  return <Card className="mt-7 rounded-2xl">
+    <CardHeader><CardTitle>Исправить номер карты</CardTitle><CardDescription>Выберите существующую карту и укажите правильный полный номер. Исправление записывается в аудит. Карту, уже использованную в запросе или реестре, изменить нельзя.</CardDescription></CardHeader>
+    <CardContent>{catalog ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
+      <label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={cardID} usedCards={new Set()} onValueChange={setCardID} /></label>
+      <label className="grid gap-2 text-sm font-medium">Правильный полный номер<Input name="pan" type="password" inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" placeholder="Номер без пробелов" required /></label>
+      <label className="grid gap-2 text-sm font-medium md:col-span-2">Причина исправления<Input name="reason" minLength="5" maxLength="300" required /></label>
+      <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" disabled={busy || !selected}>{busy ? 'Сохранение…' : 'Исправить номер'}</Button></div>
+    </form> : <><Message error={error} />{!error && <p className="text-muted-foreground">Загрузка карт…</p>}</>}</CardContent>
+  </Card>;
+}
+
 export function PaymentRequests({ role }) {
   const canCreate = role === 'chief' || role === 'operator';
   const blankRow = () => ({ key: crypto.randomUUID(), card_id: '', full_name: '', phone: '' });

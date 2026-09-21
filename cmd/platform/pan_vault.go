@@ -126,6 +126,17 @@ func loadPAN(cardID string) (string, error) {
 	return string(plain), nil
 }
 
+func readCardPAN(cardID string, ciphertext []byte) (string, error) {
+	if len(ciphertext) == 0 {
+		return loadPAN(cardID)
+	}
+	plain, err := openSensitive(ciphertext, []byte(cardID))
+	if err != nil || !panPattern.Match(plain) || !validLuhn(string(plain)) {
+		return "", errors.New("номер карты недоступен")
+	}
+	return string(plain), nil
+}
+
 func sealSensitive(plain, associated []byte) ([]byte, error) {
 	aead, err := panAEAD()
 	if err != nil {

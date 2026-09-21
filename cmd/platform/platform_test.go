@@ -186,6 +186,69 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	}
 }
 
+func TestOperatorCorrectsUnusedCardPAN(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, card := fixtures(t, a)
+	operator := User{ID: id(), Login: "operator", Name: "Операционист", Role: "operator"}
+	if _, err := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x')", operator.ID, operator.Login, operator.Name); err != nil {
+		t.Fatal(err)
+	}
+	change := M{"card_id": card, "expected_mask": "000000******1234", "pan": "4111111111111111", "reason": "Исправление реквизитов"}
+	if status, _ := req(t, a.replaceCardPAN, User{Role: "accountant"}, change); status != 403 {
+		t.Fatal("accountant corrected card", status)
+	}
+	if status, _ := req(t, a.replaceCardPAN, operator, M{"card_id": card, "expected_mask": "000000******9999", "pan": "4111111111111111", "reason": "Исправление реквизитов"}); status != 409 {
+		t.Fatal("stale mask accepted", status)
+	}
+	if status, _ := req(t, a.replaceCardPAN, operator, M{"card_id": card, "expected_mask": "000000******1234", "pan": "4111111111111111", "reason": "Номер 4111 1111 1111 1111 указан ошибочно"}); status != 400 {
+		t.Fatal("PAN in audit reason accepted", status)
+	}
+	if status, _ := req(t, a.replaceCardPAN, operator, change); status != 200 {
+		t.Fatal("operator could not correct card", status)
+	}
+	var mask string
+	var ciphertext []byte
+	if err := a.db.QueryRow("SELECT mask,pan_ciphertext FROM cards WHERE id=$1", card).Scan(&mask, &ciphertext); err != nil || mask != "411111******1111" || bytes.Contains(ciphertext, []byte("4111111111111111")) {
+		t.Fatal("correction not stored securely", mask, err)
+	}
+	if pan, err := readCardPAN(card, ciphertext); err != nil || pan != "4111111111111111" {
+		t.Fatal("corrected PAN not readable", err)
+	}
+	path, _ := vaultPath(card)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("old encrypted PAN file remained", err)
+	}
+	contact := id()
+	if _, err := a.db.Exec("INSERT INTO payment_contacts(id,full_name,phone,created_by) VALUES($1,'Тестов Алексей Учебович','+70000000001',$2)", contact, chief.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, created := req(t, a.createPaymentRequest, chief, M{"merchant_id": merchant, "external_ref": "CORRECTED-PAN", "mode": "cards", "rows": []M{{"card_id": card, "contact_id": contact}}})
+	if status != 201 {
+		t.Fatal("corrected card request failed", status, created)
+	}
+	w := httptest.NewRecorder()
+	a.paymentRequestExport(w, httptest.NewRequest("GET", "/api/payment-request/export?id="+created["id"].(string), nil), operator)
+	if w.Code != 200 {
+		t.Fatal("corrected PAN export failed", w.Code)
+	}
+	book, err := excelize.OpenReader(bytes.NewReader(w.Body.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := book.GetRows("Карты к оплате")
+	book.Close()
+	if err != nil || len(rows) < 5 || rows[4][1] != "4111111111111111" {
+		t.Fatal("corrected PAN export failed", err)
+	}
+	if status, _ := req(t, a.replaceCardPAN, operator, M{"card_id": card, "expected_mask": mask, "pan": "0000000000061234", "reason": "Повторное исправление"}); status != 409 {
+		t.Fatal("used card was corrected", status)
+	}
+	var auditText string
+	if err := a.db.QueryRow("SELECT coalesce(string_agg(detail::text, ''),'') FROM audit_events").Scan(&auditText); err != nil || strings.Contains(auditText, "4111111111111111") {
+		t.Fatal("corrected PAN appeared in audit", err)
+	}
+}
+
 func TestCardRequestRows(t *testing.T) {
 	good := M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1"}}}
 	rows, e := cardRequestRows(good)

@@ -183,6 +183,27 @@ func main() {
 				log.Fatal("ключ не открывает сохранённые номера карт")
 			}
 		}
+		cipherRows, queryErr := db.Query("SELECT id,pan_ciphertext FROM cards WHERE pan_ciphertext IS NOT NULL")
+		if queryErr != nil {
+			log.Fatal("не удалось проверить исправленные номера карт")
+		}
+		for cipherRows.Next() {
+			var cardID string
+			var ciphertext []byte
+			if queryErr = cipherRows.Scan(&cardID, &ciphertext); queryErr != nil {
+				break
+			}
+			if _, queryErr = readCardPAN(cardID, ciphertext); queryErr != nil {
+				break
+			}
+		}
+		if queryErr == nil {
+			queryErr = cipherRows.Err()
+		}
+		cipherRows.Close()
+		if queryErr != nil {
+			log.Fatal("ключ не открывает исправленные номера карт")
+		}
 	}
 	app := &App{db, storage, loc}
 	if len(os.Args) > 1 {
@@ -226,6 +247,7 @@ func main() {
 	mux.HandleFunc("/api/catalog", app.auth(app.catalog))
 	mux.HandleFunc("/api/catalog/create", app.auth(app.catalogCreate))
 	mux.HandleFunc("/api/card/pan", app.auth(app.setCardPAN))
+	mux.HandleFunc("/api/card/pan/replace", app.auth(app.replaceCardPAN))
 	mux.HandleFunc("/api/card/assign", app.auth(app.assignCard))
 	mux.HandleFunc("/api/user/telegram", app.auth(app.linkTelegram))
 	mux.HandleFunc("/api/registry/upload", app.auth(app.upload))

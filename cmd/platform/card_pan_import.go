@@ -10,10 +10,11 @@ import (
 )
 
 type panImportItem struct {
-	cardID string
-	mask   string
-	pan    string
-	exists bool
+	cardID     string
+	mask       string
+	pan        string
+	exists     bool
+	ciphertext []byte
 }
 
 // importCardPANs accepts one full card number per line from a protected input stream.
@@ -44,14 +45,14 @@ func (a *App) importCardPANs(input io.Reader) (int, int, error) {
 		return 0, 0, errors.New("список карт пуст")
 	}
 	for i := range items {
-		rows, err := a.db.Query("SELECT id FROM cards WHERE mask=$1 AND status='active'", items[i].mask)
+		rows, err := a.db.Query("SELECT id,pan_ciphertext FROM cards WHERE mask=$1 AND status='active'", items[i].mask)
 		if err != nil {
 			return 0, 0, err
 		}
 		matches := 0
 		for rows.Next() {
 			matches++
-			if err = rows.Scan(&items[i].cardID); err != nil {
+			if err = rows.Scan(&items[i].cardID, &items[i].ciphertext); err != nil {
 				break
 			}
 		}
@@ -64,6 +65,14 @@ func (a *App) importCardPANs(input io.Reader) (int, int, error) {
 		}
 		if matches != 1 {
 			return 0, 0, fmt.Errorf("карта %s: найдено %d активных записей", items[i].mask, matches)
+		}
+		if len(items[i].ciphertext) > 0 {
+			stored, readErr := readCardPAN(items[i].cardID, items[i].ciphertext)
+			if readErr != nil || stored != items[i].pan {
+				return 0, 0, fmt.Errorf("карта %s: сохранён другой номер или данные повреждены", items[i].mask)
+			}
+			items[i].exists = true
+			continue
 		}
 		path, err := vaultPath(items[i].cardID)
 		if err != nil {

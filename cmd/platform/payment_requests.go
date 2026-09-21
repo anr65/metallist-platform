@@ -313,10 +313,17 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 			fail(w, 400, fmt.Errorf("строка %d: выбранный контакт недоступен", i+1))
 			return
 		}
-		if _, e = loadPAN(card.cardID); e != nil {
+		var currentMask string
+		var ciphertext []byte
+		if e = tx.QueryRow("SELECT mask,pan_ciphertext FROM cards WHERE id=$1 AND status='active' FOR SHARE", card.cardID).Scan(&currentMask, &ciphertext); e != nil {
+			fail(w, 409, fmt.Errorf("строка %d: карта недоступна", i+1))
+			return
+		}
+		if _, e = readCardPAN(card.cardID, ciphertext); e != nil {
 			fail(w, 409, fmt.Errorf("строка %d: полный номер карты не сохранён", i+1))
 			return
 		}
+		card.mask = currentMask
 		card.contactID, card.name, card.phone = contact.contactID, contact.name, contact.phone
 		selected = append(selected, card)
 	}
@@ -407,7 +414,7 @@ func (a *App) paymentRequestExport(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 404, errors.New("запрос не найден"))
 		return
 	}
-	rows, e := a.db.Query("SELECT x.card_id,c.mask,b.name,x.contact_name,x.contact_phone FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", requestID)
+	rows, e := a.db.Query("SELECT x.card_id,c.mask,b.name,x.contact_name,x.contact_phone,c.pan_ciphertext FROM payment_request_rows x JOIN cards c ON c.id=x.card_id JOIN banks b ON b.id=c.bank_id WHERE x.request_id=$1 ORDER BY x.row_no", requestID)
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -415,10 +422,11 @@ func (a *App) paymentRequestExport(w http.ResponseWriter, r *http.Request, u Use
 	selected := []requestCard{}
 	for rows.Next() {
 		var card requestCard
-		if e = rows.Scan(&card.cardID, &card.mask, &card.bank, &card.name, &card.phone); e != nil {
+		var ciphertext []byte
+		if e = rows.Scan(&card.cardID, &card.mask, &card.bank, &card.name, &card.phone, &ciphertext); e != nil {
 			break
 		}
-		card.number, e = loadPAN(card.cardID)
+		card.number, e = readCardPAN(card.cardID, ciphertext)
 		if e != nil {
 			break
 		}
@@ -458,7 +466,7 @@ func verifyRequest(tx *sql.Tx, requestID, merchantID string) (map[string]string,
 	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1", requestID).Scan(&owner); e != nil || owner != merchantID {
 		return nil, nil, errors.New("запрос на карты не принадлежит выбранному мерчанту")
 	}
-	rows, e := tx.Query("SELECT c.mask,x.card_id FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
+	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -466,10 +474,11 @@ func verifyRequest(tx *sql.Tx, requestID, merchantID string) (map[string]string,
 	numbers, masks := map[string]string{}, map[string]string{}
 	for rows.Next() {
 		var mask, card string
-		if e = rows.Scan(&mask, &card); e != nil {
+		var ciphertext []byte
+		if e = rows.Scan(&mask, &card, &ciphertext); e != nil {
 			return nil, nil, e
 		}
-		pan, panErr := loadPAN(card)
+		pan, panErr := readCardPAN(card, ciphertext)
 		if panErr != nil {
 			return nil, nil, errors.New("полный номер карты из запроса недоступен")
 		}
