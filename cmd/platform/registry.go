@@ -147,8 +147,6 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			}
 			if err != nil {
 				rows[i].Error = err.Error()
-			} else if !a.cardAllowed(u, card) {
-				rows[i].Error = "card_not_assigned"
 			} else {
 				rows[i].Card = card
 				if rows[i].Amount > math.MaxInt64-total {
@@ -219,7 +217,13 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	keepFile = true
-	respond(w, 201, M{"id": regID, "rows": len(rows), "accepted_total": rub(total)})
+	invalidRows := 0
+	for _, row := range rows {
+		if row.Error != "" {
+			invalidRows++
+		}
+	}
+	respond(w, 201, M{"id": regID, "rows": len(rows), "invalid_rows": invalidRows, "accepted_total": rub(total)})
 }
 func nonnegative(s string) (int64, error) {
 	if strings.TrimSpace(s) == "0" || strings.TrimSpace(s) == "0,00" || strings.TrimSpace(s) == "0.00" {

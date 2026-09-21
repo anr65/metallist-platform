@@ -70,6 +70,7 @@
 - [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
 - [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
 - [Редактирование запросов карт](operations/card-request-edit-migration.md)
+- [Исправление загрузки реестра 21.09.2026](operations/registry-upload-incident-20260921.md)
 - [Загрузка полных номеров существующих карт](operations/card-pan-import.md)
 - [Исправление номера карты операционистом](operations/card-pan-correction.md)
 - [Справочник банков НСПК для новых карт](operations/nspk-bank-directory.md)

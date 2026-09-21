@@ -477,12 +477,12 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 		r := httptest.NewRequest("POST", "/api/registry/upload", &body)
 		r.Header.Set("Content-Type", form.FormDataContentType())
 		out := httptest.NewRecorder()
-		a.upload(out, r, chief)
+		a.upload(out, r, operator)
 		var result M
 		_ = json.Unmarshal(out.Body.Bytes(), &result)
 		return out.Code, result
 	}()
-	if responseStatus != 201 {
+	if responseStatus != 201 || responseData["invalid_rows"] != float64(0) {
 		t.Fatal("linked response rejected", responseStatus, responseData)
 	}
 	if editStatus, _ := req(t, a.updatePaymentRequest, operator, M{"id": requestID, "version": "1", "rows": []M{{"card_id": card, "contact_id": contactID}}}); editStatus != 409 {
