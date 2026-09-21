@@ -163,6 +163,15 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	if status, _ := req(t, a.catalogCreate, operator, M{"kind": "card", "bank_id": bank, "owner_label": "  ", "pan": "4111111111111111"}); status != 400 {
 		t.Fatal("empty card owner accepted", status)
 	}
+	if _, e := a.db.Exec("UPDATE banks SET selectable=false WHERE id=$1", bank); e != nil {
+		t.Fatal(e)
+	}
+	if status, _ := req(t, a.catalogCreate, operator, body); status != 400 {
+		t.Fatal("unselectable bank accepted", status)
+	}
+	if _, e := a.db.Exec("UPDATE banks SET selectable=true WHERE id=$1", bank); e != nil {
+		t.Fatal(e)
+	}
 	status, created := req(t, a.catalogCreate, operator, body)
 	if status != 201 {
 		t.Fatal("operator could not add card", status, created)

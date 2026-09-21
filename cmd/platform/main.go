@@ -208,6 +208,18 @@ func main() {
 	app := &App{db, storage, loc}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "sync-nspk-banks":
+			if os.Getenv("APP_ENV") != "production" || len(os.Args) != 2 {
+				log.Fatal("обновление справочника НСПК разрешено только в production")
+			}
+			syncCtx, syncCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer syncCancel()
+			count, syncErr := app.syncNSPKBanks(syncCtx, officialNSPKClient(), nspkBanksURL)
+			if syncErr != nil {
+				log.Fatal(syncErr)
+			}
+			fmt.Printf("справочник НСПК обновлён: %d банков\n", count)
+			return
 		case "import-card-pans":
 			if os.Getenv("APP_ENV") != "production" {
 				log.Fatal("импорт полных номеров разрешён только в production")

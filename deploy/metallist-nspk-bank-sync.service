@@ -1,0 +1,17 @@
+[Unit]
+Description=Refresh Metallist NSPK SBP bank directory
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=metallist
+WorkingDirectory=/opt/metallist-platform/current
+EnvironmentFile=/etc/metallist-platform/production.env
+ExecStart=/opt/metallist-platform/current/platform sync-nspk-banks
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/metallist-platform

@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Metallist NSPK SBP bank directory refresh
+
+[Timer]
+OnCalendar=Sun *-*-* 01:00:00 UTC
+Persistent=true
+Unit=metallist-nspk-bank-sync.service
+
+[Install]
+WantedBy=timers.target

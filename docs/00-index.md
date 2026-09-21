@@ -71,6 +71,7 @@
 - [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
 - [Загрузка полных номеров существующих карт](operations/card-pan-import.md)
 - [Исправление номера карты операционистом](operations/card-pan-correction.md)
+- [Справочник банков НСПК для новых карт](operations/nspk-bank-directory.md)
 - [Переключение production на main](operations/production-cutover.md)
 - [Резервное копирование](operations/backups.md)
 - [Секреты и чувствительные данные](security/secrets-and-sensitive-data.md)
