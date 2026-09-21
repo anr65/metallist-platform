@@ -187,6 +187,16 @@ func main() {
 	app := &App{db, storage, loc}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "import-card-pans":
+			if os.Getenv("APP_ENV") != "production" {
+				log.Fatal("импорт полных номеров разрешён только в production")
+			}
+			created, existing, importErr := app.importCardPANs(os.Stdin)
+			if importErr != nil {
+				log.Fatal(importErr)
+			}
+			fmt.Printf("сохранено: %d; уже было сохранено: %d\n", created, existing)
+			return
 		case "migrate":
 			log.Fatal("use the guarded deployment migration procedure")
 		case "set-password":
