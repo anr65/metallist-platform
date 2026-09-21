@@ -20,6 +20,10 @@ var autoRequestReferencePattern = regexp.MustCompile(`^ЗК-[0-9]{4}-([0-9]{4,})
 var paymentPhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{10,14}$`)
 var requestIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+const editableRowLookupSQL = `SELECT c.mask,c.pan_ciphertext,p.full_name,p.phone FROM cards c
+	JOIN payment_contacts p ON p.id=$2 AND p.active
+	WHERE c.id=$1 AND c.status='active' FOR SHARE OF c`
+
 func validID(value string) bool { return requestIDPattern.MatchString(value) }
 
 type requestCard struct {
@@ -440,11 +444,13 @@ func (a *App) updatePaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	for i, row := range manualRows {
 		var mask, name, phone string
 		var ciphertext []byte
-		e = tx.QueryRow(`SELECT c.mask,c.pan_ciphertext,p.full_name,p.phone FROM cards c
-			JOIN payment_contacts p ON p.id=$2 AND p.active
-			WHERE c.id=$1 AND c.status='active' FOR SHARE OF c,p`, row.cardID, row.contactID).Scan(&mask, &ciphertext, &name, &phone)
-		if e != nil {
+		e = tx.QueryRow(editableRowLookupSQL, row.cardID, row.contactID).Scan(&mask, &ciphertext, &name, &phone)
+		if errors.Is(e, sql.ErrNoRows) {
 			fail(w, 400, fmt.Errorf("строка %d: карта или контакт недоступны", i+1))
+			return
+		}
+		if e != nil {
+			fail(w, 500, e)
 			return
 		}
 		if _, e = readCardPAN(row.cardID, ciphertext); e != nil {

@@ -611,6 +611,38 @@ func TestOperatorCanEditAndDeleteUnlinkedCardRequest(t *testing.T) {
 		t.Fatal("edit changed ledger", postings, e)
 	}
 }
+
+func TestRequestRowLookupWithProductionStyleContactPermissions(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	status, contact := req(t, a.catalogCreate, chief, M{"kind": "payment_contact", "full_name": "Тестов Алексей Учебович", "phone": "+70000000001"})
+	if status != 201 {
+		t.Fatal(status, contact)
+	}
+	tx, e := a.db.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		"CREATE ROLE metallist_request_lookup_test NOLOGIN",
+		"GRANT SELECT ON cards,payment_contacts TO metallist_request_lookup_test",
+		"GRANT UPDATE(mask) ON cards TO metallist_request_lookup_test",
+		"SET LOCAL ROLE metallist_request_lookup_test",
+	} {
+		if _, e = tx.Exec(statement); e != nil {
+			t.Fatal(e)
+		}
+	}
+	var mask, name, phone string
+	var encrypted []byte
+	if e = tx.QueryRow(editableRowLookupSQL, card, contact["id"]).Scan(&mask, &encrypted, &name, &phone); e != nil {
+		t.Fatal("lookup needs excess privileges", e)
+	}
+	if name != "Тестов Алексей Учебович" || phone != "+70000000001" {
+		t.Fatal("wrong contact snapshot")
+	}
+}
 func TestExpenseDateAndSource(t *testing.T) {
 	a := testApp(t)
 	u, _, _, card := fixtures(t, a)
