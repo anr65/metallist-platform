@@ -12,10 +12,11 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Audit, Catalog, Money, Reports } from './pages';
 import { CardPANCorrection, CatalogManager, DraftActivity, ExpenseForm, MoneyForm, PaymentRequests, RegistryUpload, TelegramLinkManager, UserManager } from './forms';
-import { allowedPages, navigationByRole, pageForRole } from './access';
+import { allowedPages, navigationByRole, pageForRole, stripQueryFromLocation } from './access';
 import './styles.css';
 
 gsap.registerPlugin(useGSAP, ScrollTrigger);
+stripQueryFromLocation(window.location, window.history);
 
 const nav = [
   ['overview', 'Обзор', LayoutDashboard], ['requests', 'Карты к оплате', CreditCard], ['registries', 'Реестры оплат', Files], ['expenses', 'Расходы', ReceiptText], ['money', 'Движение денег', WalletCards],
@@ -23,7 +24,7 @@ const nav = [
 ];
 function syncLocation(role) {
   const page = pageForRole(role, window.location.hash);
-  const target = page === 'overview' ? `${window.location.pathname}${window.location.search}` : `#${page}`;
+  const target = page === 'overview' ? window.location.pathname : `#${page}`;
   if (window.location.hash !== (page === 'overview' ? '' : target)) window.history.replaceState(null, '', target);
   return page;
 }
@@ -87,7 +88,7 @@ function App() {
   useEffect(() => { if (!user) return; const syncPage = () => setPage(syncLocation(user.Role)); window.addEventListener('popstate', syncPage); window.addEventListener('hashchange', syncPage); return () => { window.removeEventListener('popstate', syncPage); window.removeEventListener('hashchange', syncPage); }; }, [user]);
   useGSAP(() => { if (!user || matchMedia('(prefers-reduced-motion: reduce)').matches) return; gsap.fromTo(content.current, { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: .45, ease: 'power2.out' }); }, { dependencies: [page, user], revertOnUpdate: true });
   if (!user) return <Login onLogin={load} />;
-  const go = id => { if (!allowedPages(user.Role).includes(id)) return; setPage(id); setError(''); const nextURL = id === 'overview' ? `${window.location.pathname}${window.location.search}` : `#${id}`; window.history.pushState(null, '', nextURL); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const go = id => { if (!allowedPages(user.Role).includes(id)) return; setPage(id); setError(''); const nextURL = id === 'overview' ? window.location.pathname : `#${id}`; window.history.pushState(null, '', nextURL); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const NavButton = ({ id, label, Icon, mobile }) => { const button = <Button variant="ghost" data-active={page === id} className="nav-button justify-start" onClick={() => go(id)}><Icon className="size-4" />{label}</Button>; return mobile ? <SheetClose asChild>{button}</SheetClose> : button; };
   const visibleNav = nav.filter(([id]) => allowedPages(user.Role).includes(id));
   const Nav = ({ mobile = false }) => <nav className="grid gap-1">{visibleNav.map(([id, label, Icon]) => <NavButton key={id} id={id} label={label} Icon={Icon} mobile={mobile} />)}{mobile && <NavButton id="account" label="Настройки входа" Icon={Settings} mobile />}</nav>;

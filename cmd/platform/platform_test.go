@@ -112,6 +112,27 @@ func TestMoneyExact(t *testing.T) {
 		t.Fatal(v, e)
 	}
 }
+
+func TestCredentialQueryIsNeverReflectedOrAccepted(t *testing.T) {
+	app := &App{}
+	secret := "synthetic-secret-never-in-location"
+	page := httptest.NewRecorder()
+	secureHeaders(http.HandlerFunc(app.ui)).ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/?login=example&password="+secret, nil))
+	if page.Code != http.StatusSeeOther || page.Header().Get("Location") != "/" || page.Header().Get("Cache-Control") != "no-store" || page.Header().Get("Referrer-Policy") != "no-referrer" || strings.Contains(page.Body.String(), secret) {
+		t.Fatal("credential URL not removed safely", page.Code, page.Header().Get("Location"))
+	}
+	called := false
+	api := httptest.NewRecorder()
+	secureHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })).ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/me?PASSWORD="+secret, nil))
+	if called || api.Code != http.StatusBadRequest || strings.Contains(api.Body.String(), secret) {
+		t.Fatal("credential URL reached API", api.Code)
+	}
+	clean := httptest.NewRecorder()
+	secureHeaders(http.HandlerFunc(app.ui)).ServeHTTP(clean, httptest.NewRequest(http.MethodGet, "/", nil))
+	if clean.Code != http.StatusOK {
+		t.Fatal("clean page unavailable", clean.Code)
+	}
+}
 func TestPANValidationAndEncryption(t *testing.T) {
 	if e := validatePAN("0000000000061234", "000000******1234"); e != nil {
 		t.Fatal(e)

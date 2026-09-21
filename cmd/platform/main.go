@@ -312,6 +312,16 @@ func secureHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+		for key := range r.URL.Query() {
+			if strings.EqualFold(key, "login") || strings.EqualFold(key, "password") {
+				if r.URL.Path != "/" {
+					w.Header().Set("Cache-Control", "no-store")
+					fail(w, http.StatusBadRequest, errors.New("реквизиты входа не принимаются в адресе"))
+					return
+				}
+				break
+			}
+		}
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" && r.URL.Path != "/login" && r.URL.Path != "/telegram/webhook" {
 			if r.Header.Get("X-CSRF") != "1" {
 				fail(w, 403, errors.New("CSRF header required"))
@@ -526,6 +536,11 @@ func txAudit(tx *sql.Tx, actor, channel, action, typ, obj, outcome, reason strin
 func (a *App) ui(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

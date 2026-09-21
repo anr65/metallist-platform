@@ -16,3 +16,9 @@ export function pageForRole(role, hash) {
   const requested = hash.replace(/^#/, '');
   return allowed.includes(requested) ? requested : allowed[0] || 'account';
 }
+
+export function stripQueryFromLocation(location, history) {
+  if (!location.search) return false;
+  history.replaceState(null, '', `${location.pathname}${location.hash}`);
+  return true;
+}
