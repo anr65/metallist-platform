@@ -102,43 +102,28 @@ func TestMoneyExact(t *testing.T) {
 		t.Fatal(v, e)
 	}
 }
-func TestPaymentPlanAndSyntheticIdentity(t *testing.T) {
-	count, e := paymentPlan("count", "20", "", "")
-	if e != nil || len(count) != 20 || count[0] != 25_000_000 {
-		t.Fatal("20-payment plan", e)
-	}
-	total, e := paymentPlan("total", "", "1500000.00", "")
-	if e != nil || len(total) != 6 || total[5] != 25_000_000 {
-		t.Fatal("1.5m plan", e)
-	}
-	remainder, e := paymentPlan("total", "", "525000.00", "")
-	if e != nil || len(remainder) != 3 || remainder[2] != 2_500_000 {
-		t.Fatal("remainder plan", e)
-	}
-	if _, e = paymentPlan("count", "501", "", ""); e == nil {
-		t.Fatal("unbounded plan")
-	}
+func TestSyntheticCardIdentity(t *testing.T) {
 	number, name, e := demoCardIdentity("f2d280ba-f209-428f-8e13-16329db63679", "000000******1001")
 	if e != nil || len(number) != 16 || number[:6] != "000000" || number[12:] != "1001" || validLuhn(number) || !strings.Contains(name, " ") {
 		t.Fatal("synthetic export identity")
 	}
 }
 
-func TestManualPaymentRows(t *testing.T) {
-	good := M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "250000.00"}}}
-	rows, e := manualPaymentRows(good)
-	if e != nil || len(rows) != 1 || rows[0].amount != 25000000 {
-		t.Fatal("valid manual row rejected", rows, e)
+func TestCardRequestRows(t *testing.T) {
+	good := M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1"}}}
+	rows, e := cardRequestRows(good)
+	if e != nil || len(rows) != 1 || rows[0].cardID != "card-1" {
+		t.Fatal("valid card row rejected", rows, e)
 	}
 	duplicate := M{"rows": []interface{}{
-		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "250000.00"},
-		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "100.00"},
+		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1"},
+		map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1"},
 	}}
-	if _, e := manualPaymentRows(duplicate); e == nil {
+	if _, e := cardRequestRows(duplicate); e == nil {
 		t.Fatal("same card accepted twice")
 	}
-	if _, e := manualPaymentRows(M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "0.00"}}}); e == nil {
-		t.Fatal("zero amount accepted")
+	if _, e := cardRequestRows(M{"rows": []interface{}{map[string]interface{}{"card_id": "card-1", "contact_id": "contact-1", "amount": "250000.00"}}}); e == nil {
+		t.Fatal("amount accepted in card request")
 	}
 }
 
@@ -222,18 +207,25 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	if duplicateStatus != 201 || duplicateContact["id"] != contactID {
 		t.Fatal("repeat payment contact did not reuse directory entry", duplicateStatus, duplicateContact)
 	}
-	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "manual", "rows": []M{{"card_id": card, "contact_id": contactID, "amount": "5000000.00"}}}
+	requestBody := M{"merchant_id": merchant, "external_ref": "DEMO-20", "mode": "cards", "rows": []M{{"card_id": card, "contact_id": contactID}}}
 	if status, _ := req(t, a.createPaymentRequest, accountant, requestBody); status != 403 {
 		t.Fatal("accountant issued card file")
 	}
-	if missingStatus, _ := req(t, a.createPaymentRequest, chief, M{"merchant_id": merchant, "external_ref": "NO-CONTACT", "mode": "count", "payment_count": "1"}); missingStatus != 400 {
+	if missingStatus, _ := req(t, a.createPaymentRequest, chief, M{"merchant_id": merchant, "external_ref": "NO-CONTACT", "mode": "cards", "rows": []M{{"card_id": card}}}); missingStatus != 400 {
 		t.Fatal("request without mandatory contact accepted", missingStatus)
 	}
+	if amountStatus, _ := req(t, a.createPaymentRequest, chief, M{"merchant_id": merchant, "external_ref": "WITH-AMOUNT", "mode": "cards", "rows": []M{{"card_id": card, "contact_id": contactID, "amount": "250000.00"}}}); amountStatus != 400 {
+		t.Fatal("request with amount accepted", amountStatus)
+	}
 	status, created := req(t, a.createPaymentRequest, operator, requestBody)
-	if status != 201 || created["payment_count"] != float64(1) || created["planned_total"] != "5000000.00" {
+	if status != 201 || created["card_count"] != float64(1) {
 		t.Fatal("request creation", status, created)
 	}
 	requestID := created["id"].(string)
+	var savedTotal, savedPer, savedRowAmount sql.NullInt64
+	if e := a.db.QueryRow("SELECT p.requested_total_cents,p.per_payment_cents,x.planned_cents FROM payment_requests p JOIN payment_request_rows x ON x.request_id=p.id WHERE p.id=$1", requestID).Scan(&savedTotal, &savedPer, &savedRowAmount); e != nil || savedTotal.Valid || savedPer.Valid || savedRowAmount.Valid {
+		t.Fatal("new card request persisted an amount", savedTotal, savedPer, savedRowAmount, e)
+	}
 	defaultsRecorder := httptest.NewRecorder()
 	a.catalog(defaultsRecorder, httptest.NewRequest("GET", "/api/catalog", nil), operator)
 	var defaultsCatalog M
@@ -263,14 +255,14 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	}
 	defer book.Close()
 	lines, e := book.GetRows("Карты к оплате")
-	if e != nil || len(lines) != 5 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
+	if e != nil || len(lines) != 5 || lines[1][0] != "Запрос: DEMO-20" || strings.Contains(strings.Join(lines[1], " "), "Вымышленный мерчант") || len(lines[3]) != 5 || lines[3][1] != "НОМЕР КАРТЫ" || lines[3][2] != "ФИО" || lines[3][3] != "НОМЕР ТЕЛЕФОНА" || lines[3][4] != "БАНК" || lines[4][2] != "Тестов Алексей Учебович" || lines[4][3] != "+70000000001" || validLuhn(lines[4][1]) {
 		t.Fatal("unsafe or incomplete export", e)
 	}
 	rowsRecorder := httptest.NewRecorder()
 	a.paymentRequestRows(rowsRecorder, httptest.NewRequest("GET", "/api/payment-request/rows?id="+requestID, nil), operator)
 	var requestRows []M
 	_ = json.Unmarshal(rowsRecorder.Body.Bytes(), &requestRows)
-	if rowsRecorder.Code != 200 || len(requestRows) != 1 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" {
+	if rowsRecorder.Code != 200 || len(requestRows) != 1 || requestRows[0]["contact_name"] != "Тестов Алексей Учебович" || requestRows[0]["contact_phone"] != "+70000000001" || requestRows[0]["amount"] != nil {
 		t.Fatal("saved contact snapshot missing", rowsRecorder.Code, requestRows)
 	}
 	rowsRecorder = httptest.NewRecorder()
@@ -338,7 +330,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)
 	var requests []M
 	_ = json.Unmarshal(w.Body.Bytes(), &requests)
-	if w.Code != 200 || len(requests) != 1 || requests[0]["received_total"] != "0.00" {
+	if w.Code != 200 || len(requests) != 1 || requests[0]["response_count"] != float64(0) || requests[0]["planned_total"] != nil {
 		t.Fatal("preview changed financial totals", w.Body.String())
 	}
 	registryID := responseData["id"].(string)
@@ -349,8 +341,8 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 	w = httptest.NewRecorder()
 	a.paymentRequests(w, httptest.NewRequest("GET", "/api/payment-requests", nil), chief)
 	_ = json.Unmarshal(w.Body.Bytes(), &requests)
-	if w.Code != 200 || len(requests) != 1 || requests[0]["received_total"] != "250000.00" || requests[0]["difference"] != "4750000.00" {
-		t.Fatal("confirmed response not reconciled with plan", w.Body.String())
+	if w.Code != 200 || len(requests) != 1 || requests[0]["response_count"] != float64(1) || requests[0]["difference"] != nil {
+		t.Fatal("confirmed response changed the card request plan", w.Body.String())
 	}
 }
 func TestExpenseDateAndSource(t *testing.T) {

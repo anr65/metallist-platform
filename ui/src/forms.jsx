@@ -98,7 +98,6 @@ function ManualRateManager({ role }) {
 export function RegistryUpload({ role }) { return <PageState title="Реестры оплат" subtitle="Загрузите файл, проверьте строки и отдельно подтвердите фактическое поступление."><RegistryUploadForm /><RegistryList role={role} /><TariffManager role={role} /><ManualRateManager role={role} /></PageState>; }
 
 const money = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' });
-function cents(value) { const match = String(value || '').trim().replaceAll(' ', '').replace(',', '.').match(/^(\d+)(?:\.(\d{1,2}))?$/); return match ? Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0')) : 0; }
 
 function ContactCombobox({ kind, value, onValueChange, onContactSelect }) {
   const [open, setOpen] = useState(false), [query, setQuery] = useState(value || ''), [page, setPage] = useState(1), [result, setResult] = useState({ items: [], total: 0, has_more: false }), [loading, setLoading] = useState(false);
@@ -129,10 +128,10 @@ function CardCombobox({ cards, value, usedCards, onValueChange }) {
 
 export function PaymentRequests({ role }) {
   const canCreate = role === 'chief' || role === 'operator';
-  const blankRow = () => ({ key: crypto.randomUUID(), card_id: '', amount: '', full_name: '', phone: '' });
+  const blankRow = () => ({ key: crypto.randomUUID(), card_id: '', full_name: '', phone: '' });
   const [data, setData] = useState(null), [merchant, setMerchant] = useState(''), [reference, setReference] = useState('');
   const [draftRows, setDraftRows] = useState([]), [showAuto, setShowAuto] = useState(false);
-  const [autoMode, setAutoMode] = useState('count'), [count, setCount] = useState(''), [total, setTotal] = useState(''), [perPayment, setPerPayment] = useState('250000.00');
+  const [count, setCount] = useState('');
   const [selected, setSelected] = useState(null), [rows, setRows] = useState([]), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false);
   const load = (refreshReference = false) => Promise.all([get('/api/catalog'), get('/api/payment-requests'), canCreate ? get('/api/payment-request/next-reference') : Promise.resolve({ next_reference: '' })]).then(([catalog, requests, next]) => {
     setData({ catalog, requests });
@@ -143,27 +142,21 @@ export function PaymentRequests({ role }) {
   const cards = data?.catalog.request_cards || [];
   const editRow = (key, changes) => setDraftRows(current => current.map(row => row.key === key ? { ...row, ...changes } : row));
   const usedCards = new Set(draftRows.map(row => row.card_id).filter(Boolean));
-  const draftTotal = draftRows.reduce((sum, row) => sum + cents(row.amount), 0);
   function generateRows() {
-    const per = cents(perPayment);
-    const target = cents(total);
-    const quantity = autoMode === 'count' ? Number(count) : (per > 0 ? Math.ceil(target / per) : 0);
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500 || per <= 0 || (autoMode === 'total' && target <= 0)) {
-      setError('Укажите корректное количество или сумму: от 1 до 500 платежей.'); return;
+    const quantity = Number(count);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 500) {
+      setError('Укажите количество карт от 1 до 500.'); return;
     }
     if (quantity > cards.length) { setError(`Для ${quantity} строк нужно столько же разных активных карт. Доступно: ${cards.length}.`); return; }
-    setDraftRows(Array.from({ length: quantity }, (_, index) => ({
-      ...blankRow(), card_id: cards[index].id,
-      amount: autoMode === 'total' ? (Math.min(per, target - index * per) / 100).toFixed(2) : (per / 100).toFixed(2),
-    })));
+    setDraftRows(Array.from({ length: quantity }, (_, index) => ({ ...blankRow(), card_id: cards[index].id })));
     setError(''); setShowAuto(false);
   }
   async function open(item) { setSelected(item); setRows([]); setError(''); try { setRows(await get('/api/payment-request/rows?id=' + encodeURIComponent(item.id))); } catch (e) { setError(e.message); } }
   async function submit(event) {
     event.preventDefault();
     if (!draftRows.length || draftRows.length > 500) { setError('Добавьте от 1 до 500 реквизитов.'); return; }
-    if (draftRows.some(row => !row.card_id || cents(row.amount) <= 0 || !row.full_name.trim() || !row.phone.trim()) || usedCards.size !== draftRows.length) {
-      setError('В каждой строке выберите отдельную карту и заполните сумму, ФИО и телефон.'); return;
+    if (draftRows.some(row => !row.card_id || !row.full_name.trim() || !row.phone.trim()) || usedCards.size !== draftRows.length) {
+      setError('В каждой строке выберите отдельную карту и заполните ФИО и телефон.'); return;
     }
     setBusy(true); setError(''); setMessage('');
     try {
@@ -173,10 +166,10 @@ export function PaymentRequests({ role }) {
         const contact = { full_name: row.full_name.trim(), phone: row.phone.trim() };
         const key = JSON.stringify(contact);
         if (!saved.has(key)) saved.set(key, (await post('/api/catalog/create', { kind: 'payment_contact', ...contact })).id);
-        requestRows.push({ card_id: row.card_id, amount: row.amount, contact_id: saved.get(key) });
+        requestRows.push({ card_id: row.card_id, contact_id: saved.get(key) });
       }
-      const created = await post('/api/payment-request/create', { merchant_id: merchant, external_ref: reference, mode: 'manual', rows: requestRows });
-      setMessage(`Запрос создан: ${created.payment_count} платежей на ${created.planned_total} ₽. XLSX готов к скачиванию.`);
+      const created = await post('/api/payment-request/create', { merchant_id: merchant, external_ref: reference, mode: 'cards', rows: requestRows });
+      setMessage(`Запрос создан: ${created.card_count} карт. XLSX готов к скачиванию.`);
       setDraftRows([]);
       await load(true);
     } catch (e) { setError(e.message); } finally { setBusy(false); }
@@ -188,25 +181,24 @@ export function PaymentRequests({ role }) {
         <label className="grid gap-2 text-sm font-medium">Мерчант<Select value={merchant} onValueChange={setMerchant}><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(data.catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
         <label className="grid gap-2 text-sm font-medium">Название запроса<Input value={reference} onChange={e => setReference(e.target.value)} maxLength="80" placeholder="ЗК-2026-0001" required /><small className="font-normal text-muted-foreground">Следующий номер заполнен автоматически — название можно изменить.</small></label>
         <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">Контакты получателей</h3><p className="text-sm text-muted-foreground">Добавьте строку, выберите карту и заполните остальные поля.</p></div><Button type="button" onClick={() => { setDraftRows(current => [...current, blankRow()]); setError(''); }} disabled={draftRows.length >= Math.min(cards.length, 500)}>Добавить реквизит +</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">Контакты получателей</h3><p className="text-sm text-muted-foreground">Добавьте строку, выберите карту, ФИО и телефон. Сумму укажет мерчант в ответном реестре.</p></div><Button type="button" onClick={() => { setDraftRows(current => [...current, blankRow()]); setError(''); }} disabled={draftRows.length >= Math.min(cards.length, 500)}>Добавить реквизит +</Button></div>
           {draftRows.length ? <div className="mt-5 grid gap-3">{draftRows.map((row, index) => <div className="grid gap-3 rounded-xl border bg-background p-4" key={row.key}>
-            <div className="flex items-center justify-between gap-3"><strong className="text-sm">Платёж {index + 1}</strong><Button type="button" variant="outline" size="sm" onClick={() => setDraftRows(current => current.filter(item => item.key !== row.key))}>Удалить строку</Button></div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="flex items-center justify-between gap-3"><strong className="text-sm">Реквизит {index + 1}</strong><Button type="button" variant="outline" size="sm" onClick={() => setDraftRows(current => current.filter(item => item.key !== row.key))}>Удалить строку</Button></div>
+            <div className="grid gap-3 md:grid-cols-3">
               <label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={usedCards} onValueChange={value => editRow(row.key, { card_id: value })} /></label>
-              <label className="grid gap-2 text-sm font-medium">Сумма, ₽<Input value={row.amount} onChange={e => editRow(row.key, { amount: e.target.value })} inputMode="decimal" placeholder="250 000,00" /></label>
               <label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={value => editRow(row.key, { full_name: value })} onContactSelect={contact => editRow(row.key, { full_name: contact.full_name, phone: contact.phone })} /></label>
               <label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => editRow(row.key, { phone: value })} onContactSelect={contact => editRow(row.key, { full_name: contact.full_name, phone: contact.phone })} /></label>
             </div>
           </div>)}</div> : <p className="mt-5 rounded-xl bg-muted p-5 text-sm text-muted-foreground">Пока нет строк. Нажмите «Добавить реквизит +».</p>}
-          <p className="mt-4 text-sm text-muted-foreground">{draftRows.length} платежей · План: {money.format(draftTotal / 100)}</p>
+          <p className="mt-4 text-sm text-muted-foreground">Выбрано карт: {draftRows.length}</p>
         </div>
-        <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5"><Button type="button" variant="outline" onClick={() => setShowAuto(current => !current)}>Сформировать автоматически по сумме / количеству</Button>
-          {showAuto && <div className="mt-4 grid gap-4 md:grid-cols-2"><p className="md:col-span-2 text-sm text-muted-foreground">Автоподбор использует активные карты без учёта исторических оборотов. Проверьте каждую строку перед созданием запроса. Текущие строки будут заменены.</p><div className="flex flex-wrap gap-2 md:col-span-2"><Button type="button" variant={autoMode === 'count' ? 'secondary' : 'outline'} onClick={() => setAutoMode('count')}>По количеству</Button><Button type="button" variant={autoMode === 'total' ? 'secondary' : 'outline'} onClick={() => setAutoMode('total')}>По общей сумме</Button></div>{autoMode === 'count' ? <label className="grid gap-2 text-sm font-medium">Сколько платежей<Input value={count} onChange={e => setCount(e.target.value)} type="number" min="1" max="500" /></label> : <label className="grid gap-2 text-sm font-medium">Общая сумма, ₽<Input value={total} onChange={e => setTotal(e.target.value)} inputMode="decimal" placeholder="1 500 000,00" /></label>}<label className="grid gap-2 text-sm font-medium">План на один платёж, ₽<Input value={perPayment} onChange={e => setPerPayment(e.target.value)} inputMode="decimal" /></label><div className="md:col-span-2"><Button type="button" onClick={generateRows}>Сформировать строки</Button></div></div>}
+        <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5"><Button type="button" variant="outline" onClick={() => setShowAuto(current => !current)}>Подобрать карты по количеству</Button>
+          {showAuto && <div className="mt-4 grid gap-4 md:grid-cols-2"><p className="md:col-span-2 text-sm text-muted-foreground">Автоподбор использует активные карты без учёта исторических оборотов. Проверьте каждую строку перед созданием запроса. Текущие строки будут заменены.</p><label className="grid gap-2 text-sm font-medium">Сколько карт<Input value={count} onChange={e => setCount(e.target.value)} type="number" min="1" max="500" /></label><div className="md:col-span-2"><Button type="button" onClick={generateRows}>Сформировать строки</Button></div></div>}
         </div>
         <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" type="submit" disabled={busy || !draftRows.length}>{busy ? 'Создание…' : 'Создать и подготовить XLSX'}</Button></div>
       </form> : <p>Загрузка…</p>}</CardContent>
     </Card>}
-    <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы скачать XLSX и проверить распределение.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">План: {money.format(item.planned_total || 0)}</span><span className="text-sm text-muted-foreground">Поступило: {money.format(item.received_total || 0)}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
-    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. План: {money.format(selected.planned_total || 0)}; подтверждено по ответам: {money.format(selected.received_total || 0)}.</CardDescription></CardHeader><CardContent><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a><div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr_auto]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span><span>{money.format(row.amount || 0)}</span></div>)}</div></CardContent></Card>}
+    <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы скачать XLSX и проверить выбранные карты.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">Карт: {item.card_count}</span><span className="text-sm text-muted-foreground">Ответных реестров: {item.response_count}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
+    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}.</CardDescription></CardHeader><CardContent><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a><div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div></CardContent></Card>}
   </PageState>;
 }
