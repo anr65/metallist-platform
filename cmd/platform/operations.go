@@ -288,7 +288,7 @@ func (a *App) rejectDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, errors.New("устаревший предпросмотр"))
 		return
 	}
-	if _, e = tx.Exec("UPDATE drafts SET status='rejected',version=version+1 WHERE id=$1", str(m, "id")); e != nil {
+	if _, e = tx.Exec("UPDATE drafts SET status='rejected' WHERE id=$1", str(m, "id")); e != nil {
 		fail(w, 500, e)
 		return
 	}

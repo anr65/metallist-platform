@@ -1327,6 +1327,10 @@ func TestHandoverConfirmationAmountAndDraftRejection(t *testing.T) {
 	if code != 200 || result["status"] != "rejected" {
 		t.Fatal("draft rejection failed", code, result)
 	}
+	var rejectedVersion int
+	if e = a.db.QueryRow("SELECT version FROM drafts WHERE id=$1", rejectedID).Scan(&rejectedVersion); e != nil || rejectedVersion != 1 {
+		t.Fatal("rejection changed the draft version", rejectedVersion, e)
+	}
 	code, result = req(t, a.rejectDraft, u, M{"id": rejectedID, "version": "1", "reason": "дубль"})
 	if code != 200 || result["status"] != "already_rejected" {
 		t.Fatal("draft rejection retry failed", code, result)
