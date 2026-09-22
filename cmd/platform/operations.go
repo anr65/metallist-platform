@@ -303,6 +303,10 @@ func (a *App) rejectDraft(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 200, M{"status": "rejected"})
 }
 func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, error) {
+	return a.eventLinesWithCardOverdraft(tx, kind, p, v, false)
+}
+
+func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64, allowCardOverdraft bool) ([]Posting, error) {
 	debit := func(account, merchant, card, custodian, ref, category string) Posting {
 		return Posting{Account: account, Side: "debit", Amount: v, Merchant: merchant, Card: card, Custodian: custodian, Ref: ref, Category: category}
 	}
@@ -314,12 +318,14 @@ func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, erro
 		if e != nil {
 			return s, e
 		}
-		bal, e := available(tx, s)
-		if e != nil {
-			return s, e
-		}
-		if bal < v {
-			return s, errors.New("недостаточно денег в источнике")
+		if !allowCardOverdraft || s.Card == "" {
+			bal, e := available(tx, s)
+			if e != nil {
+				return s, e
+			}
+			if bal < v {
+				return s, errors.New("недостаточно денег в источнике")
+			}
 		}
 		s.Side = "credit"
 		s.Amount = v
@@ -361,8 +367,10 @@ func (a *App) eventLines(tx *sql.Tx, kind string, p M, v int64) ([]Posting, erro
 		if e != nil {
 			return nil, e
 		}
-		if e = need("1100", "card", card); e != nil {
-			return nil, e
+		if !allowCardOverdraft {
+			if e = need("1100", "card", card); e != nil {
+				return nil, e
+			}
 		}
 		return []Posting{debit(a, "", "", cust, "", ""), credit("1100", "", card, "", "", "")}, nil
 	case "handover":

@@ -340,15 +340,10 @@ func TestTelegramCollectorWithdrawalBatchIsAtomicIdempotentAndReversible(t *test
 	}
 }
 
-func TestTelegramWithdrawalBatchRejectsWholeInvalidOrUnfundedBatch(t *testing.T) {
+func TestTelegramWithdrawalBatchRejectsInvalidAndAllowsNegativeCardBalance(t *testing.T) {
 	a := testApp(t)
-	chief, _, _, card := fixtures(t, a)
+	_, _, _, card := fixtures(t, a)
 	_, _, _, fake := telegramFixture(t, a, card)
-	tx, _ := a.tx()
-	_, e := put(tx, "test_funding", id(), "tg-withdrawal-batch-limit-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 100_000, Card: card}, {Account: "3100", Side: "credit", Amount: 100_000}}, "")
-	if e != nil || tx.Commit() != nil {
-		t.Fatal(e)
-	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(1201, 555, "/withdraw 1234 10/20\n1234 неверно")); code != 200 {
 		t.Fatal(code)
 	}
@@ -366,11 +361,18 @@ func TestTelegramWithdrawalBatchRejectsWholeInvalidOrUnfundedBatch(t *testing.T)
 	if code := telegramRequest(t, a, telegramButtonUpdate(1203, 555, "confirm", draftID)); code != 200 {
 		t.Fatal(code)
 	}
-	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 0 {
-		t.Fatal("part of unfunded withdrawal batch was posted", count, e)
+	if code := telegramRequest(t, a, telegramButtonUpdate(1204, 555, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
 	}
-	if e := a.db.QueryRow("SELECT count(*) FROM observations WHERE source=$1", "telegram:"+draftID).Scan(&count); e != nil || count != 0 {
-		t.Fatal("unfunded withdrawal batch saved observations", count, e)
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("zero-balance withdrawal batch was not posted exactly once", count, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM observations WHERE source=$1", "telegram:"+draftID).Scan(&count); e != nil || count != 2 {
+		t.Fatal("withdrawal observations missing or duplicated", count, e)
+	}
+	var balance int64
+	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings WHERE account='1100' AND card_id=$1", card).Scan(&balance); e != nil || balance != -110_000 {
+		t.Fatal("withdrawal did not produce expected negative card balance", balance, e)
 	}
 }
 
@@ -481,15 +483,10 @@ func TestTelegramCollectorExpenseBatchIsAtomicAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestTelegramExpenseBatchRejectsWholeInvalidOrUnfundedBatch(t *testing.T) {
+func TestTelegramExpenseBatchRejectsInvalidAndAllowsNegativeCardBalance(t *testing.T) {
 	a := testApp(t)
-	chief, _, _, card := fixtures(t, a)
+	_, _, _, card := fixtures(t, a)
 	_, _, _, fake := telegramFixture(t, a, card)
-	tx, _ := a.tx()
-	_, e := put(tx, "test_funding", id(), "tg-expense-batch-limit-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1100", Side: "debit", Amount: 100_000, Card: card}, {Account: "3100", Side: "credit", Amount: 100_000}}, "")
-	if e != nil || tx.Commit() != nil {
-		t.Fatal(e)
-	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(2201, 555, "/expense 1234 прогрев 10; 1234 зарплата 20")); code != 200 {
 		t.Fatal(code)
 	}
@@ -507,12 +504,19 @@ func TestTelegramExpenseBatchRejectsWholeInvalidOrUnfundedBatch(t *testing.T) {
 	if code := telegramRequest(t, a, telegramButtonUpdate(2203, 555, "confirm", draftID)); code != 200 {
 		t.Fatal(code)
 	}
-	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 0 {
-		t.Fatal("part of unfunded batch was posted", count, e)
+	if code := telegramRequest(t, a, telegramButtonUpdate(2204, 555, "confirm", draftID)); code != 200 {
+		t.Fatal(code)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&count); e != nil || count != 1 {
+		t.Fatal("zero-balance expense batch was not posted exactly once", count, e)
 	}
 	var status string
-	if e := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", draftID).Scan(&status); e != nil || status != "draft" {
-		t.Fatal("failed batch changed draft status", status, e)
+	if e := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", draftID).Scan(&status); e != nil || status != "posted" {
+		t.Fatal("confirmed expense batch status is wrong", status, e)
+	}
+	var balance int64
+	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings WHERE account='1100' AND card_id=$1", card).Scan(&balance); e != nil || balance != -110_000 {
+		t.Fatal("expense did not produce expected negative card balance", balance, e)
 	}
 }
 

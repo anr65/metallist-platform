@@ -140,7 +140,6 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 			return errors.New("Список снятий повреждён")
 		}
 		var total int64
-		byCard := map[string]int64{}
 		for _, item := range items {
 			cardID := str(item, "card_id")
 			if e = a.telegramValidateCard(tx, u.ID, role, cardID); e != nil {
@@ -148,21 +147,14 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 			}
 			itemAmount, amountErr := telegramInt(item["amount_cents"])
 			observed, observedErr := telegramInt(item["observed_cents"])
-			if amountErr != nil || itemAmount <= 0 || observedErr != nil || observed < 0 || itemAmount > math.MaxInt64-total || itemAmount > math.MaxInt64-byCard[cardID] {
+			if amountErr != nil || itemAmount <= 0 || observedErr != nil || observed < 0 || itemAmount > math.MaxInt64-total {
 				return errors.New("Сумма снятия или остаток некорректны")
 			}
 			total += itemAmount
-			byCard[cardID] += itemAmount
 		}
 		claimed, claimedErr := telegramInt(p["amount_cents"])
 		if claimedErr != nil || total != claimed {
 			return errors.New("Общая сумма снятий изменилась")
-		}
-		for cardID, required := range byCard {
-			availableCents, balanceErr := available(tx, Posting{Account: "1100", Card: cardID})
-			if balanceErr != nil || availableCents < required {
-				return errors.New("Недостаточно денег на одной из карт")
-			}
 		}
 		return nil
 	}
@@ -171,7 +163,6 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 		return errors.New("Список расходов повреждён")
 	}
 	var total int64
-	byCard := map[string]int64{}
 	for _, item := range items {
 		cardID := str(item, "card_id")
 		if str(item, "source_kind") != "card" || str(item, "source_id") != cardID {
@@ -188,21 +179,14 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 			return errors.New("Доступны только прогрев и банковская комиссия")
 		}
 		itemAmount, amountErr := telegramInt(item["amount_cents"])
-		if amountErr != nil || itemAmount <= 0 || itemAmount > math.MaxInt64-total || itemAmount > math.MaxInt64-byCard[cardID] {
+		if amountErr != nil || itemAmount <= 0 || itemAmount > math.MaxInt64-total {
 			return errors.New("Сумма расхода некорректна")
 		}
 		total += itemAmount
-		byCard[cardID] += itemAmount
 	}
 	claimed, e := telegramInt(p["amount_cents"])
 	if e != nil || total != claimed {
 		return errors.New("Общая сумма расходов изменилась")
-	}
-	for cardID, required := range byCard {
-		availableCents, balanceErr := available(tx, Posting{Account: "1100", Card: cardID})
-		if balanceErr != nil || availableCents < required {
-			return errors.New("Недостаточно денег на одной из карт")
-		}
 	}
 	return nil
 }
@@ -233,7 +217,7 @@ func (a *App) telegramExpenseLines(tx *sql.Tx, p M, expectedTotal int64) ([]Post
 		if err != nil || itemAmount <= 0 || itemAmount > math.MaxInt64-total {
 			return nil, errors.New("сумма расхода некорректна")
 		}
-		itemLines, err := a.eventLines(tx, "expense", item, itemAmount)
+		itemLines, err := a.eventLinesWithCardOverdraft(tx, "expense", item, itemAmount, true)
 		if err != nil {
 			return nil, err
 		}
@@ -259,7 +243,7 @@ func (a *App) telegramWithdrawalLines(tx *sql.Tx, p M, expectedTotal int64) ([]P
 			return nil, errors.New("сумма снятия некорректна")
 		}
 		itemPayload := M{"card_id": str(item, "card_id"), "custodian_id": str(p, "custodian_id")}
-		itemLines, err := a.eventLines(tx, "withdrawal", itemPayload, itemAmount)
+		itemLines, err := a.eventLinesWithCardOverdraft(tx, "withdrawal", itemPayload, itemAmount, true)
 		if err != nil {
 			return nil, err
 		}
