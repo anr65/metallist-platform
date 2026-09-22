@@ -57,6 +57,7 @@
 - [Импорт XLSX](integrations/xlsx-import.md)
 - [Объектное хранилище](integrations/object-storage.md)
 - [Команды приложения](api/commands.md)
+- [Ошибки API и интерфейса](api/errors.md)
 
 ### Эксплуатация и безопасность
 
