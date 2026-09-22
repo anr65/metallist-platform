@@ -127,7 +127,6 @@ func respond(w http.ResponseWriter, status int, v interface{}) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func fail(w http.ResponseWriter, status int, e error) { respond(w, status, M{"error": e.Error()}) }
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
