@@ -263,6 +263,8 @@ func main() {
 	mux.HandleFunc("/api/card/assign", app.auth(app.assignCard))
 	mux.HandleFunc("/api/user/telegram", app.auth(app.linkTelegram))
 	mux.HandleFunc("/api/registry/upload", app.auth(app.upload))
+	mux.HandleFunc("/api/registry/manual", app.auth(app.createManualRegistry))
+	mux.HandleFunc("/api/registry/manual/cards", app.auth(app.manualRegistryCards))
 	mux.HandleFunc("/api/payment-request/create", app.auth(app.createPaymentRequest))
 	mux.HandleFunc("/api/payment-request/update", app.auth(app.updatePaymentRequest))
 	mux.HandleFunc("/api/payment-request/delete", app.auth(app.deletePaymentRequest))

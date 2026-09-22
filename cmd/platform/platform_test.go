@@ -98,6 +98,72 @@ func fixtures(t *testing.T, a *App) (User, string, string, string) {
 	}
 	return u, merchant, bank, card
 }
+
+func TestManualRegistryCreationAndConfirmation(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, card := fixtures(t, a)
+	operator := User{ID: id(), Role: "operator"}
+	contact := id()
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'manual-operator','Operator','operator','x')", operator.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO payment_contacts(id,full_name,phone,created_by) VALUES($1,'Тестовый Получатель','+79990000001',$2)", contact, chief.ID); e != nil {
+		t.Fatal(e)
+	}
+	cardsRecorder := httptest.NewRecorder()
+	a.manualRegistryCards(cardsRecorder, httptest.NewRequest("GET", "/api/registry/manual/cards", nil), operator)
+	var availableCards []M
+	if e := json.Unmarshal(cardsRecorder.Body.Bytes(), &availableCards); e != nil || cardsRecorder.Code != 200 || len(availableCards) != 1 || availableCards[0]["id"] != card {
+		t.Fatalf("operator cards: %d %v %v", cardsRecorder.Code, availableCards, e)
+	}
+	key := id()
+	input := M{"merchant_id": merchant, "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,64"}}}
+	if code, _ := req(t, a.createManualRegistry, User{ID: id(), Role: "accountant"}, input); code != 403 {
+		t.Fatalf("accountant creation: %d", code)
+	}
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": contact, "amount": "0"}}}); code != 400 {
+		t.Fatalf("invalid amount: %d", code)
+	}
+	code, result := req(t, a.createManualRegistry, operator, input)
+	if code != 201 {
+		t.Fatalf("create: %d %v", code, result)
+	}
+	registryID := result["id"].(string)
+	if code, repeated := req(t, a.createManualRegistry, operator, input); code != 200 || repeated["id"] != registryID {
+		t.Fatalf("retry: %d %v", code, repeated)
+	}
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,65"}}}); code != 409 {
+		t.Fatalf("changed retry: %d", code)
+	}
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": id(), "amount": "100.00"}}}); code != 400 {
+		t.Fatalf("unknown contact: %d", code)
+	}
+	var sourceKind, sourcePath, status string
+	var rows, entries int
+	if e := a.db.QueryRow("SELECT s.kind,s.storage_path,r.status,(SELECT count(*) FROM registry_rows WHERE registry_id=r.id),(SELECT count(*) FROM journal_entries) FROM registries r JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1", registryID).Scan(&sourceKind, &sourcePath, &status, &rows, &entries); e != nil {
+		t.Fatal(e)
+	}
+	storedSource, e := os.ReadFile(sourcePath)
+	if e != nil || strings.Contains(string(storedSource), "+79990000001") {
+		t.Fatalf("manual source must be stored encrypted: %v", e)
+	}
+	if sourceKind != "manual" || status != "preview" || rows != 1 || entries != 0 {
+		t.Fatalf("unexpected preview: %s %s %d %d", sourceKind, status, rows, entries)
+	}
+	if code, _ := req(t, a.confirmRegistry, operator, M{"id": registryID, "version": "1", "confirm_total": "1234.64", "confirm_commission": "49.39", "confirm_rate_bp": "400"}); code != 403 {
+		t.Fatalf("operator confirmation: %d", code)
+	}
+	code, result = req(t, a.confirmRegistry, chief, M{"id": registryID, "version": "1", "confirm_total": "1234.64", "confirm_commission": "49.39", "confirm_rate_bp": "400"})
+	if code != 200 {
+		t.Fatalf("chief confirmation: %d %v", code, result)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_type='registry' AND event_id=$1", registryID).Scan(&entries); e != nil {
+		t.Fatal(e)
+	}
+	if entries != 1 {
+		t.Fatalf("expected one posted entry, got %d", entries)
+	}
+}
 func TestMoneyExact(t *testing.T) {
 	if fee(123464, 400) != 4939 || fee(98770, 500) != 4939 {
 		t.Fatal("half up")
