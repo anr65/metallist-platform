@@ -15,6 +15,7 @@
 - домен `metallcash.work` направлен на подготовленный сервер;
 - HTTPS обслуживает Caddy;
 - вход на сервер только `deploy` по SSH-ключу;
+- production SSH host: `deploy@167.233.162.67`;
 - root login и password authentication отключены;
 - UFW разрешает SSH, HTTP и HTTPS;
 - рабочий каталог `/opt/metallist-platform`;

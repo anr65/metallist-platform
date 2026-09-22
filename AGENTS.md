@@ -35,6 +35,8 @@ Do not implement an assumption that changes debt, profit, balances, permissions,
 
 ## Financial safety
 
+The Metallist production SSH host is `deploy@167.233.162.67`. Verify the service and deployment paths before any production action; do not use unrelated SSH hosts for this project.
+
 - Separate source evidence, business documents, workflow state, and ledger postings.
 - Posted journal entries are immutable. Correct them through reversal and replacement.
 - Every journal entry must balance exactly.
