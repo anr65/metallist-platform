@@ -142,7 +142,7 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 		var total int64
 		for _, item := range items {
 			cardID := str(item, "card_id")
-			if e = a.telegramValidateCard(tx, u.ID, role, cardID); e != nil {
+			if e = a.telegramValidateCard(tx, cardID); e != nil {
 				return e
 			}
 			itemAmount, amountErr := telegramInt(item["amount_cents"])
@@ -168,7 +168,7 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 		if str(item, "source_kind") != "card" || str(item, "source_id") != cardID {
 			return errors.New("Источник расхода изменился")
 		}
-		if e = a.telegramValidateCard(tx, u.ID, role, cardID); e != nil {
+		if e = a.telegramValidateCard(tx, cardID); e != nil {
 			return e
 		}
 		category := str(item, "category")
@@ -191,16 +191,10 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 	return nil
 }
 
-func (a *App) telegramValidateCard(tx *sql.Tx, userID, role, cardID string) error {
+func (a *App) telegramValidateCard(tx *sql.Tx, cardID string) error {
 	var status string
 	if e := tx.QueryRow("SELECT status FROM cards WHERE id=$1", cardID).Scan(&status); e != nil || status != "active" {
 		return errors.New("Карта недоступна")
-	}
-	if telegramFieldRole(role) {
-		var assigned bool
-		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM card_assignments WHERE user_id=$1 AND card_id=$2)", userID, cardID).Scan(&assigned); e != nil || !assigned {
-			return errors.New("Карта больше не назначена пользователю")
-		}
 	}
 	return nil
 }

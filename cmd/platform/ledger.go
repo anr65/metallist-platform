@@ -175,13 +175,10 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		if name == "users" && u.Role != "sysadmin" && u.Role != "chief" {
 			continue
 		}
-		var rows *sql.Rows
-		var e error
 		if name == "cards" && (u.Role == "operator" || u.Role == "collector") {
-			rows, e = a.db.Query("SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id JOIN card_assignments x ON x.card_id=c.id WHERE x.user_id=$1 ORDER BY b.name,c.mask", u.ID)
-		} else {
-			rows, e = a.db.Query(q)
+			q = "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id WHERE c.status='active' ORDER BY b.name,c.mask"
 		}
+		rows, e := a.db.Query(q)
 		if e != nil {
 			fail(w, 500, e)
 			return
@@ -411,11 +408,6 @@ func (a *App) observation(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, e)
 		return
 	}
-	if !a.cardAllowed(u, str(m, "card_id")) {
-		a.logAudit(u.ID, "web", "observation", "card", str(m, "card_id"), "rejected", "card_not_assigned", M{})
-		fail(w, 403, errors.New("карта не назначена"))
-		return
-	}
 	v, e := nonnegative(str(m, "amount"))
 	if e != nil {
 		fail(w, 400, e)
@@ -431,33 +423,3 @@ func (a *App) observation(w http.ResponseWriter, r *http.Request, u User) {
 	respond(w, 201, M{"id": newID})
 }
 func encode(v interface{}) []byte { b, _ := json.Marshal(v); return b }
-func (a *App) assignCard(w http.ResponseWriter, r *http.Request, u User) {
-	if r.Method != "POST" || !a.require(w, u, "sysadmin") {
-		return
-	}
-	m, e := jsonBody(r)
-	if e != nil {
-		fail(w, 400, e)
-		return
-	}
-	res, e := a.db.Exec("INSERT INTO card_assignments(user_id,card_id,assigned_by) SELECT u.id,c.id,$3 FROM users u,cards c WHERE u.id=$1 AND u.role IN ('operator','collector') AND u.active AND c.id=$2 AND c.status='active' ON CONFLICT DO NOTHING", str(m, "user_id"), str(m, "card_id"), u.ID)
-	if e != nil {
-		fail(w, 409, e)
-		return
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		fail(w, 409, errors.New("карта уже назначена или пользователь недоступен"))
-		return
-	}
-	a.logAudit(u.ID, "web", "card_assign", "card", str(m, "card_id"), "success", "", M{"user_id": str(m, "user_id")})
-	respond(w, 200, M{"assigned": true})
-}
-func (a *App) cardAllowed(u User, card string) bool {
-	if u.Role != "operator" && u.Role != "collector" {
-		return true
-	}
-	var ok bool
-	_ = a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM card_assignments WHERE user_id=$1 AND card_id=$2)", u.ID, card).Scan(&ok)
-	return ok
-}

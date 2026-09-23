@@ -319,7 +319,7 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),COALESCE(r.manual_rate_bp,0),r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
+	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
 	if u.Role == "operator" {
@@ -336,8 +336,8 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	for rows.Next() {
 		var id, name, merchant, ref, status, requestID string
 		var total, comm, adjustment int64
-		var rate, manual, version int
-		var adjustedRate sql.NullInt64
+		var rate, version int
+		var manual, adjustedRate sql.NullInt64
 		var confirmed sql.NullTime
 		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID); e != nil {
 			fail(w, 500, e)
@@ -351,17 +351,25 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 		} else if status == "reversed" {
 			comm = 0
 		}
-		x := M{"id": id, "merchant": name, "external_ref": ref, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual, "version": version, "payment_request_id": requestID}
+		x := M{"id": id, "merchant": name, "merchant_id": merchant, "external_ref": ref, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual.Int64, "version": version, "payment_request_id": requestID}
 		if status == "preview" {
-			tx, _ := a.db.Begin()
-			rate, _ = a.currentRate(tx, merchant)
-			tx.Rollback()
-			if manual > 0 {
-				rate = manual
+			rateAvailable := manual.Valid
+			if manual.Valid {
+				rate = int(manual.Int64)
+			} else {
+				rateErr := a.db.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<= (now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY created_at DESC LIMIT 1", merchant).Scan(&rate)
+				if rateErr != nil && !errors.Is(rateErr, sql.ErrNoRows) {
+					fail(w, 500, rateErr)
+					return
+				}
+				rateAvailable = rateErr == nil
 			}
-			x["rate_bp"] = rate
-			x["commission"] = rub(fee(total, rate))
-			x["net"] = rub(total - fee(total, rate))
+			x["rate_available"] = rateAvailable
+			if rateAvailable {
+				x["rate_bp"] = rate
+				x["commission"] = rub(fee(total, rate))
+				x["net"] = rub(total - fee(total, rate))
+			}
 		}
 		if status == "reversed" {
 			x["net"] = "0.00"
@@ -487,13 +495,19 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, fmt.Errorf("%d строк требуют исправления", bad))
 		return
 	}
-	bp, e := a.currentRate(tx, merchant)
-	if e != nil {
-		fail(w, 409, e)
-		return
-	}
+	var bp int
 	if manual.Valid {
 		bp = int(manual.Int64)
+	} else {
+		bp, e = a.currentRate(tx, merchant)
+		if errors.Is(e, sql.ErrNoRows) {
+			fail(w, 409, errors.New("для мерчанта не задан действующий тариф; утвердите общий тариф или разовую ставку реестра"))
+			return
+		}
+		if e != nil {
+			fail(w, 500, e)
+			return
+		}
 	}
 	commission := fee(total, bp)
 	if str(m, "confirm_total") != rub(total) || str(m, "confirm_commission") != rub(commission) || str(m, "confirm_rate_bp") != strconv.Itoa(bp) {

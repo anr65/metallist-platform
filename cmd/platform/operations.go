@@ -56,19 +56,6 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("нужно основание"))
 		return
 	}
-	if u.Role == "operator" {
-		card := ""
-		if kind == "withdrawal" {
-			card = str(m, "card_id")
-		} else if kind == "expense" && str(m, "source_kind") == "card" {
-			card = str(m, "source_id")
-		}
-		if card != "" && !a.cardAllowed(u, card) {
-			a.logAudit(u.ID, "web", "draft_create", kind, "", "rejected", "card_not_assigned", M{})
-			fail(w, 403, errors.New("карта не назначена"))
-			return
-		}
-	}
 	v, e := amount(str(m, "amount"))
 	if e != nil {
 		fail(w, 400, e)

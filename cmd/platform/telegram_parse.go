@@ -20,17 +20,11 @@ type telegramIntent struct {
 	Observed int64
 }
 
-func (a *App) telegramCard(u telegramActor, lastFour string) (string, string, error) {
+func (a *App) telegramCard(_ telegramActor, lastFour string) (string, string, error) {
 	if !telegramLastFour.MatchString(lastFour) {
 		return "", "", errors.New("Укажите ровно последние 4 цифры карты")
 	}
-	query := "SELECT c.id,c.mask FROM cards c WHERE c.status='active' AND c.last4=$1"
-	args := []interface{}{lastFour}
-	if telegramFieldRole(u.Role) {
-		query += " AND EXISTS(SELECT 1 FROM card_assignments x WHERE x.card_id=c.id AND x.user_id=$2)"
-		args = append(args, u.ID)
-	}
-	rows, e := a.db.Query(query, args...)
+	rows, e := a.db.Query("SELECT c.id,c.mask FROM cards c WHERE c.status='active' AND c.last4=$1", lastFour)
 	if e != nil {
 		return "", "", errors.New("Не удалось найти карту")
 	}
@@ -47,7 +41,7 @@ func (a *App) telegramCard(u telegramActor, lastFour string) (string, string, er
 		return "", "", errors.New("Не удалось найти карту")
 	}
 	if count == 0 {
-		return "", "", errors.New("Карта с этими четырьмя цифрами вам не назначена или недоступна")
+		return "", "", errors.New("Активная карта с этими четырьмя цифрами не найдена")
 	}
 	if count != 1 {
 		return "", "", errors.New("Последние четыре цифры неоднозначны. Уточните карту у администратора")

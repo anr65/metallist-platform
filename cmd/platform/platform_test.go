@@ -941,6 +941,50 @@ func TestLedgerInvariantAndImmutability(t *testing.T) {
 		t.Fatal("duplicate accepted")
 	}
 }
+func TestRegistryRequiresEffectiveRate(t *testing.T) {
+	a := testApp(t)
+	u, merchant, _, card := fixtures(t, a)
+	if _, e := a.db.Exec("DELETE FROM tariffs WHERE merchant_id=$1", merchant); e != nil {
+		t.Fatal(e)
+	}
+	source, reg := id(), id()
+	if _, e := a.db.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id) VALUES($1,'xlsx','fake.xlsx',$2,'application/xlsx',1,'/tmp/fake',$3)", source, id(), u.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,'R1','preview',100000)", reg, merchant, source); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO registry_rows(id,registry_id,row_no,raw,card_id,amount_cents) VALUES($1,$2,1,'[]',$3,100000)", id(), reg, card); e != nil {
+		t.Fatal(e)
+	}
+	read := func() M {
+		w := httptest.NewRecorder()
+		a.registries(w, httptest.NewRequest("GET", "/api/registries", nil), u)
+		var out []M
+		if e := json.Unmarshal(w.Body.Bytes(), &out); e != nil || w.Code != 200 || len(out) != 1 {
+			t.Fatalf("registry preview: %d %s %v", w.Code, w.Body.String(), e)
+		}
+		return out[0]
+	}
+	if preview := read(); preview["rate_available"] != false {
+		t.Fatal("missing tariff shown as available", preview)
+	}
+	code, result := req(t, a.confirmRegistry, u, M{"id": reg, "version": "1", "confirm_total": "1000.00", "confirm_commission": "0.00", "confirm_rate_bp": "0"})
+	if code != 409 || !strings.Contains(result["error"].(string), "не задан действующий тариф") {
+		t.Fatal("confirmation without tariff", code, result)
+	}
+	if _, e := a.db.Exec("INSERT INTO tariffs(id,merchant_id,rate_bp,valid_from,created_by) VALUES($1,$2,400,'2026-01-01',$3)", id(), merchant, u.ID); e != nil {
+		t.Fatal(e)
+	}
+	if preview := read(); preview["rate_available"] != true || preview["commission"] != "40.00" {
+		t.Fatal("effective tariff not applied to preview", preview)
+	}
+	code, result = req(t, a.confirmRegistry, u, M{"id": reg, "version": "1", "confirm_total": "1000.00", "confirm_commission": "40.00", "confirm_rate_bp": "400"})
+	if code != 200 {
+		t.Fatal("confirmation with tariff", code, result)
+	}
+}
+
 func TestRegistryRateReversalAndReports(t *testing.T) {
 	a := testApp(t)
 	u, merchant, _, card := fixtures(t, a)
@@ -1319,9 +1363,6 @@ func TestOperatorCannotAccessExpensesOrChangeBalances(t *testing.T) {
 	chief, _, _, card := fixtures(t, a)
 	operator := User{ID: id(), Login: "op", Name: "Операционист", Role: "operator"}
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,$4,'x')", operator.ID, operator.Login, operator.Name, operator.Role); e != nil {
-		t.Fatal(e)
-	}
-	if _, e := a.db.Exec("INSERT INTO card_assignments(user_id,card_id,assigned_by) VALUES($1,$2,$3)", operator.ID, card, chief.ID); e != nil {
 		t.Fatal(e)
 	}
 	for _, kind := range []string{"expense", "repayment", "shortage", "writeoff"} {
@@ -1736,37 +1777,25 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 		t.Fatal(out)
 	}
 }
-func TestAssignedCardsAndReadPermissions(t *testing.T) {
+func TestAllActiveCardsAndReadPermissions(t *testing.T) {
 	a := testApp(t)
-	_, _, _, card := fixtures(t, a)
+	_, _, bank, card := fixtures(t, a)
 	operator := User{ID: id(), Role: "operator"}
-	admin := User{ID: id(), Role: "sysadmin"}
-	_, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'op','Op','operator','x'),($2,'admin','Admin','sysadmin','x')", operator.ID, admin.ID)
+	_, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'op','Op','operator','x')", operator.ID)
 	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4,status) VALUES($1,$2,'Заблокированная карта','000000******9999','9999','blocked')", id(), bank); e != nil {
 		t.Fatal(e)
 	}
 	w := httptest.NewRecorder()
 	a.catalog(w, httptest.NewRequest("GET", "/api/catalog", nil), operator)
 	var c M
 	_ = json.Unmarshal(w.Body.Bytes(), &c)
-	if len(c["cards"].([]interface{})) != 0 {
-		t.Fatal("unassigned card visible")
+	if len(c["cards"].([]interface{})) != 1 {
+		t.Fatal("active card hidden from operator")
 	}
 	code, _ := req(t, a.observation, operator, M{"card_id": card, "amount": "0.00"})
-	if code != 403 {
-		t.Fatal(code)
-	}
-	code, out := req(t, a.assignCard, admin, M{"user_id": operator.ID, "card_id": card})
-	if code != 200 {
-		t.Fatal(out)
-	}
-	w = httptest.NewRecorder()
-	a.catalog(w, httptest.NewRequest("GET", "/api/catalog", nil), operator)
-	_ = json.Unmarshal(w.Body.Bytes(), &c)
-	if len(c["cards"].([]interface{})) != 1 {
-		t.Fatal("assigned card hidden")
-	}
-	code, _ = req(t, a.observation, operator, M{"card_id": card, "amount": "0.00"})
 	if code != 403 {
 		t.Fatal("operator changed observed balance", code)
 	}

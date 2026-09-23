@@ -77,9 +77,6 @@ func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fa
 	if e := a.db.QueryRow("SELECT id FROM custodians WHERE kind='collector'").Scan(&custodian); e != nil {
 		t.Fatal(e)
 	}
-	if status, _ := req(t, a.assignCard, admin, M{"user_id": collector.ID, "card_id": card}); status != 200 {
-		t.Fatal("card assignment failed", status)
-	}
 	if status, _ := req(t, a.linkTelegram, admin, M{"user_id": collector.ID, "custodian_id": custodian, "telegram_id": "555"}); status != 200 {
 		t.Fatal("Telegram link failed", status)
 	}
@@ -216,7 +213,7 @@ func TestTelegramCollectorWithdrawalConfirmationAndRetry(t *testing.T) {
 	}
 }
 
-func TestTelegramOperatorUsesAssignedCardsWithFieldRestrictions(t *testing.T) {
+func TestTelegramOperatorUsesAllActiveCardsWithFieldRestrictions(t *testing.T) {
 	a := testApp(t)
 	chief, _, _, card := fixtures(t, a)
 	admin, _, _, fake := telegramFixture(t, a, card)
@@ -227,9 +224,6 @@ func TestTelegramOperatorUsesAssignedCardsWithFieldRestrictions(t *testing.T) {
 	}
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x')", operator.ID, operator.Login, operator.Name); e != nil {
 		t.Fatal(e)
-	}
-	if status, _ := req(t, a.assignCard, admin, M{"user_id": operator.ID, "card_id": card}); status != 200 {
-		t.Fatal("operator card assignment failed", status)
 	}
 	if status, _ := req(t, a.linkTelegram, admin, M{"user_id": operator.ID, "custodian_id": operatorCustodian, "telegram_id": "557"}); status != 200 {
 		t.Fatal("operator Telegram link failed", status)
@@ -523,16 +517,13 @@ func TestTelegramExpenseBatchRejectsInvalidAndAllowsNegativeCardBalance(t *testi
 func TestTelegramCardCollisionAndSensitiveInput(t *testing.T) {
 	a := testApp(t)
 	_, _, _, card := fixtures(t, a)
-	admin, collector, _, fake := telegramFixture(t, a, card)
+	_, _, _, fake := telegramFixture(t, a, card)
 	bank, second := id(), id()
 	if _, e := a.db.Exec("INSERT INTO banks(id,code,name) VALUES($1,'SECOND','Учебный банк 2')", bank); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Вымышленный владелец','999999******1234','1234')", second, bank); e != nil {
 		t.Fatal(e)
-	}
-	if status, _ := req(t, a.assignCard, admin, M{"user_id": collector.ID, "card_id": second}); status != 200 {
-		t.Fatal("second card not assigned", status)
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(3001, 555, "/withdraw 1234 100к/200")); code != 200 {
 		t.Fatal(code)
