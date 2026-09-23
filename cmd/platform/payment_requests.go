@@ -652,33 +652,42 @@ func (a *App) logExport(actor, requestID, hash string) error {
 	return e
 }
 
-func verifyRequest(tx *sql.Tx, requestID, merchantID string) (map[string]string, map[string]string, error) {
+func verifyRequest(tx *sql.Tx, requestID, merchantID string) (requestRegistryLookup, error) {
+	empty := requestRegistryLookup{}
 	var owner string
 	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1 AND deleted_at IS NULL FOR SHARE", requestID).Scan(&owner); e != nil || owner != merchantID {
-		return nil, nil, errors.New("запрос на карты не принадлежит выбранному мерчанту")
+		return empty, errors.New("запрос на карты не принадлежит выбранному мерчанту")
 	}
-	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
+	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext,COALESCE(x.contact_name,'') FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
 	if e != nil {
-		return nil, nil, e
+		return empty, e
 	}
 	defer rows.Close()
-	numbers, masks := map[string]string{}, map[string]string{}
+	lookup := requestRegistryLookup{numbers: map[string]string{}, masks: map[string]string{}, names: map[string]string{}}
 	for rows.Next() {
-		var mask, card string
+		var mask, card, name string
 		var ciphertext []byte
-		if e = rows.Scan(&mask, &card, &ciphertext); e != nil {
-			return nil, nil, e
+		if e = rows.Scan(&mask, &card, &ciphertext, &name); e != nil {
+			return empty, e
 		}
 		pan, panErr := readCardPAN(card, ciphertext)
 		if panErr != nil {
-			return nil, nil, errors.New("полный номер карты из запроса недоступен")
+			return empty, errors.New("полный номер карты из запроса недоступен")
 		}
-		numbers[pan] = card
-		if prior, ok := masks[mask]; ok && prior != card {
-			masks[mask] = ""
+		lookup.numbers[pan] = card
+		if prior, ok := lookup.masks[mask]; ok && prior != card {
+			lookup.masks[mask] = ""
 		} else if !ok {
-			masks[mask] = card
+			lookup.masks[mask] = card
+		}
+		key := normalizePersonName(name)
+		if key != "" {
+			if prior, ok := lookup.names[key]; ok && prior != card {
+				lookup.names[key] = ""
+			} else if !ok {
+				lookup.names[key] = card
+			}
 		}
 	}
-	return numbers, masks, rows.Err()
+	return lookup, rows.Err()
 }

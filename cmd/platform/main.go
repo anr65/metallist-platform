@@ -274,6 +274,8 @@ func main() {
 	mux.HandleFunc("/api/payment-request/export", app.auth(app.paymentRequestExport))
 	mux.HandleFunc("/api/registries", app.auth(app.registries))
 	mux.HandleFunc("/api/registry/rows", app.auth(app.registryRows))
+	mux.HandleFunc("/api/registry/candidates", app.auth(app.registryCandidates))
+	mux.HandleFunc("/api/registry/reconcile", app.auth(app.reconcileRegistryRow))
 	mux.HandleFunc("/api/registry/manual-rate", app.auth(app.manualRate))
 	mux.HandleFunc("/api/manual/preview", app.auth(app.manualPreview))
 	mux.HandleFunc("/api/manual/confirm", app.auth(app.manualConfirm))

@@ -71,6 +71,7 @@
 - [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
 - [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
 - [Редактирование запросов карт](operations/card-request-edit-migration.md)
+- [Сверка реестра Светы по ФИО](operations/registry-row-reconciliation-migration.md)
 - [Исправление загрузки реестра 21.09.2026](operations/registry-upload-incident-20260921.md)
 - [Реквизиты входа в адресной строке](operations/credential-url-incident-20260921.md)
 - [Загрузка полных номеров существующих карт](operations/card-pan-import.md)

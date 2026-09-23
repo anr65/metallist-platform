@@ -35,7 +35,21 @@ func parseRows(parser, extension string, data []byte) ([]importedRow, error) {
 			return nil, e
 		}
 		return parseMerchantSheets(parser, sheets)
-	case "narkoman_avangard_xls_v1", "sveta_cards_xls_v1":
+	case "sveta_cards_xls_v1":
+		var sheets []spreadsheetSheet
+		var e error
+		if extension == ".xls" {
+			sheets, e = readLegacyXLS(data)
+		} else if extension == ".xlsx" {
+			sheets, e = readXLSX(data)
+		} else {
+			return nil, errors.New("для Светы нужен файл XLS или XLSX")
+		}
+		if e != nil {
+			return nil, e
+		}
+		return parseMerchantSheets(parser, sheets)
+	case "narkoman_avangard_xls_v1":
 		if extension != ".xls" {
 			return nil, errors.New("для выбранного мерчанта нужен файл XLS")
 		}
@@ -242,17 +256,60 @@ func parseGenericSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 }
 
 func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
-	if len(sheet.Rows) < 5 {
+	if len(sheet.Rows) < 2 {
 		return nil, errors.New("выгрузка Светы без строк")
 	}
-	head := headers(sheet.Rows[3])
-	card, cok := firstHeader(head, "по номеру карты")
-	amountCol, aok := firstHeader(head, "сумма")
-	order, ook := firstHeader(head, "номер вх.")
-	if !cok || !aok || !ook {
+	headerRow := -1
+	var head map[string]int
+	for i, row := range sheet.Rows {
+		candidate := headers(row)
+		_, amountOK := firstHeader(candidate, "сумма")
+		_, orderOK := firstHeader(candidate, "номер вх.")
+		_, cardOK := firstHeader(candidate, "по номеру карты")
+		_, nameOK := firstHeader(candidate, "информация")
+		if amountOK && orderOK && (cardOK || nameOK) {
+			headerRow, head = i, candidate
+			break
+		}
+	}
+	if headerRow < 0 {
 		return nil, errors.New("структура выгрузки Светы не распознана")
 	}
-	return parseDirectRows(sheet, 4, card, amountCol, order, -1, "итого"), nil
+	card, cok := firstHeader(head, "по номеру карты")
+	name, nok := firstHeader(head, "информация")
+	amountCol, aok := firstHeader(head, "сумма")
+	order, ook := firstHeader(head, "номер вх.")
+	if (!cok && !nok) || !aok || !ook {
+		return nil, errors.New("структура выгрузки Светы не распознана")
+	}
+	out := []importedRow{}
+	for rowNo, row := range sheet.Rows[headerRow+1:] {
+		if emptyRow(row) {
+			continue
+		}
+		if normalizeHeader(valueAt(row, 0)) == "итого" {
+			break
+		}
+		x := importedRow{Number: rowNo + headerRow + 2, Sheet: sheet.Name, Raw: row, Order: valueAt(row, order)}
+		if cok {
+			x.Mask = valueAt(row, card)
+		} else if nok {
+			x.ContactName = valueAt(row, name)
+		}
+		if x.Mask == "" && x.ContactName == "" {
+			x.Error = "missing_card_or_contact_reference"
+		}
+		if value, e := spreadsheetAmount(valueAt(row, amountCol)); e == nil {
+			x.Amount = value
+		} else {
+			x.Error = "invalid_amount"
+		}
+		out = append(out, x)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("выгрузка Светы без строк пополнений")
+	}
+	return out, nil
 }
 
 func parseKatyaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
@@ -431,12 +488,29 @@ func normalizeHeader(value string) string {
 }
 
 func spreadsheetAmount(value string) (int64, error) {
-	return amount(trimExactTrailingZeros(value))
+	return amount(trimExactTrailingZeros(normalizeSpreadsheetNumber(value)))
 }
 
 func spreadsheetNonnegative(value string) (int64, error) {
-	return nonnegative(trimExactTrailingZeros(value))
+	return nonnegative(trimExactTrailingZeros(normalizeSpreadsheetNumber(value)))
 }
+
+func normalizeSpreadsheetNumber(value string) string {
+	s := strings.NewReplacer(" ", "", "\u00a0", "", "\u202f", "", "'", "").Replace(strings.TrimSpace(value))
+	comma, dot := strings.LastIndex(s, ","), strings.LastIndex(s, ".")
+	if comma >= 0 && dot >= 0 {
+		if comma > dot {
+			s = strings.ReplaceAll(s, ".", "")
+		} else {
+			s = strings.ReplaceAll(s, ",", "")
+		}
+	} else if groupedSpreadsheetNumber.MatchString(s) {
+		s = strings.NewReplacer(",", "", ".", "").Replace(s)
+	}
+	return s
+}
+
+var groupedSpreadsheetNumber = regexp.MustCompile(`^[0-9]{1,3}(?:[,.][0-9]{3})+$`)
 
 func trimExactTrailingZeros(value string) string {
 	s := strings.TrimSpace(value)

@@ -1061,6 +1061,7 @@ func TestMerchantParserMappings(t *testing.T) {
 		error  string
 	}{
 		{"Света", "sveta_cards_xls_v1", spreadsheetSheet{Name: "Лист_1", Rows: [][]string{{}, {}, {}, {"№ п/п", "Сумма", "Номер вх.", "По номеру карты"}, {"1", "248063", "3999", "000000******1234"}, {"Итого", "248063"}}}, 1, 24_806_300, ""},
+		{"Света по ФИО", "sveta_cards_xls_v1", spreadsheetSheet{Name: "Лист_1", Rows: [][]string{{"ООО"}, {}, {}, {}, {}, {"№ п/п", "Дата", "Номер вх.", "Сумма", "Информация"}, {"1", "12.07.2026", "4627-цм", "246402", "Потеряева Евгения Борисовна"}, {"Итого", "", "", "246402"}}}, 1, 24_640_200, ""},
 		{"Катя", "katya_payouts_xlsx_v1", spreadsheetSheet{Name: "Sheet1", Rows: [][]string{{"Статус выплаты", "Id выплаты", "Выплата", "Комиссия банка", "Реквизиты вывода"}, {"оплачена", "182194058", "244541", "1100.43", "000000******1234"}}}, 1, 24_454_100, ""},
 		{"Толя", "tolya_operations_xlsx_v1", spreadsheetSheet{Name: "Операции", Rows: [][]string{{"ID", "СТАТУС", "ЦЕНА"}, {"synthetic-id", "Выполнен", "248121"}}}, 1, 24_812_100, "missing_card_reference"},
 		{"Наркоман", "narkoman_avangard_xls_v1", spreadsheetSheet{Name: "clb_stat_complete.jr", Rows: [][]string{{}, {}, {}, {}, {}, {}, {"", "", "Дата док-та", "", "", "Номер док-та", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "Назначение платежа"}, {}, {"", "", "14.09.2026", "", "", "6873656995", "", "", "", "", "", "", "", "", "", "", "13", "250000", "", "", "Расчеты. Карта:****1234"}, {"", "", "Итого:"}}}, 1, 25_000_000, ""},
@@ -1082,6 +1083,159 @@ func TestMerchantParserMappings(t *testing.T) {
 				}(), e)
 			}
 		})
+	}
+}
+
+func TestSpreadsheetAmountWithThousandsSeparator(t *testing.T) {
+	cases := map[string]int64{
+		"246,402.00":      24640200,
+		"246.402,00":      24640200,
+		"246 402,00":      24640200,
+		"246\u00a0402,00": 24640200,
+		"246,402":         24640200,
+	}
+	for input, want := range cases {
+		got, err := spreadsheetAmount(input)
+		if err != nil || got != want {
+			t.Errorf("spreadsheetAmount(%q) = %d, %v; want %d", input, got, err, want)
+		}
+	}
+}
+
+func TestSvetaRegistryReconciliationByRequest(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, bank, firstCard := fixtures(t, a)
+	operator := User{ID: id(), Role: "operator"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'sveta-operator','Operator','operator','x')", operator.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("UPDATE merchant_import_profiles SET parser_code='sveta_cards_xls_v1' WHERE merchant_id=$1", merchant); e != nil {
+		t.Fatal(e)
+	}
+	secondCard := id()
+	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Второй владелец','220038******5678','5678')", secondCard, bank); e != nil {
+		t.Fatal(e)
+	}
+	if e := savePAN(secondCard, "2200380000005678"); e != nil {
+		t.Fatal(e)
+	}
+	requestID := id()
+	firstContact, secondContact := id(), id()
+	if _, e := a.db.Exec(`INSERT INTO payment_contacts(id,full_name,phone,created_by) VALUES
+		($1,'Иванова Ёлка Петровна','+79990000001',$3),($2,'Корректное Имя Получателя','+79990000002',$3)`, firstContact, secondContact, chief.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,created_by) VALUES($1,$2,'СВЕТА-ТЕСТ','cards',2,$3)", requestID, merchant, chief.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec(`INSERT INTO payment_request_rows(id,request_id,row_no,card_id,contact_id,contact_name,contact_phone) VALUES
+		($1,$2,1,$3,$4,'Иванова Ёлка Петровна','+79990000001'),($5,$2,2,$6,$7,'Корректное Имя Получателя','+79990000002')`, id(), requestID, firstCard, firstContact, id(), secondCard, secondContact); e != nil {
+		t.Fatal(e)
+	}
+	file := excelize.NewFile()
+	for cell, value := range map[string]interface{}{
+		"A1": "ООО Тест", "A6": "№ п/п", "B6": "Дата", "C6": "Номер вх.", "D6": "Сумма", "E6": "Информация",
+		"A7": 1, "B7": "12.07.2026", "C7": "4627", "D7": 1000, "E7": "  ИВАНОВА   ЕЛКА ПЕТРОВНА ",
+		"A8": 2, "B8": "12.07.2026", "C8": "4628", "D8": 2000, "E8": "Ошибочно Заведенное Имя",
+		"A9": "Итого", "D9": 3000,
+	} {
+		file.SetCellValue("Sheet1", cell, value)
+	}
+	blob, e := file.WriteToBuffer()
+	file.Close()
+	if e != nil {
+		t.Fatal(e)
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("merchant_id", merchant)
+	_ = mw.WriteField("external_ref", "SVETA-FIO-TEST")
+	_ = mw.WriteField("payment_request_id", requestID)
+	fw, _ := mw.CreateFormFile("file", "sveta.xlsx")
+	_, _ = fw.Write(blob.Bytes())
+	mw.Close()
+	var missingBody bytes.Buffer
+	missingWriter := multipart.NewWriter(&missingBody)
+	_ = missingWriter.WriteField("merchant_id", merchant)
+	_ = missingWriter.WriteField("external_ref", "SVETA-FIO-WITHOUT-REQUEST")
+	missingFile, _ := missingWriter.CreateFormFile("file", "sveta.xlsx")
+	_, _ = missingFile.Write(blob.Bytes())
+	missingWriter.Close()
+	withoutRequest := httptest.NewRequest(http.MethodPost, "/api/registry/upload", &missingBody)
+	withoutRequest.Header.Set("Content-Type", missingWriter.FormDataContentType())
+	withoutRequestRecorder := httptest.NewRecorder()
+	a.upload(withoutRequestRecorder, withoutRequest, operator)
+	if withoutRequestRecorder.Code != 400 || !strings.Contains(withoutRequestRecorder.Body.String(), "выберите сформированный запрос") {
+		t.Fatalf("missing request accepted: %d %s", withoutRequestRecorder.Code, withoutRequestRecorder.Body.String())
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/registry/upload", &body)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	a.upload(w, r, operator)
+	var created M
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if w.Code != 201 || created["invalid_rows"] != float64(1) || created["accepted_total"] != "3000.00" {
+		t.Fatalf("upload: %d %v", w.Code, created)
+	}
+	registryID := created["id"].(string)
+	var firstResolved, secondResolved, sourceName, rowError string
+	if e = a.db.QueryRow("SELECT COALESCE(card_id::text,''),source_contact_name,COALESCE(error_code,'') FROM registry_rows WHERE registry_id=$1 AND row_no=7", registryID).Scan(&firstResolved, &sourceName, &rowError); e != nil {
+		t.Fatal(e)
+	}
+	if firstResolved != firstCard || sourceName != "ИВАНОВА   ЕЛКА ПЕТРОВНА" || rowError != "" {
+		t.Fatal(firstResolved, sourceName, rowError)
+	}
+	if e = a.db.QueryRow("SELECT COALESCE(card_id::text,''),source_contact_name,COALESCE(error_code,'') FROM registry_rows WHERE registry_id=$1 AND row_no=8", registryID).Scan(&secondResolved, &sourceName, &rowError); e != nil {
+		t.Fatal(e)
+	}
+	if secondResolved != "" || rowError != "request_contact_not_found_or_ambiguous" {
+		t.Fatal(secondResolved, sourceName, rowError)
+	}
+	candidates := httptest.NewRecorder()
+	a.registryCandidates(candidates, httptest.NewRequest(http.MethodGet, "/api/registry/candidates?id="+registryID, nil), chief)
+	var choices []M
+	_ = json.Unmarshal(candidates.Body.Bytes(), &choices)
+	if candidates.Code != 200 || len(choices) != 2 {
+		t.Fatalf("candidates: %d %v", candidates.Code, choices)
+	}
+	accountantRows := httptest.NewRecorder()
+	a.registryRows(accountantRows, httptest.NewRequest(http.MethodGet, "/api/registry/rows?id="+registryID, nil), User{ID: id(), Role: "accountant"})
+	var readOnlyRows []M
+	_ = json.Unmarshal(accountantRows.Body.Bytes(), &readOnlyRows)
+	if accountantRows.Code != 200 || len(readOnlyRows) != 2 || readOnlyRows[0]["request_contact_name"] != "" || readOnlyRows[0]["request_contact_phone"] != "" {
+		t.Fatalf("read-only role received request contacts: %d %v", accountantRows.Code, readOnlyRows)
+	}
+	otherOperator := User{ID: id(), Role: "operator"}
+	forbidden := httptest.NewRecorder()
+	a.registryCandidates(forbidden, httptest.NewRequest(http.MethodGet, "/api/registry/candidates?id="+registryID, nil), otherOperator)
+	if forbidden.Code != 403 {
+		t.Fatalf("another operator listed candidates: %d", forbidden.Code)
+	}
+	outsideCard := id()
+	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Вне запроса','220038******9999','9999')", outsideCard, bank); e != nil {
+		t.Fatal(e)
+	}
+	if code, _ := req(t, a.reconcileRegistryRow, operator, M{"registry_id": registryID, "row": "8", "card_id": outsideCard, "version": "1"}); code != 400 {
+		t.Fatalf("card outside request accepted: %d", code)
+	}
+	code, result := req(t, a.reconcileRegistryRow, operator, M{"registry_id": registryID, "row": "8", "card_id": secondCard, "version": "1"})
+	if code != 200 || result["version"] != float64(2) {
+		t.Fatalf("reconcile: %d %v", code, result)
+	}
+	if e = a.db.QueryRow("SELECT card_id,COALESCE(error_code,'') FROM registry_rows WHERE registry_id=$1 AND row_no=8", registryID).Scan(&secondResolved, &rowError); e != nil || secondResolved != secondCard || rowError != "" {
+		t.Fatal(secondResolved, rowError, e)
+	}
+	code, result = req(t, a.confirmRegistry, chief, M{"id": registryID, "version": "2", "confirm_total": "3000.00", "confirm_commission": "120.00", "confirm_rate_bp": "400"})
+	if code != 200 {
+		t.Fatalf("confirm: %d %v", code, result)
+	}
+	var auditCount int
+	if e = a.db.QueryRow("SELECT count(*) FROM audit_events WHERE object_id=$1 AND action='registry_row_reconcile'", registryID).Scan(&auditCount); e != nil || auditCount != 1 {
+		t.Fatal(auditCount, e)
+	}
+	var auditDetail string
+	if e = a.db.QueryRow("SELECT detail::text FROM audit_events WHERE object_id=$1 AND action='registry_row_reconcile'", registryID).Scan(&auditDetail); e != nil || strings.Contains(auditDetail, "Получателя") || strings.Contains(auditDetail, "+7999") {
+		t.Fatal("audit contains contact data", auditDetail, e)
 	}
 }
 

@@ -19,15 +19,26 @@ import (
 )
 
 type importedRow struct {
-	Number                        int
-	Sheet                         string
-	Raw                           []string
-	Mask, Order, RRN, Error, Card string
-	Amount, BankFee, Transfer     int64
+	Number                    int
+	Sheet                     string
+	Raw                       []string
+	Mask, ContactName         string
+	Order, RRN, Error, Card   string
+	Amount, BankFee, Transfer int64
+}
+
+type requestRegistryLookup struct {
+	numbers, masks, names map[string]string
 }
 
 var longDigits = regexp.MustCompile(`(?:[0-9][ -]?){12,19}`)
 var trailingFour = regexp.MustCompile(`([0-9]{4})\s*$`)
+var personNameSeparator = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+
+func normalizePersonName(value string) string {
+	value = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), "ё", "е")
+	return strings.Join(strings.Fields(personNameSeparator.ReplaceAllString(value, " ")), " ")
+}
 
 func safeRaw(values []string) []string {
 	out := make([]string, len(values))
@@ -111,9 +122,15 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	defer tx.Rollback()
 	requestID := strings.TrimSpace(r.FormValue("payment_request_id"))
-	var requestNumbers, requestMasks map[string]string
+	for _, row := range rows {
+		if row.ContactName != "" && requestID == "" {
+			fail(w, 400, errors.New("для реестра по ФИО выберите сформированный запрос карт"))
+			return
+		}
+	}
+	var requestLookup requestRegistryLookup
 	if requestID != "" {
-		requestNumbers, requestMasks, e = verifyRequest(tx, requestID, merchant)
+		requestLookup, e = verifyRequest(tx, requestID, merchant)
 		if e != nil {
 			fail(w, 400, e)
 			return
@@ -130,17 +147,32 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	var total int64
 	for i := range rows {
+		if rows[i].Amount > 0 {
+			if rows[i].Amount > math.MaxInt64-total {
+				fail(w, 400, errors.New("сумма реестра слишком велика"))
+				return
+			}
+			total += rows[i].Amount
+		}
 		if rows[i].Error == "" {
 			var card string
 			var err error
 			if requestID != "" {
-				value := strings.TrimSpace(rows[i].Mask)
-				card = requestNumbers[value]
-				if card == "" {
-					card = requestMasks[value]
+				if rows[i].ContactName != "" {
+					card = requestLookup.names[normalizePersonName(rows[i].ContactName)]
+					if card == "" {
+						rows[i].Error = "request_contact_not_found_or_ambiguous"
+						continue
+					}
+				} else {
+					value := strings.TrimSpace(rows[i].Mask)
+					card = requestLookup.numbers[value]
+					if card == "" {
+						card = requestLookup.masks[value]
+					}
 				}
 				if card == "" {
-					err = errors.New("карта не найдена в выбранном запросе или неоднозначна")
+					err = errors.New("request_card_not_found_or_ambiguous")
 				}
 			} else {
 				card, err = a.resolveCard(tx, rows[i].Mask)
@@ -149,11 +181,6 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 				rows[i].Error = err.Error()
 			} else {
 				rows[i].Card = card
-				if rows[i].Amount > math.MaxInt64-total {
-					fail(w, 400, errors.New("сумма реестра слишком велика"))
-					return
-				}
-				total += rows[i].Amount
 			}
 		}
 	}
@@ -202,7 +229,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	for _, row := range rows {
-		_, e = tx.Exec("INSERT INTO registry_rows(id,registry_id,row_no,sheet_name,raw,card_id,amount_cents,error_code,external_order,rrn,bank_fee_cents,bank_transfer_cents) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)", id(), regID, row.Number, row.Sheet, encode(safeRaw(row.Raw)), nilID(row.Card), row.Amount, nilID(row.Error), row.Order, row.RRN, row.BankFee, row.Transfer)
+		_, e = tx.Exec("INSERT INTO registry_rows(id,registry_id,row_no,sheet_name,raw,card_id,amount_cents,error_code,external_order,rrn,bank_fee_cents,bank_transfer_cents,source_contact_name) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)", id(), regID, row.Number, row.Sheet, encode(safeRaw(row.Raw)), nilID(row.Card), row.Amount, nilID(row.Error), row.Order, row.RRN, row.BankFee, row.Transfer, nilID(row.ContactName))
 		if e != nil {
 			fail(w, 409, e)
 			return
@@ -362,7 +389,14 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
-	rows, e := a.db.Query("SELECT row_no,sheet_name,raw,COALESCE(card_id::text,''),COALESCE(amount_cents,0),COALESCE(error_code,''),COALESCE(external_order,''),COALESCE(rrn,''),COALESCE(bank_fee_cents,0),COALESCE(bank_transfer_cents,0) FROM registry_rows WHERE registry_id=$1 ORDER BY row_no", r.URL.Query().Get("id"))
+	rows, e := a.db.Query(`SELECT rr.row_no,rr.sheet_name,rr.raw,COALESCE(rr.card_id::text,''),COALESCE(rr.amount_cents,0),
+		COALESCE(rr.error_code,''),COALESCE(rr.external_order,''),COALESCE(rr.rrn,''),COALESCE(rr.bank_fee_cents,0),COALESCE(rr.bank_transfer_cents,0),
+		COALESCE(rr.source_contact_name,''),COALESCE(c.mask,''),COALESCE(pr.contact_name,''),COALESCE(pr.contact_phone,'')
+		FROM registry_rows rr
+		JOIN registries r ON r.id=rr.registry_id
+		LEFT JOIN cards c ON c.id=rr.card_id
+		LEFT JOIN payment_request_rows pr ON pr.request_id=r.payment_request_id AND pr.card_id=rr.card_id
+		WHERE rr.registry_id=$1 ORDER BY rr.row_no`, r.URL.Query().Get("id"))
 	if e != nil {
 		fail(w, 400, e)
 		return
@@ -371,16 +405,20 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 	out := []M{}
 	for rows.Next() {
 		var n int
-		var sheet, card, errorCode, order, rrn string
+		var sheet, card, errorCode, order, rrn, sourceName, cardMask, requestName, requestPhone string
 		var raw []byte
 		var amount, fee, transfer int64
-		if e = rows.Scan(&n, &sheet, &raw, &card, &amount, &errorCode, &order, &rrn, &fee, &transfer); e != nil {
+		if e = rows.Scan(&n, &sheet, &raw, &card, &amount, &errorCode, &order, &rrn, &fee, &transfer, &sourceName, &cardMask, &requestName, &requestPhone); e != nil {
 			fail(w, 500, e)
 			return
 		}
 		var values []string
 		_ = json.Unmarshal(raw, &values)
-		out = append(out, M{"row": n, "sheet": sheet, "raw": values, "card_id": card, "amount": rub(amount), "error": errorCode, "order": order, "rrn": rrn, "bank_fee": rub(fee), "bank_transfer": rub(transfer)})
+		if u.Role != "chief" && u.Role != "operator" {
+			requestName = ""
+			requestPhone = ""
+		}
+		out = append(out, M{"row": n, "sheet": sheet, "raw": values, "card_id": card, "card_mask": cardMask, "source_contact_name": sourceName, "request_contact_name": requestName, "request_contact_phone": requestPhone, "amount": rub(amount), "error": errorCode, "order": order, "rrn": rrn, "bank_fee": rub(fee), "bank_transfer": rub(transfer)})
 	}
 	respond(w, 200, out)
 }

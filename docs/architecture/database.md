@@ -34,6 +34,8 @@
 
 Схема 011 добавляет к `payment_requests` версию для защиты от одновременного редактирования, `deleted_at` и `deleted_by` для скрытия удалённого запроса без потери истории. Строки можно заменять только до появления любого связанного ответного реестра; изменение и удаление аудируются. Финансовые записи не затрагиваются.
 
+Схема 012 добавляет `registry_rows.source_contact_name` для неизменяемого ФИО из входящего файла Светы. Сопоставленная `card_id` может быть исправлена в preview главным администратором или загрузившим файл операционистом, но только на карту из связанного `payment_request_id`; исходное ФИО и `raw` сохраняются. Каждое изменение увеличивает `registries.version` и записывается в аудит без ФИО, телефона и PAN. Проводки до подтверждения реестра не создаются.
+
 Схема 004 добавляет `registry_parser_types(code, name, version, accepted_extensions, active)` и ровно один `merchant_import_profiles(merchant_id, parser_code, status, updated_at)` на мерчанта. Статус `configured` требует parser, `awaiting_sample` запрещает его. `source_documents.parser_code/parser_version` фиксируют реально применённую версию; последующее изменение профиля не меняет старый документ. Таблицы не создают проводок и не содержат содержимое исходного файла.
 
 - `source_documents(id, source_type, external_id, checksum, storage_key, received_at, received_by, metadata)`
