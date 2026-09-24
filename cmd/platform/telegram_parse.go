@@ -78,7 +78,7 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 			return out, e
 		}
 		if telegramFieldRole(u.Role) && category != "warmup" && category != "bank_fee" {
-			return out, errors.New("Доступны только расходы «Прогрев» и «Банк. Комиссия»")
+			return out, errors.New("Доступны только расходы «Прогрев» и «Комса»")
 		}
 		amount, e := telegramAmount(words[len(words)-1])
 		if e != nil {
@@ -172,7 +172,7 @@ func telegramCategory(raw string) (string, error) {
 	switch strings.ToLower(strings.Join(strings.Fields(raw), " ")) {
 	case "прогрев", "warmup":
 		return "warmup", nil
-	case "банк. комиссия", "банковская комиссия", "банк комиссия", "bank_fee":
+	case "комса", "bank_fee":
 		return "bank_fee", nil
 	case "агентские", "agent_fee":
 		return "agent_fee", nil

@@ -45,6 +45,15 @@ func TestTelegramObservedAmount(t *testing.T) {
 	}
 }
 
+func TestTelegramBankFeeCategoryUsesKomsa(t *testing.T) {
+	if category, err := telegramCategory("комса"); err != nil || category != "bank_fee" {
+		t.Fatalf("комса category = %q, %v", category, err)
+	}
+	if _, err := telegramCategory("банк. комиссия"); err == nil {
+		t.Fatal("obsolete bank-fee spelling was accepted")
+	}
+}
+
 func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fakeTelegram) {
 	t.Helper()
 	fake := &fakeTelegram{}
@@ -241,7 +250,7 @@ func TestTelegramOperatorUsesAllActiveCardsWithFieldRestrictions(t *testing.T) {
 		t.Fatal(code)
 	}
 	var count int
-	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:1051'").Scan(&count); e != nil || count != 0 || !fake.contains("только расходы «Прогрев» и «Банк. Комиссия»") {
+	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:1051'").Scan(&count); e != nil || count != 0 || !fake.contains("только расходы «Прогрев» и «Комса»") {
 		t.Fatal("operator created forbidden expense", count, e)
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(1052, 557, "/withdraw 1234 1000/0")); code != 200 {
@@ -389,7 +398,7 @@ func TestTelegramCollectorExpensePermissionsAndRejection(t *testing.T) {
 	}
 	var count int
 	_ = a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:2001'").Scan(&count)
-	if count != 0 || !fake.contains("только расходы «Прогрев» и «Банк. Комиссия»") {
+	if count != 0 || !fake.contains("только расходы «Прогрев» и «Комса»") {
 		t.Fatal("collector created forbidden expense")
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(2002, 555, "/expense 1234 прогрев 230")); code != 200 {
@@ -409,7 +418,7 @@ func TestTelegramCollectorExpensePermissionsAndRejection(t *testing.T) {
 	if code := telegramRequest(t, a, telegramMessageUpdate(2004, 555, "/expense")); code != 200 || !fake.contains("Введите последние 4 цифры карты") {
 		t.Fatal("command menu follow-up missing")
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(2005, 555, "1234 банк. комиссия 25,50")); code != 200 {
+	if code := telegramRequest(t, a, telegramMessageUpdate(2005, 555, "1234 комса 25,50")); code != 200 {
 		t.Fatal(code)
 	}
 	if e := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:2005'").Scan(&draftID); e != nil || !fake.contains("Категория: Банк. Комиссия") {
@@ -432,7 +441,7 @@ func TestTelegramCollectorExpenseBatchIsAtomicAndIdempotent(t *testing.T) {
 	if e != nil || tx.Commit() != nil {
 		t.Fatal(e)
 	}
-	message := "/expense 1234 прогрев 230\n1234 банк. комиссия 25,50"
+	message := "/expense 1234 прогрев 230\n1234 комса 25,50"
 	if code := telegramRequest(t, a, telegramMessageUpdate(2101, 555, message)); code != 200 {
 		t.Fatal(code)
 	}
@@ -489,7 +498,7 @@ func TestTelegramExpenseBatchRejectsInvalidAndAllowsNegativeCardBalance(t *testi
 	if e := a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:2201'").Scan(&count); e != nil || count != 0 || !fake.contains("Строка 2") {
 		t.Fatal("invalid item did not reject whole batch", count, e)
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(2202, 555, "/expense 1234 прогрев 600; 1234 банк. комиссия 500")); code != 200 {
+	if code := telegramRequest(t, a, telegramMessageUpdate(2202, 555, "/expense 1234 прогрев 600; 1234 комса 500")); code != 200 {
 		t.Fatal(code)
 	}
 	var draftID string

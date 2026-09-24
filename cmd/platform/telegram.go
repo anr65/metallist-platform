@@ -210,7 +210,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. В обеих командах операций можно указать несколько строк или разделить их ;. Разрешены расходы «Прогрев» и «Банк. Комиссия». Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. В обеих командах операций можно указать несколько строк или разделить их ;. Разрешены расходы «Прогрев» и «Комса». Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
@@ -243,7 +243,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		if command == "withdraw" {
 			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 банк. комиссия 25,50\n\nЧтобы выйти: /cancel", nil)
+		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "withdraw" {
