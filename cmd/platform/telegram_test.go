@@ -649,10 +649,13 @@ func TestTelegramBalanceCommandsUseLedgerAndRequestersCustodian(t *testing.T) {
 	if e != nil || tx.Commit() != nil {
 		t.Fatal("cash funding failed", e)
 	}
+	if _, e = a.db.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,111_111,now(),$3,'test')", id(), card, chief.ID); e != nil {
+		t.Fatal(e)
+	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(5101, 555, "/cards_balance@metallist_test_bot")); code != 200 {
 		t.Fatal(code)
 	}
-	if !fake.contains("💳 Балансы карт") || !fake.contains("Общий баланс: 1 302,45 ₽") || !fake.contains("000000******1234 — 1 234,56 ₽") || !fake.contains("000000******5678 — 67,89 ₽") {
+	if !fake.contains("💳 Фактические балансы карт") || !fake.contains("Фактический итог по 1 из 2 карт: 1 111,11 ₽") || !fake.contains("000000******1234 — 1 111,11 ₽") || !fake.contains("000000******5678 — фактический остаток не зафиксирован") {
 		t.Fatal("card balance response is incomplete")
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(5102, 555, "/my_balance")); code != 200 {

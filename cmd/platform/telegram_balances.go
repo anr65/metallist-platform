@@ -6,15 +6,13 @@ import (
 	"strings"
 )
 
-// telegramCardsBalance reads the card asset account only. It neither treats an
-// observed balance as a posting nor exposes a full card number.
+// telegramCardsBalance returns the latest factual observation for each card.
+// It intentionally never substitutes a ledger amount for a missing observation.
 func (a *App) telegramCardsBalance(u telegramActor, chatID, updateID int64) error {
-	rows, err := a.db.Query(`WITH balances AS (
-		SELECT card_id, SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END) AS cents
-		FROM postings WHERE account='1100' AND card_id IS NOT NULL GROUP BY card_id
-	)
-	SELECT c.mask, COALESCE(b.cents,0)
-	FROM cards c LEFT JOIN balances b ON b.card_id=c.id
+	rows, err := a.db.Query(`SELECT c.mask,o.observed_cents
+	FROM cards c LEFT JOIN LATERAL (
+		SELECT observed_cents FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1
+	) o ON true
 	ORDER BY c.status='active' DESC, c.mask, c.id`)
 	if err != nil {
 		return errors.New("Не удалось получить балансы карт")
@@ -22,20 +20,33 @@ func (a *App) telegramCardsBalance(u telegramActor, chatID, updateID int64) erro
 	defer rows.Close()
 
 	var total int64
-	lines := []string{"💳 Балансы карт"}
+	var observedCount, cardCount int
+	lines := []string{"💳 Фактические балансы карт"}
 	for rows.Next() {
 		var mask string
-		var cents int64
+		var cents *int64
 		if err = rows.Scan(&mask, &cents); err != nil {
 			return errors.New("Не удалось прочитать балансы карт")
 		}
-		total += cents
-		lines = append(lines, fmt.Sprintf("• %s — %s", mask, telegramMoney(cents)))
+		cardCount++
+		if cents == nil {
+			lines = append(lines, fmt.Sprintf("• %s — фактический остаток не зафиксирован", mask))
+			continue
+		}
+		observedCount++
+		total += *cents
+		lines = append(lines, fmt.Sprintf("• %s — %s", mask, telegramMoney(*cents)))
 	}
 	if err = rows.Err(); err != nil {
 		return errors.New("Не удалось получить балансы карт")
 	}
-	lines = append([]string{lines[0], "", "Общий баланс: " + telegramMoney(total), ""}, lines[1:]...)
+	summary := "Фактический итог: не зафиксирован"
+	if observedCount == cardCount {
+		summary = "Общий фактический баланс: " + telegramMoney(total)
+	} else if observedCount > 0 {
+		summary = fmt.Sprintf("Фактический итог по %d из %d карт: %s", observedCount, cardCount, telegramMoney(total))
+	}
+	lines = append([]string{lines[0], "", summary, ""}, lines[1:]...)
 	a.logAudit(u.ID, "telegram", "cards_balance_view", "balance", "", "success", "", M{"update_id": updateID})
 	return a.telegramReply(chatID, strings.Join(lines, "\n"), nil)
 }
