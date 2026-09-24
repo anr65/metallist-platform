@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,15 @@ func testApp(t *testing.T) *App {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if cfg.Host != "127.0.0.1" || cfg.Port != 55434 || cfg.Database != "metallist_platform_test" || cfg.User != "metallist_qa" {
+	port := uint16(55434)
+	if rawPort := os.Getenv("TEST_DATABASE_PORT"); rawPort != "" {
+		parsed, parseErr := strconv.ParseUint(rawPort, 10, 16)
+		if parseErr != nil || parsed == 0 {
+			t.Fatal("invalid TEST_DATABASE_PORT")
+		}
+		port = uint16(parsed)
+	}
+	if cfg.Host != "127.0.0.1" || cfg.Port != port || cfg.Database != "metallist_platform_test" || cfg.User != "metallist_qa" {
 		t.Fatal("unsafe database identity")
 	}
 	db := sql.OpenDB(stdlib.GetConnector(*cfg))

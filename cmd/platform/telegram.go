@@ -210,14 +210,20 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню. В обеих командах можно указать несколько операций — по одной в строке или через ;. Разрешены расходы «Прогрев» и «Банк. Комиссия». Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. В обеих командах операций можно указать несколько строк или разделить их ;. Разрешены расходы «Прогрев» и «Банк. Комиссия». Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Выберите /withdraw или /expense в меню и отправьте данные. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
+		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
+	}
+	if command == "cards_balance" {
+		return a.telegramCardsBalance(u, message.Chat.ID, updateID)
+	}
+	if command == "my_balance" {
+		return a.telegramMyBalance(u, message.Chat.ID, updateID)
 	}
 	args := ""
 	if strings.HasPrefix(words[0], "/") {
 		if command != "withdraw" && command != "expense" {
-			return errors.New("Доступны команды /start, /expense, /withdraw и /cancel")
+			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw и /cancel")
 		}
 		if len(words) > 1 {
 			args = strings.TrimSpace(text[len(words[0]):])

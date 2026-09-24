@@ -618,6 +618,55 @@ func TestTelegramCancelStopsPendingInputWithoutDraftOrPosting(t *testing.T) {
 	}
 }
 
+func TestTelegramBalanceCommandsUseLedgerAndRequestersCustodian(t *testing.T) {
+	a := testApp(t)
+	chief, _, bank, card := fixtures(t, a)
+	_, collector, custodian, fake := telegramFixture(t, a, card)
+	secondCard := id()
+	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4,status) VALUES($1,$2,'Другой владелец','000000******5678','5678','retired')", secondCard, bank); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_funding", id(), "tg-balance-funding:"+id(), chief.ID, time.Now(), time.Now(), []Posting{
+		{Account: "1100", Side: "debit", Amount: 123_456, Card: card},
+		{Account: "1100", Side: "debit", Amount: 6_789, Card: secondCard},
+		{Account: "3100", Side: "credit", Amount: 130_245},
+	}, "")
+	if e != nil || tx.Commit() != nil {
+		t.Fatal("funding failed", e)
+	}
+	tx, e = a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = put(tx, "test_cash", id(), "tg-balance-cash:"+id(), chief.ID, time.Now(), time.Now(), []Posting{
+		{Account: "1200", Side: "debit", Amount: 45_600, Custodian: custodian},
+		{Account: "3100", Side: "credit", Amount: 45_600},
+	}, "")
+	if e != nil || tx.Commit() != nil {
+		t.Fatal("cash funding failed", e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(5101, 555, "/cards_balance@metallist_test_bot")); code != 200 {
+		t.Fatal(code)
+	}
+	if !fake.contains("💳 Балансы карт") || !fake.contains("Общий баланс: 1 302,45 ₽") || !fake.contains("000000******1234 — 1 234,56 ₽") || !fake.contains("000000******5678 — 67,89 ₽") {
+		t.Fatal("card balance response is incomplete")
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(5102, 555, "/my_balance")); code != 200 {
+		t.Fatal(code)
+	}
+	if !fake.contains("👤 Ваш баланс наличных\n\n456 ₽") {
+		t.Fatal("own cash balance response is wrong")
+	}
+	var views int
+	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE actor_id=$1 AND action IN ('cards_balance_view','own_cash_balance_view') AND outcome='success'", collector.ID).Scan(&views); e != nil || views != 2 {
+		t.Fatal("balance views were not audited", views, e)
+	}
+}
+
 func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 	a := testApp(t)
 	_, _, _, card := fixtures(t, a)
@@ -632,7 +681,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		t.Fatal("group command menus have wrong scopes", call)
 	}
 	commands, ok := call["commands"].([]interface{})
-	if !ok || len(commands) != 4 {
+	if !ok || len(commands) != 6 {
 		t.Fatal("group command menu has wrong size", call)
 	}
 	names := make([]string, 0, len(commands))
@@ -643,7 +692,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		}
 		names = append(names, str(M(command), "command"))
 	}
-	if strings.Join(names, ",") != "start,expense,withdraw,cancel" {
+	if strings.Join(names, ",") != "start,cards_balance,my_balance,expense,withdraw,cancel" {
 		t.Fatal("group command menu contains unexpected commands", names)
 	}
 }
