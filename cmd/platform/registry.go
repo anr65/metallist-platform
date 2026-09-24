@@ -48,6 +48,15 @@ func safeRaw(values []string) []string {
 	return out
 }
 
+func (a *App) registryPaymentDay(value string) (string, time.Time, error) {
+	day := strings.TrimSpace(value)
+	at, e := time.ParseInLocation("2006-01-02", day, a.location)
+	if e != nil || at.Format("2006-01-02") != day || day > time.Now().In(a.location).Format("2006-01-02") {
+		return "", time.Time{}, errors.New("укажите дату фактических оплат не позже сегодняшнего дня")
+	}
+	return day, at, nil
+}
+
 func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != "POST" || !a.require(w, u, "operator", "chief") {
 		return
@@ -78,6 +87,11 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	merchant := r.FormValue("merchant_id")
+	paymentDate, _, dateErr := a.registryPaymentDay(r.FormValue("payment_date"))
+	if dateErr != nil {
+		fail(w, 400, dateErr)
+		return
+	}
 	var parserCode, profileStatus string
 	var parserVersion int
 	e = a.db.QueryRow("SELECT COALESCE(p.parser_code,''),p.status,COALESCE(t.version,0) FROM merchant_import_profiles p JOIN merchants m ON m.id=p.merchant_id AND m.active LEFT JOIN registry_parser_types t ON t.code=p.parser_code AND t.active WHERE p.merchant_id=$1", merchant).Scan(&parserCode, &profileStatus, &parserVersion)
@@ -135,13 +149,24 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
+	// Serialize uploads of identical bytes, including the replacement after a reversal.
+	if _, e = tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", sum); e != nil {
+		fail(w, 500, e)
+		return
+	}
 	var exists bool
-	if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM source_documents WHERE sha256=$1)", sum).Scan(&exists); e != nil {
+	if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM registries old JOIN source_documents s ON s.id=old.source_id WHERE s.sha256=$1 AND old.status IN ('preview','posted'))", sum).Scan(&exists); e != nil {
 		fail(w, 500, e)
 		return
 	}
 	if exists {
 		fail(w, 409, errors.New("файл уже загружен"))
+		return
+	}
+	var replaces sql.NullString
+	e = tx.QueryRow("SELECT old.id FROM registries old JOIN source_documents s ON s.id=old.source_id WHERE s.sha256=$1 AND old.merchant_id=$2 AND old.status='reversed' ORDER BY old.created_at DESC LIMIT 1", sum, merchant).Scan(&replaces)
+	if e != nil && !errors.Is(e, sql.ErrNoRows) {
+		fail(w, 500, e)
 		return
 	}
 	var total int64
@@ -188,7 +213,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	sourceID, regID := id(), id()
-	path := filepath.Join(a.storage, sum)
+	path := filepath.Join(a.storage, sum+"-"+sourceID)
 	encrypted, encryptErr := sealSensitive(data, []byte(sum))
 	if encryptErr != nil {
 		fail(w, 500, errors.New("защищённое хранение документов недоступно"))
@@ -222,7 +247,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, e)
 		return
 	}
-	_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_request_id) VALUES($1,$2,$3,$4,'preview',$5,$6)", regID, merchant, sourceID, external, total, nilID(requestID))
+	_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_request_id,payment_date,replaces_registry_id) VALUES($1,$2,$3,$4,'preview',$5,$6,$7,$8)", regID, merchant, sourceID, external, total, nilID(requestID), paymentDate, replaces)
 	if e != nil {
 		fail(w, 409, e)
 		return
@@ -234,7 +259,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
-	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows), "parser_code": parserCode, "parser_version": parserVersion}); e != nil {
+	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows), "parser_code": parserCode, "parser_version": parserVersion, "replaces_registry_id": replaces.String}); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -309,16 +334,16 @@ func (a *App) resolveCard(tx *sql.Tx, mask string) (string, error) {
 	}
 	return ids[0], nil
 }
-func (a *App) currentRate(tx *sql.Tx, merchant string) (int, error) {
+func (a *App) currentRate(tx *sql.Tx, merchant, paymentDate string) (int, error) {
 	var bp int
-	e := tx.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<= (now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY created_at DESC LIMIT 1", merchant).Scan(&bp)
+	e := tx.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<=$2::date ORDER BY valid_from DESC,created_at DESC LIMIT 1", merchant, paymentDate).Scan(&bp)
 	return bp, e
 }
 func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,''),r.number FROM registries r JOIN merchants m ON m.id=r.merchant_id"
+	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,''),r.number,COALESCE(r.payment_date::text,''),COALESCE(r.replaces_registry_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
@@ -342,12 +367,12 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	defer rows.Close()
 	out := []M{}
 	for rows.Next() {
-		var id, name, merchant, ref, status, requestID string
+		var id, name, merchant, ref, status, requestID, paymentDate, replacesRegistryID string
 		var total, comm, adjustment, number int64
 		var rate, version int
 		var manual, adjustedRate sql.NullInt64
 		var confirmed sql.NullTime
-		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID, &number); e != nil {
+		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID, &number, &paymentDate, &replacesRegistryID); e != nil {
 			fail(w, 500, e)
 			return
 		}
@@ -359,13 +384,17 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 		} else if status == "reversed" {
 			comm = 0
 		}
-		x := M{"id": id, "merchant": name, "merchant_id": merchant, "external_ref": ref, "number": number, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual.Int64, "version": version, "payment_request_id": requestID}
+		x := M{"id": id, "merchant": name, "merchant_id": merchant, "external_ref": ref, "number": number, "payment_date": paymentDate, "replaces_registry_id": replacesRegistryID, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual.Int64, "version": version, "payment_request_id": requestID}
 		if status == "preview" {
 			rateAvailable := manual.Valid
 			if manual.Valid {
 				rate = int(manual.Int64)
 			} else {
-				rateErr := a.db.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<= (now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY created_at DESC LIMIT 1", merchant).Scan(&rate)
+				dateForRate := paymentDate
+				if dateForRate == "" {
+					dateForRate = time.Now().In(a.location).Format("2006-01-02")
+				}
+				rateErr := a.db.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<=$2::date ORDER BY valid_from DESC,created_at DESC LIMIT 1", merchant, dateForRate).Scan(&rate)
 				if rateErr != nil && !errors.Is(rateErr, sql.ErrNoRows) {
 					fail(w, 500, rateErr)
 					return
@@ -480,11 +509,11 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	defer tx.Rollback()
-	var merchant, status string
+	var merchant, status, paymentDate string
 	var total int64
 	var manual sql.NullInt64
 	var version int
-	e = tx.QueryRow("SELECT merchant_id,status,total_cents,manual_rate_bp,version FROM registries WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&merchant, &status, &total, &manual, &version)
+	e = tx.QueryRow("SELECT merchant_id,status,total_cents,manual_rate_bp,version,COALESCE(payment_date::text,'') FROM registries WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&merchant, &status, &total, &manual, &version, &paymentDate)
 	if e != nil {
 		fail(w, 404, e)
 		return
@@ -497,6 +526,15 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, errors.New("устаревший preview"))
 		return
 	}
+	if paymentDate == "" {
+		fail(w, 409, errors.New("у старого черновика не указана дата оплат; создайте реестр заново с датой фактических оплат"))
+		return
+	}
+	_, paymentAt, dateErr := a.registryPaymentDay(paymentDate)
+	if dateErr != nil {
+		fail(w, 409, dateErr)
+		return
+	}
 	var bad int
 	_ = tx.QueryRow("SELECT count(*) FROM registry_rows WHERE registry_id=$1 AND (error_code IS NOT NULL OR card_id IS NULL)", str(m, "id")).Scan(&bad)
 	if bad > 0 {
@@ -507,7 +545,7 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	if manual.Valid {
 		bp = int(manual.Int64)
 	} else {
-		bp, e = a.currentRate(tx, merchant)
+		bp, e = a.currentRate(tx, merchant, paymentDate)
 		if errors.Is(e, sql.ErrNoRows) {
 			fail(w, 409, errors.New("для мерчанта не задан действующий тариф; утвердите общий тариф или разовую ставку реестра"))
 			return
@@ -552,7 +590,7 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		lines = append(lines, Posting{Account: "4100", Side: "credit", Amount: commission, Merchant: merchant})
 	}
 	now := time.Now()
-	_, e = put(tx, "registry", str(m, "id"), "registry:"+str(m, "id"), u.ID, now, now, lines, "")
+	_, e = put(tx, "registry", str(m, "id"), "registry:"+str(m, "id"), u.ID, paymentAt, paymentAt, lines, "")
 	if e != nil {
 		fail(w, 409, e)
 		return

@@ -13,7 +13,7 @@ import (
 )
 
 func (a *App) tariffData(tx *sql.Tx, merchant string, bp int, from string) (M, error) {
-	rows, e := tx.Query("SELECT r.id,r.total_cents,r.commission_cents,r.manual_rate_bp,r.confirmed_at,COALESCE((SELECT SUM(a.new_commission_cents-a.old_commission_cents) FROM tariff_adjustments a WHERE a.registry_id=r.id),0) FROM registries r WHERE r.merchant_id=$1 AND r.status='posted' AND (r.confirmed_at AT TIME ZONE 'Europe/Moscow')::date >= $2::date ORDER BY r.confirmed_at,r.id", merchant, from)
+	rows, e := tx.Query("SELECT r.id,r.total_cents,r.commission_cents,r.manual_rate_bp,COALESCE(r.payment_date,(r.confirmed_at AT TIME ZONE 'Europe/Moscow')::date)::text,COALESCE((SELECT SUM(a.new_commission_cents-a.old_commission_cents) FROM tariff_adjustments a WHERE a.registry_id=r.id),0) FROM registries r WHERE r.merchant_id=$1 AND r.status='posted' AND COALESCE(r.payment_date,(r.confirmed_at AT TIME ZONE 'Europe/Moscow')::date) >= $2::date ORDER BY COALESCE(r.payment_date,(r.confirmed_at AT TIME ZONE 'Europe/Moscow')::date),r.id", merchant, from)
 	if e != nil {
 		return nil, e
 	}
@@ -24,8 +24,8 @@ func (a *App) tariffData(tx *sql.Tx, merchant string, bp int, from string) (M, e
 		var rid string
 		var total, original, adjustment int64
 		var manual sql.NullInt64
-		var confirmed time.Time
-		if e = rows.Scan(&rid, &total, &original, &manual, &confirmed, &adjustment); e != nil {
+		var paymentDate string
+		if e = rows.Scan(&rid, &total, &original, &manual, &paymentDate, &adjustment); e != nil {
 			return nil, e
 		}
 		if manual.Valid {
@@ -35,7 +35,7 @@ func (a *App) tariffData(tx *sql.Tx, merchant string, bp int, from string) (M, e
 		old := original + adjustment
 		newFee := fee(total, bp)
 		delta += newFee - old
-		items = append(items, M{"id": rid, "old_commission": rub(old), "new_commission": rub(newFee), "old_net": rub(total - old), "new_net": rub(total - newFee), "delta_cents": newFee - old, "month": confirmed.In(a.location).Format("2006-01")})
+		items = append(items, M{"id": rid, "old_commission": rub(old), "new_commission": rub(newFee), "old_net": rub(total - old), "new_net": rub(total - newFee), "delta_cents": newFee - old, "month": paymentDate[:7]})
 	}
 	if e = rows.Err(); e != nil {
 		return nil, e
@@ -176,7 +176,7 @@ func (a *App) tariffConfirm(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 		var recognized time.Time
-		_ = tx.QueryRow("SELECT confirmed_at FROM registries WHERE id=$1", rid).Scan(&recognized)
+		_ = tx.QueryRow("SELECT COALESCE(payment_date::timestamp AT TIME ZONE 'Europe/Moscow',confirmed_at) FROM registries WHERE id=$1", rid).Scan(&recognized)
 		v := delta
 		if v < 0 {
 			v = -v
@@ -281,7 +281,7 @@ func (a *App) report(w http.ResponseWriter, r *http.Request, u User) {
 		}
 	}
 	cashflow := []M{}
-	flowRows, e := a.db.Query("SELECT to_char(j.posted_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD'),j.event_type,SUM(CASE WHEN p.side='debit' THEN p.amount_cents ELSE -p.amount_cents END) FROM postings p JOIN journal_entries j ON j.id=p.entry_id WHERE p.account IN ('1100','1200','1210') GROUP BY 1,2 ORDER BY 1 DESC,2 LIMIT 200")
+	flowRows, e := a.db.Query("SELECT to_char((CASE WHEN j.event_type='registry' THEN j.occurred_at ELSE j.posted_at END) AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD'),j.event_type,SUM(CASE WHEN p.side='debit' THEN p.amount_cents ELSE -p.amount_cents END) FROM postings p JOIN journal_entries j ON j.id=p.entry_id WHERE p.account IN ('1100','1200','1210') GROUP BY 1,2 ORDER BY 1 DESC,2 LIMIT 200")
 	if e != nil {
 		fail(w, 500, e)
 		return

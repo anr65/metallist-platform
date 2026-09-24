@@ -22,6 +22,7 @@ type manualRegistryRow struct {
 type manualRegistryInput struct {
 	MerchantID     string              `json:"merchant_id"`
 	IdempotencyKey string              `json:"idempotency_key"`
+	PaymentDate    string              `json:"payment_date"`
 	Rows           []manualRegistryRow `json:"rows"`
 }
 
@@ -72,6 +73,11 @@ func (a *App) createManualRegistry(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 400, errors.New("выберите мерчанта и добавьте от 1 до 500 строк"))
 		return
 	}
+	paymentDate, _, dateErr := a.registryPaymentDay(input.PaymentDate)
+	if dateErr != nil {
+		fail(w, 400, dateErr)
+		return
+	}
 	for _, row := range input.Rows {
 		if !validID(row.CardID) || !validID(row.ContactID) {
 			fail(w, 400, errors.New("выберите карту, ФИО и телефон из справочников"))
@@ -114,7 +120,7 @@ func (a *App) createManualRegistry(w http.ResponseWriter, r *http.Request, u Use
 	for i, row := range prepared {
 		snapshotRows = append(snapshotRows, M{"card_id": row.cardID, "card_mask": row.mask, "contact_id": input.Rows[i].ContactID, "full_name": row.name, "phone": row.phone, "amount": rub(row.amount)})
 	}
-	snapshot := M{"merchant_id": input.MerchantID, "external_ref": ref, "rows": snapshotRows}
+	snapshot := M{"merchant_id": input.MerchantID, "external_ref": ref, "payment_date": paymentDate, "rows": snapshotRows}
 	data, e := json.Marshal(snapshot)
 	if e != nil {
 		fail(w, 500, e)
@@ -165,7 +171,7 @@ func (a *App) createManualRegistry(w http.ResponseWriter, r *http.Request, u Use
 	sourceID, registryID := id(), id()
 	_, e = tx.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id) VALUES($1,'manual',$2,$3,'application/json',$4,$5,$6)", sourceID, ref+".json", sum, len(data), path, u.ID)
 	if e == nil {
-		_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,$4,'preview',$5)", registryID, input.MerchantID, sourceID, ref, total)
+		_, e = tx.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_date) VALUES($1,$2,$3,$4,'preview',$5,$6)", registryID, input.MerchantID, sourceID, ref, total, paymentDate)
 	}
 	for i, row := range prepared {
 		if e != nil {

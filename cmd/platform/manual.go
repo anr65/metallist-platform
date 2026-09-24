@@ -144,7 +144,7 @@ func (a *App) manualConfirm(w http.ResponseWriter, r *http.Request, u User) {
 			lines = []Posting{{Account: "4100", Side: "debit", Amount: v, Merchant: merchant}, {Account: "2100", Side: "credit", Amount: v, Merchant: merchant}}
 		}
 		var confirmed time.Time
-		_ = tx.QueryRow("SELECT confirmed_at FROM registries WHERE id=$1", reg).Scan(&confirmed)
+		_ = tx.QueryRow("SELECT COALESCE(payment_date::timestamp AT TIME ZONE 'Europe/Moscow',confirmed_at) FROM registries WHERE id=$1", reg).Scan(&confirmed)
 		if _, e = put(tx, "tariff_adjustment", adj, "manual-adjustment:"+adj, u.ID, time.Now(), confirmed, lines, ""); e != nil {
 			fail(w, 409, e)
 			return

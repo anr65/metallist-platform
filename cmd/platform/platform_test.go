@@ -54,6 +54,9 @@ func testApp(t *testing.T) *App {
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	return &App{db: db, storage: t.TempDir(), location: loc}
 }
+func testPaymentDate() string {
+	return time.Now().In(time.FixedZone("MSK", 3*60*60)).Format("2006-01-02")
+}
 func reset(t *testing.T, a *App) {
 	t.Helper()
 	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
@@ -182,11 +185,12 @@ func TestManualRegistryCreationAndConfirmation(t *testing.T) {
 		t.Fatalf("operator cards: %d %v %v", cardsRecorder.Code, availableCards, e)
 	}
 	key := id()
-	input := M{"merchant_id": merchant, "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,64"}}}
+	paymentDate := time.Date(time.Now().In(a.location).Year(), time.Now().In(a.location).Month(), 1, 0, 0, 0, 0, a.location).AddDate(0, -1, 0).Format("2006-01-02")
+	input := M{"merchant_id": merchant, "payment_date": paymentDate, "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,64"}}}
 	if code, _ := req(t, a.createManualRegistry, User{ID: id(), Role: "accountant"}, input); code != 403 {
 		t.Fatalf("accountant creation: %d", code)
 	}
-	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": contact, "amount": "0"}}}); code != 400 {
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "payment_date": testPaymentDate(), "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": contact, "amount": "0"}}}); code != 400 {
 		t.Fatalf("invalid amount: %d", code)
 	}
 	code, result := req(t, a.createManualRegistry, operator, input)
@@ -197,10 +201,10 @@ func TestManualRegistryCreationAndConfirmation(t *testing.T) {
 	if code, repeated := req(t, a.createManualRegistry, operator, input); code != 200 || repeated["id"] != registryID {
 		t.Fatalf("retry: %d %v", code, repeated)
 	}
-	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,65"}}}); code != 409 {
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "payment_date": testPaymentDate(), "idempotency_key": key, "rows": []M{{"card_id": card, "contact_id": contact, "amount": "1234,65"}}}); code != 409 {
 		t.Fatalf("changed retry: %d", code)
 	}
-	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": id(), "amount": "100.00"}}}); code != 400 {
+	if code, _ := req(t, a.createManualRegistry, operator, M{"merchant_id": merchant, "payment_date": testPaymentDate(), "idempotency_key": id(), "rows": []M{{"card_id": card, "contact_id": id(), "amount": "100.00"}}}); code != 400 {
 		t.Fatalf("unknown contact: %d", code)
 	}
 	var sourceKind, sourcePath, status string
@@ -227,6 +231,21 @@ func TestManualRegistryCreationAndConfirmation(t *testing.T) {
 	}
 	if entries != 1 {
 		t.Fatalf("expected one posted entry, got %d", entries)
+	}
+	var storedDate, occurredDate, recognizedDate, confirmedDate, postedDate string
+	if e := a.db.QueryRow("SELECT r.payment_date::text, to_char(j.occurred_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD'), to_char(j.recognition_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD'), to_char(r.confirmed_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD'), to_char(j.posted_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') FROM registries r JOIN journal_entries j ON j.event_type='registry' AND j.event_id=r.id WHERE r.id=$1", registryID).Scan(&storedDate, &occurredDate, &recognizedDate, &confirmedDate, &postedDate); e != nil {
+		t.Fatal(e)
+	}
+	if storedDate != paymentDate || occurredDate != paymentDate || recognizedDate != paymentDate || confirmedDate != testPaymentDate() || postedDate != testPaymentDate() {
+		t.Fatalf("payment/confirmation/posting dates: %s %s %s %s %s", storedDate, occurredDate, recognizedDate, confirmedDate, postedDate)
+	}
+	paymentMonth, e := a.monthReport(paymentDate[:7])
+	if e != nil || paymentMonth["revenue"] != "49.39" {
+		t.Fatalf("commission should belong to payment month: %v %v", paymentMonth, e)
+	}
+	confirmationMonth, e := a.monthReport(testPaymentDate()[:7])
+	if e != nil || confirmationMonth["revenue"] != "0.00" {
+		t.Fatalf("confirmation month should not receive commission: %v %v", confirmationMonth, e)
 	}
 }
 func TestMoneyExact(t *testing.T) {
@@ -621,6 +640,7 @@ func TestPaymentRequestExportAndResponse(t *testing.T) {
 		var body bytes.Buffer
 		form := multipart.NewWriter(&body)
 		_ = form.WriteField("merchant_id", merchant)
+		_ = form.WriteField("payment_date", testPaymentDate())
 		_ = form.WriteField("external_ref", "REPLY-20")
 		_ = form.WriteField("payment_request_id", requestID)
 		part, _ := form.CreateFormFile("file", "response.xlsx")
@@ -1009,6 +1029,7 @@ func TestLedgerInvariantAndImmutability(t *testing.T) {
 func TestRegistryRequiresEffectiveRate(t *testing.T) {
 	a := testApp(t)
 	u, merchant, _, card := fixtures(t, a)
+	paymentDate := time.Now().In(a.location).AddDate(0, 0, -1).Format("2006-01-02")
 	if _, e := a.db.Exec("DELETE FROM tariffs WHERE merchant_id=$1", merchant); e != nil {
 		t.Fatal(e)
 	}
@@ -1016,7 +1037,7 @@ func TestRegistryRequiresEffectiveRate(t *testing.T) {
 	if _, e := a.db.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id) VALUES($1,'xlsx','fake.xlsx',$2,'application/xlsx',1,'/tmp/fake',$3)", source, id(), u.ID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,'R1','preview',100000)", reg, merchant, source); e != nil {
+	if _, e := a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_date) VALUES($1,$2,$3,'R1','preview',100000,$4)", reg, merchant, source, paymentDate); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := a.db.Exec("INSERT INTO registry_rows(id,registry_id,row_no,raw,card_id,amount_cents) VALUES($1,$2,1,'[]',$3,100000)", id(), reg, card); e != nil {
@@ -1058,6 +1079,9 @@ func TestRegistryRequiresEffectiveRate(t *testing.T) {
 	if _, e := a.db.Exec("INSERT INTO tariffs(id,merchant_id,rate_bp,valid_from,created_by) VALUES($1,$2,400,'2026-01-01',$3)", id(), merchant, u.ID); e != nil {
 		t.Fatal(e)
 	}
+	if _, e := a.db.Exec("INSERT INTO tariffs(id,merchant_id,rate_bp,valid_from,created_by) VALUES($1,$2,500,$3,$4)", id(), merchant, testPaymentDate(), u.ID); e != nil {
+		t.Fatal(e)
+	}
 	if preview := read(); preview["rate_available"] != true || preview["commission"] != "40.00" {
 		t.Fatal("effective tariff not applied to preview", preview)
 	}
@@ -1075,7 +1099,7 @@ func TestRegistryRateReversalAndReports(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,'R1','preview',100000000)", reg, merchant, source)
+	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_date) VALUES($1,$2,$3,'R1','preview',100000000,$4)", reg, merchant, source, testPaymentDate())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -1275,6 +1299,7 @@ func TestSvetaRegistryReconciliationByRequest(t *testing.T) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	_ = mw.WriteField("merchant_id", merchant)
+	_ = mw.WriteField("payment_date", testPaymentDate())
 	_ = mw.WriteField("external_ref", "SVETA-FIO-TEST")
 	_ = mw.WriteField("payment_request_id", requestID)
 	fw, _ := mw.CreateFormFile("file", "sveta.xlsx")
@@ -1283,6 +1308,7 @@ func TestSvetaRegistryReconciliationByRequest(t *testing.T) {
 	var missingBody bytes.Buffer
 	missingWriter := multipart.NewWriter(&missingBody)
 	_ = missingWriter.WriteField("merchant_id", merchant)
+	_ = missingWriter.WriteField("payment_date", testPaymentDate())
 	_ = missingWriter.WriteField("external_ref", "SVETA-FIO-WITHOUT-REQUEST")
 	missingFile, _ := missingWriter.CreateFormFile("file", "sveta.xlsx")
 	_, _ = missingFile.Write(blob.Bytes())
@@ -1534,7 +1560,7 @@ func TestManualRateAndDraftMoney(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,manual_rate_bp,manual_reason,manual_approved_by,manual_approved_at) VALUES($1,$2,$3,'R2','preview',10000000,400,'one off',$4,now())", reg, merchant, source, u.ID)
+	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,manual_rate_bp,manual_reason,manual_approved_by,manual_approved_at,payment_date) VALUES($1,$2,$3,'R2','preview',10000000,400,'one off',$4,now(),$5)", reg, merchant, source, u.ID, testPaymentDate())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -1800,10 +1826,12 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 		t.Fatal(e)
 	}
 	file.Close()
+	paymentDate := testPaymentDate()
 	upload := func(ref, merchantID, filename string) (int, M) {
 		var body bytes.Buffer
 		mw := multipart.NewWriter(&body)
 		_ = mw.WriteField("merchant_id", merchantID)
+		_ = mw.WriteField("payment_date", paymentDate)
 		_ = mw.WriteField("external_ref", ref)
 		fw, _ := mw.CreateFormFile("file", filename)
 		_, _ = fw.Write(blob.Bytes())
@@ -1858,6 +1886,18 @@ func TestXLSXUploadPreviewAndDuplicate(t *testing.T) {
 	if code != 200 {
 		t.Fatal(out)
 	}
+	if code, out = req(t, a.reverseRegistry, u, M{"id": reg, "reason": "Исправление даты оплат"}); code != 200 {
+		t.Fatal("reverse before corrected upload", code, out)
+	}
+	paymentDate = time.Now().In(a.location).AddDate(0, 0, -1).Format("2006-01-02")
+	code, out = upload("X3", merchant, "synthetic.xlsx")
+	if code != 201 {
+		t.Fatal("corrected upload", code, out)
+	}
+	var correctedDate, replacedID string
+	if e := a.db.QueryRow("SELECT payment_date::text,replaces_registry_id::text FROM registries WHERE id=$1", out["id"]).Scan(&correctedDate, &replacedID); e != nil || correctedDate != paymentDate || replacedID != reg {
+		t.Fatal("replacement provenance and date", correctedDate, replacedID, e)
+	}
 }
 func TestAllActiveCardsAndReadPermissions(t *testing.T) {
 	a := testApp(t)
@@ -1902,7 +1942,7 @@ func TestRetroactiveOverpaymentAndRegistryRollback(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,'R3','preview',100000)", reg, merchant, src)
+	_, e = a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents,payment_date) VALUES($1,$2,$3,'R3','preview',100000,$4)", reg, merchant, src, testPaymentDate())
 	if e != nil {
 		t.Fatal(e)
 	}
