@@ -36,6 +36,8 @@
 
 Схема 012 добавляет `registry_rows.source_contact_name` для неизменяемого ФИО из входящего файла Светы. Сопоставленная `card_id` может быть исправлена в preview главным администратором или загрузившим файл операционистом, но только на карту из связанного `payment_request_id`; исходное ФИО и `raw` сохраняются. Каждое изменение увеличивает `registries.version` и записывается в аудит без ФИО, телефона и PAN. Проводки до подтверждения реестра не создаются.
 
+Схема 015 добавляет `registries.number` (`bigint`, уникальная последовательность, без повторного использования), `deleted_at/deleted_by` и статус `deleted` только для неопубликованного реестра. Старые реестры получают номера по времени создания и ID; новые номера выдаёт БД. Удаление мягкое: документ и строки сохраняются, а рабочие запросы исключают статус `deleted`. Поле `merchants.version` обеспечивает защиту от параллельного изменения справочника; отключение выполняется через `active=false` и не стирает связи с историческими операциями.
+
 Схема 004 добавляет `registry_parser_types(code, name, version, accepted_extensions, active)` и ровно один `merchant_import_profiles(merchant_id, parser_code, status, updated_at)` на мерчанта. Статус `configured` требует parser, `awaiting_sample` запрещает его. `source_documents.parser_code/parser_version` фиксируют реально применённую версию; последующее изменение профиля не меняет старый документ. Таблицы не создают проводок и не содержат содержимое исходного файла.
 
 - `source_documents(id, source_type, external_id, checksum, storage_key, received_at, received_by, metadata)`

@@ -80,7 +80,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	merchant := r.FormValue("merchant_id")
 	var parserCode, profileStatus string
 	var parserVersion int
-	e = a.db.QueryRow("SELECT COALESCE(p.parser_code,''),p.status,COALESCE(t.version,0) FROM merchant_import_profiles p LEFT JOIN registry_parser_types t ON t.code=p.parser_code AND t.active WHERE p.merchant_id=$1", merchant).Scan(&parserCode, &profileStatus, &parserVersion)
+	e = a.db.QueryRow("SELECT COALESCE(p.parser_code,''),p.status,COALESCE(t.version,0) FROM merchant_import_profiles p JOIN merchants m ON m.id=p.merchant_id AND m.active LEFT JOIN registry_parser_types t ON t.code=p.parser_code AND t.active WHERE p.merchant_id=$1", merchant).Scan(&parserCode, &profileStatus, &parserVersion)
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		fail(w, 500, errors.New("не удалось определить тип разбора файла"))
 		return
@@ -110,8 +110,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	external := strings.TrimSpace(r.FormValue("external_ref"))
 	if external == "" {
-		fail(w, 400, errors.New("нужен номер реестра"))
-		return
+		external = "РЕ-" + id()
 	}
 	hash := sha256.Sum256(data)
 	sum := hex.EncodeToString(hash[:])
@@ -319,21 +318,21 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
+	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,''),r.number FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if u.Role == "operator" {
 		if id != "" {
-			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.id::text=$2", u.ID, id)
+			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.id::text=$2 AND r.status<>'deleted'", u.ID, id)
 		} else {
-			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 ORDER BY r.created_at DESC LIMIT 100", u.ID)
+			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.status<>'deleted' ORDER BY r.created_at DESC LIMIT 100", u.ID)
 		}
 	} else {
 		if id != "" {
-			rows, e = a.db.Query(query+" WHERE r.id::text=$1", id)
+			rows, e = a.db.Query(query+" WHERE r.id::text=$1 AND r.status<>'deleted'", id)
 		} else {
-			rows, e = a.db.Query(query + " ORDER BY r.created_at DESC LIMIT 100")
+			rows, e = a.db.Query(query + " WHERE r.status<>'deleted' ORDER BY r.created_at DESC LIMIT 100")
 		}
 	}
 	if e != nil {
@@ -344,11 +343,11 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	out := []M{}
 	for rows.Next() {
 		var id, name, merchant, ref, status, requestID string
-		var total, comm, adjustment int64
+		var total, comm, adjustment, number int64
 		var rate, version int
 		var manual, adjustedRate sql.NullInt64
 		var confirmed sql.NullTime
-		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID); e != nil {
+		if e = rows.Scan(&id, &name, &merchant, &ref, &status, &total, &comm, &rate, &manual, &version, &confirmed, &adjustment, &adjustedRate, &requestID, &number); e != nil {
 			fail(w, 500, e)
 			return
 		}
@@ -360,7 +359,7 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 		} else if status == "reversed" {
 			comm = 0
 		}
-		x := M{"id": id, "merchant": name, "merchant_id": merchant, "external_ref": ref, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual.Int64, "version": version, "payment_request_id": requestID}
+		x := M{"id": id, "merchant": name, "merchant_id": merchant, "external_ref": ref, "number": number, "status": status, "total": rub(total), "commission": rub(comm), "net": rub(total - comm), "rate_bp": rate, "manual_rate_bp": manual.Int64, "version": version, "payment_request_id": requestID}
 		if status == "preview" {
 			rateAvailable := manual.Valid
 			if manual.Valid {
@@ -400,7 +399,7 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	if u.Role == "operator" {
 		var owned bool
-		e := a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM registries r JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1 AND s.uploader_id=$2)", r.URL.Query().Get("id"), u.ID).Scan(&owned)
+		e := a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM registries r JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1 AND s.uploader_id=$2 AND r.status<>'deleted')", r.URL.Query().Get("id"), u.ID).Scan(&owned)
 		if e != nil || !owned {
 			fail(w, 403, errors.New("реестр не доступен"))
 			return
@@ -413,7 +412,7 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 		JOIN registries r ON r.id=rr.registry_id
 		LEFT JOIN cards c ON c.id=rr.card_id
 		LEFT JOIN payment_request_rows pr ON pr.request_id=r.payment_request_id AND pr.card_id=rr.card_id
-		WHERE rr.registry_id=$1 ORDER BY rr.row_no`, r.URL.Query().Get("id"))
+		WHERE rr.registry_id=$1 AND r.status<>'deleted' ORDER BY rr.row_no`, r.URL.Query().Get("id"))
 	if e != nil {
 		fail(w, 400, e)
 		return
@@ -577,6 +576,58 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	respond(w, 200, M{"status": "posted"})
 }
+func (a *App) deleteRegistry(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
+		return
+	}
+	m, e := jsonBody(r)
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
+	registryID := str(m, "id")
+	version, versionErr := strconv.Atoi(str(m, "version"))
+	if !validID(registryID) || versionErr != nil || version < 1 {
+		fail(w, 400, errors.New("обновите реестр перед удалением"))
+		return
+	}
+	tx, e := a.tx()
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	defer tx.Rollback()
+	var status, uploader string
+	var actualVersion int
+	e = tx.QueryRow(`SELECT r.status,r.version,s.uploader_id FROM registries r
+		JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1 FOR UPDATE OF r`, registryID).Scan(&status, &actualVersion, &uploader)
+	if e != nil {
+		fail(w, 404, errors.New("реестр не найден"))
+		return
+	}
+	if u.Role == "operator" && uploader != u.ID {
+		fail(w, 403, errors.New("реестр не доступен"))
+		return
+	}
+	if status != "preview" || actualVersion != version {
+		fail(w, 409, errors.New("реестр уже изменён или подтверждён; обновите страницу"))
+		return
+	}
+	if _, e = tx.Exec("UPDATE registries SET status='deleted',deleted_at=now(),deleted_by=$2,version=version+1 WHERE id=$1", registryID, u.ID); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = txAudit(tx, u.ID, "web", "registry_delete", "registry", registryID, "success", "", M{"version": actualVersion + 1}); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"id": registryID, "status": "deleted"})
+}
+
 func (a *App) reverseRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != "POST" || !a.require(w, u, "chief") {
 		return

@@ -1,8 +1,8 @@
 export const navigationByRole = {
-  chief: ['overview', 'requests', 'registries', 'expenses', 'money', 'balances', 'catalog', 'reports', 'audit'],
-  operator: ['requests', 'registries', 'money', 'catalog'],
-  accountant: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
-  auditor: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
+  chief: ['overview', 'requests', 'registries', 'merchants', 'expenses', 'money', 'balances', 'catalog', 'reports', 'audit'],
+  operator: ['requests', 'registries', 'merchants', 'money', 'catalog'],
+  accountant: ['overview', 'requests', 'registries', 'merchants', 'balances', 'catalog', 'reports', 'audit'],
+  auditor: ['overview', 'requests', 'registries', 'merchants', 'balances', 'catalog', 'reports', 'audit'],
   sysadmin: ['catalog', 'audit'],
   collector: ['catalog'],
 };
@@ -18,6 +18,8 @@ export function pageForRole(role, hash) {
   if (allowed.includes('requests') && ['chief', 'operator'].includes(role) && requested === 'requests/new') return requested;
   if (allowed.includes('registries') && /^registries\/[0-9a-f-]{36}$/i.test(requested)) return requested;
   if (allowed.includes('registries') && ['chief', 'operator'].includes(role) && requested === 'registries/new') return requested;
+  if (allowed.includes('merchants') && /^merchants\/[0-9a-f-]{36}$/i.test(requested)) return requested;
+  if (allowed.includes('merchants') && role === 'chief' && requested === 'merchants/new') return requested;
   return allowed.includes(requested) ? requested : allowed[0] || 'account';
 }
 

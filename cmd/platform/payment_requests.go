@@ -379,7 +379,7 @@ func lockEditableRequest(tx *sql.Tx, requestID string) (int, error) {
 		return 0, errors.New("этот запрос нельзя изменить")
 	}
 	var linked bool
-	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM registries WHERE payment_request_id=$1)", requestID).Scan(&linked); e != nil {
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM registries WHERE payment_request_id=$1 AND status<>'deleted')", requestID).Scan(&linked); e != nil {
 		return 0, e
 	}
 	if linked {
@@ -569,7 +569,7 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
-		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id)
+		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id AND r.status<>'deleted')
 		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, (page-1)*50)
 	if e != nil {
 		fail(w, 500, e)
@@ -607,7 +607,7 @@ func (a *App) paymentRequest(w http.ResponseWriter, r *http.Request, u User) {
 	var count, linkedCount, version int
 	var createdAt time.Time
 	e := a.db.QueryRow(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
-		(SELECT count(*) FROM registries r WHERE r.payment_request_id=p.id)
+		(SELECT count(*) FROM registries r WHERE r.payment_request_id=p.id AND r.status<>'deleted')
 		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.id=$1 AND p.deleted_at IS NULL`, requestID).
 		Scan(&reqID, &merchantID, &merchant, &ref, &title, &mode, &count, &createdAt, &version, &linkedCount)
 	if errors.Is(e, sql.ErrNoRows) {

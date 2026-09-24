@@ -99,6 +99,71 @@ func fixtures(t *testing.T, a *App) (User, string, string, string) {
 	return u, merchant, bank, card
 }
 
+func TestPreviewRegistryDeletionAndNumbering(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, _ := fixtures(t, a)
+	operator := User{ID: id(), Role: "operator"}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'delete-operator','Operator','operator','x')", operator.ID); e != nil {
+		t.Fatal(e)
+	}
+	source, registry := id(), id()
+	if _, e := a.db.Exec("INSERT INTO source_documents(id,kind,filename,sha256,media_type,byte_size,storage_path,uploader_id) VALUES($1,'xlsx','test.xlsx',$2,'application/xlsx',1,'/tmp/test',$3)", source, id(), operator.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO registries(id,merchant_id,source_id,external_ref,status,total_cents) VALUES($1,$2,$3,'delete-test','preview',100)", registry, merchant, source); e != nil {
+		t.Fatal(e)
+	}
+	var number int64
+	if e := a.db.QueryRow("SELECT number FROM registries WHERE id=$1", registry).Scan(&number); e != nil || number < 1 {
+		t.Fatalf("automatic number: %d %v", number, e)
+	}
+	if code, _ := req(t, a.deleteRegistry, User{ID: id(), Role: "accountant"}, M{"id": registry, "version": "1"}); code != 403 {
+		t.Fatalf("accountant delete: %d", code)
+	}
+	if code, _ := req(t, a.deleteRegistry, User{ID: id(), Role: "operator"}, M{"id": registry, "version": "1"}); code != 403 {
+		t.Fatalf("other operator delete: %d", code)
+	}
+	if code, out := req(t, a.deleteRegistry, operator, M{"id": registry, "version": "1"}); code != 200 {
+		t.Fatalf("owner delete: %d %v", code, out)
+	}
+	var status string
+	var deletedBy string
+	if e := a.db.QueryRow("SELECT status,deleted_by FROM registries WHERE id=$1", registry).Scan(&status, &deletedBy); e != nil || status != "deleted" || deletedBy != operator.ID {
+		t.Fatalf("deletion state: %s %s %v", status, deletedBy, e)
+	}
+	if code, _ := req(t, a.deleteRegistry, chief, M{"id": registry, "version": "1"}); code != 409 {
+		t.Fatalf("repeat delete: %d", code)
+	}
+	var postings int
+	if e := a.db.QueryRow("SELECT count(*) FROM postings").Scan(&postings); e != nil || postings != 0 {
+		t.Fatalf("deletion changed ledger: %d %v", postings, e)
+	}
+}
+
+func TestMerchantCrudPermissionsAndVersion(t *testing.T) {
+	a := testApp(t)
+	chief, merchant, _, _ := fixtures(t, a)
+	if code, _ := req(t, a.merchantUpdate, User{ID: id(), Role: "operator"}, M{"id": merchant, "version": "1", "code": "EDIT", "name": "Edit"}); code != 403 {
+		t.Fatalf("operator update: %d", code)
+	}
+	if code, out := req(t, a.merchantUpdate, chief, M{"id": merchant, "version": "1", "code": "EDIT", "name": "Edited"}); code != 200 {
+		t.Fatalf("chief update: %d %v", code, out)
+	}
+	if code, _ := req(t, a.merchantDelete, chief, M{"id": merchant, "version": "1"}); code != 409 {
+		t.Fatalf("stale delete: %d", code)
+	}
+	if code, out := req(t, a.merchantDelete, chief, M{"id": merchant, "version": "2"}); code != 200 {
+		t.Fatalf("deactivate: %d %v", code, out)
+	}
+	var active bool
+	if e := a.db.QueryRow("SELECT active FROM merchants WHERE id=$1", merchant).Scan(&active); e != nil || active {
+		t.Fatalf("deactivation: %v %v", active, e)
+	}
+	if code, out := req(t, a.merchantUpdate, chief, M{"id": merchant, "version": "3", "code": "EDIT", "name": "Edited"}); code != 200 {
+		t.Fatalf("restore: %d %v", code, out)
+	}
+}
+
 func TestManualRegistryCreationAndConfirmation(t *testing.T) {
 	a := testApp(t)
 	chief, merchant, _, card := fixtures(t, a)
