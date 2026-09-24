@@ -19,6 +19,7 @@ Use the matching project skills in `.codex/skills/`:
 - `metallist-db-migrations` for PostgreSQL changes;
 - `metallist-release-gate` before release readiness claims;
 - `metallist-knowledge-maintainer` for documentation changes.
+- `metallist-ui-layout` for restructuring application screens and shared interface components.
 
 ## Sources of truth
 
