@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -667,6 +668,28 @@ func TestTelegramBalanceCommandsUseLedgerAndRequestersCustodian(t *testing.T) {
 	var views int
 	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE actor_id=$1 AND action IN ('cards_balance_view','own_cash_balance_view') AND outcome='success'", collector.ID).Scan(&views); e != nil || views != 2 {
 		t.Fatal("balance views were not audited", views, e)
+	}
+}
+
+func TestTelegramCardBalancesArePaginated(t *testing.T) {
+	a := testApp(t)
+	_, _, bank, _ := fixtures(t, a)
+	_, collector, custodian, fake := telegramFixture(t, a, "")
+	for n := 0; n < 20; n++ {
+		last4 := fmt.Sprintf("%04d", n)
+		if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Тест','000000******' || $3,$3)", id(), bank, last4); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(5201, 555, "/cards_balance")); code != 200 {
+		t.Fatal(code)
+	}
+	if !fake.contains("страница 1 из 2") {
+		t.Fatal("first balance page was not sent")
+	}
+	message, remove := a.telegramCallback(telegramActor{User: collector, CustodianID: custodian}, telegramTestGroup, "cards:1")
+	if message != "Страница балансов открыта" || remove || !fake.contains("страница 2 из 2") {
+		t.Fatal("second balance page was not sent", message, remove)
 	}
 }
 

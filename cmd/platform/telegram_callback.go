@@ -5,11 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
 
 func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string, bool) {
+	if page, ok := telegramCardsBalancePageNumber(data); ok {
+		if err := a.telegramCardsBalancePage(u, chat, page, 0); err != nil {
+			return err.Error(), false
+		}
+		return "Страница балансов открыта", false
+	}
 	action, draftID, ok := strings.Cut(data, ":")
 	if !ok || (action != "confirm" && action != "reject") || len(draftID) != 36 {
 		return "Неизвестная кнопка", false
@@ -119,6 +126,15 @@ func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string
 	}
 	_ = a.telegramReply(chat, label+" подтверждён: "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
 	return "Подтверждено", true
+}
+
+func telegramCardsBalancePageNumber(data string) (int, bool) {
+	raw, ok := strings.CutPrefix(data, "cards:")
+	if !ok || raw == "" || len(raw) > 4 {
+		return 0, false
+	}
+	page, err := strconv.Atoi(raw)
+	return page, err == nil && page >= 0
 }
 
 func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind string, p M) error {
