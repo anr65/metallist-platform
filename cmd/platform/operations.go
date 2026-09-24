@@ -198,8 +198,8 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 				return
 			}
 		}
-		args = append(args, (page-1)*100)
-		query += fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT 100 OFFSET $%d", len(args))
+		args = append(args, (page-1)*15)
+		query += fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT 16 OFFSET $%d", len(args))
 		rows, e = a.db.Query(query, args...)
 	}
 	if e != nil {

@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { request, userError } from './api-errors';
 import { MoneyForm, expenseCategories } from './forms';
 import { get, PageState, Status } from './pages';
+import { PAGE_SIZE, ServerTablePagination } from './pagination';
 
 const names = { withdrawal: 'Снятие', handover: 'Передача главному администратору', transfer: 'Перевод', expense: 'Расход', repayment: 'Возврат мерчанту', injection: 'Внесение', shortage: 'Недостача', writeoff: 'Списание недостачи', surplus: 'Излишек', surplus_income: 'Прочий доход', surplus_merchant: 'Долг мерчанту', surplus_shortage: 'Закрытие недостачи', surplus_return: 'Возврат излишка', collection: 'Инкассация', recovery: 'Возврат долга', forgive_injection: 'Прощение внесения' };
 const rub = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' });
@@ -92,9 +93,9 @@ export function MoneyPage({ role, route = 'money', onNavigate }) {
       const path = id ? `/api/drafts?id=${encodeURIComponent(id)}` : `/api/drafts?${params}`;
       const [rows, data] = await Promise.all([get(path), get('/api/catalog')]);
       if (currentRequest !== requestId.current) return;
-      setItems(previous => nextPage === 1 ? rows : [...previous, ...rows]);
+      setItems(rows.slice(0, PAGE_SIZE));
       setCatalog(data);
-      setHasMore(!id && rows.length === 100);
+      setHasMore(!id && rows.length > PAGE_SIZE);
       setPageNo(nextPage);
     } catch (err) { if (currentRequest === requestId.current) setError(userError(err)); }
     finally { if (currentRequest === requestId.current) { setLoading(false); setLoadingMore(false); } }
@@ -175,6 +176,6 @@ export function MoneyPage({ role, route = 'money', onNavigate }) {
         </TableRow>)}</TableBody>
       </Table> : <p className="p-6 text-sm text-muted-foreground">{Object.values(appliedFilters).some(value => value && value !== 'all') ? 'По заданным фильтрам операций нет.' : 'Операций пока нет.'}</p>}
     </div>
-    {hasMore && !loading && <div className="flex justify-center py-5"><Button type="button" variant="secondary" disabled={loadingMore} onClick={() => load(pageNo + 1, appliedFilters)}>{loadingMore ? 'Загрузка…' : 'Показать ещё'}</Button></div>}
+    {!loading && <ServerTablePagination page={pageNo} hasMore={hasMore} onPageChange={next => load(next, appliedFilters)} />}
   </PageState>;
 }

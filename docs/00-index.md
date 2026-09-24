@@ -34,6 +34,7 @@
 - [Жизненные циклы операций](to-be/operation-lifecycle.md)
 - [Модель доступа](to-be/permissions.md)
 - [Карты и лимиты пополнений](to-be/cards-and-limits.md)
+- [Справочники в интерфейсе](to-be/catalog-layout.md)
 
 ### Управленческий учёт
 

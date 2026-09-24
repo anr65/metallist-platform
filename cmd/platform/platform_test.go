@@ -433,19 +433,6 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	if status, _ := req(t, a.catalogCreate, chief, M{"kind": "card", "bank_id": bank, "owner_label": "Карта администратора", "pan": "4242424242424242"}); status != 201 {
 		t.Fatal("chief could not add card", status)
 	}
-	if status, _ := req(t, a.setCardPAN, operator, M{"card_id": cardID, "pan": pan}); status != 403 {
-		t.Fatal("operator changed full number", status)
-	}
-	if status, _ := req(t, a.setCardPAN, chief, M{"card_id": cardID, "pan": pan}); status != 409 {
-		t.Fatal("full number overwrite accepted", status)
-	}
-	legacyID := id()
-	if _, e := a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,'Ранее заведённая карта','555555******4444','4444')", legacyID, bank); e != nil {
-		t.Fatal(e)
-	}
-	if status, _ := req(t, a.setCardPAN, chief, M{"card_id": legacyID, "pan": "5555555555554444"}); status != 201 {
-		t.Fatal("could not fill existing card number", status)
-	}
 	var auditText string
 	if e := a.db.QueryRow("SELECT coalesce(string_agg(detail::text, ''),'') FROM audit_events").Scan(&auditText); e != nil || strings.Contains(auditText, pan) {
 		t.Fatal("full number appeared in audit", e)

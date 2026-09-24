@@ -191,6 +191,8 @@ select:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(49,
   .section-table--money td:nth-child(4)::before { content: 'Сумма: '; }
   .section-table--money td:nth-child(5)::before { content: 'Дата операции: '; }
   .section-table--money td:nth-child(6)::before { content: 'Статус: '; }
+  .section-table--catalog td:last-child { grid-row: 1 / span 4; }
+  .section-table--catalog td:nth-child(2), .section-table--catalog td:nth-child(3), .section-table--catalog td:nth-child(4) { font-size: .8rem; color: var(--muted-foreground); }
 }
 
 .section-table-wrap [data-slot="table-container"] { overflow-x: auto; }

@@ -11,6 +11,9 @@ test('operator starts on card requests and cannot open restricted sections by UR
   assert.equal(pageForRole('operator', '#money'), 'money');
   assert.equal(pageForRole('operator', '#money/new'), 'money/new');
   assert.equal(pageForRole('operator', '#money/11111111-1111-4111-8111-111111111111'), 'money/11111111-1111-4111-8111-111111111111');
+  assert.equal(pageForRole('operator', '#catalog/cards'), 'catalog/cards');
+  assert.equal(pageForRole('operator', '#catalog/contacts'), 'catalog/contacts');
+  assert.notEqual(pageForRole('operator', '#catalog/access'), 'catalog/access');
   assert.deepEqual(allowedPages('operator'), ['requests', 'registries', 'money', 'catalog', 'account']);
 });
 
@@ -32,6 +35,9 @@ test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('accountant', '#balances'), 'balances');
   assert.equal(pageForRole('auditor', '#balances'), 'balances');
   assert.equal(pageForRole('sysadmin', ''), 'catalog');
+  assert.equal(pageForRole('sysadmin', '#catalog/access'), 'catalog/access');
+  assert.equal(pageForRole('collector', '#catalog/cards'), 'catalog/cards');
+  assert.notEqual(pageForRole('collector', '#catalog/banks'), 'catalog/banks');
   assert.equal(pageForRole('collector', '#reports'), 'catalog');
   assert.equal(pageForRole('accountant', '#expenses'), 'overview');
   assert.equal(pageForRole('unknown', ''), 'account');

@@ -559,7 +559,7 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	if page < 1 {
 		page = 1
 	}
-	limit := 50
+	limit := 15
 	if !r.URL.Query().Has("page") {
 		limit = 100
 	}
@@ -570,7 +570,7 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
 		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id AND r.status<>'deleted')
-		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, (page-1)*50)
+		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, (page-1)*limit)
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -588,7 +588,7 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 		out = append(out, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "title": title, "mode": mode, "card_count": count, "response_count": linkedCount, "version": version, "created_at": createdAt})
 	}
 	if r.URL.Query().Has("page") {
-		respond(w, 200, M{"items": out, "page": page, "total": total, "has_more": page*50 < total})
+		respond(w, 200, M{"items": out, "page": page, "total": total, "has_more": page*limit < total})
 	} else {
 		respond(w, 200, out)
 	}

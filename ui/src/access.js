@@ -23,6 +23,10 @@ export function pageForRole(role, hash) {
   if (allowed.includes('merchants') && role === 'chief' && requested === 'merchants/new') return requested;
   if (allowed.includes('money') && /^money\/[0-9a-f-]{36}$/i.test(requested)) return requested;
   if (allowed.includes('money') && ['chief', 'operator'].includes(role) && requested === 'money/new') return requested;
+  if (allowed.includes('catalog') && requested === 'catalog/cards') return requested;
+  if (allowed.includes('catalog') && role !== 'collector' && /^catalog\/(banks|custodians)$/.test(requested)) return requested;
+  if (allowed.includes('catalog') && ['chief', 'operator'].includes(role) && requested === 'catalog/contacts') return requested;
+  if (allowed.includes('catalog') && role === 'sysadmin' && requested === 'catalog/access') return requested;
   return allowed.includes(requested) ? requested : allowed[0] || 'account';
 }
 
