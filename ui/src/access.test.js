@@ -9,6 +9,8 @@ test('operator starts on card requests and cannot open restricted sections by UR
   }
   assert.equal(pageForRole('operator', '#registries'), 'registries');
   assert.equal(pageForRole('operator', '#money'), 'money');
+  assert.equal(pageForRole('operator', '#money/new'), 'money/new');
+  assert.equal(pageForRole('operator', '#money/11111111-1111-4111-8111-111111111111'), 'money/11111111-1111-4111-8111-111111111111');
   assert.deepEqual(allowedPages('operator'), ['requests', 'registries', 'money', 'catalog', 'account']);
 });
 
@@ -17,6 +19,8 @@ test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('chief', '#balances'), 'balances');
   assert.equal(pageForRole('chief', '#merchants'), 'merchants');
   assert.equal(pageForRole('chief', '#merchants/new'), 'merchants/new');
+  assert.equal(pageForRole('chief', '#money/new'), 'money/new');
+  assert.equal(pageForRole('accountant', '#money/new'), 'overview');
   for (const role of ['accountant', 'auditor', 'sysadmin', 'collector']) {
     assert.ok(!allowedPages(role).includes('merchants'));
     for (const hash of ['#merchants', '#merchants/new', '#merchants/11111111-1111-4111-8111-111111111111']) {

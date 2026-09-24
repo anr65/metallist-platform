@@ -210,7 +210,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. В обеих командах операций можно указать несколько строк или разделить их ;. Разрешены расходы «Прогрев» и «Комса». Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
@@ -222,8 +222,8 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	args := ""
 	if strings.HasPrefix(words[0], "/") {
-		if command != "withdraw" && command != "expense" {
-			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw и /cancel")
+		if command != "withdraw" && command != "expense" && command != "transfer" {
+			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw, /transfer и /cancel")
 		}
 		if len(words) > 1 {
 			args = strings.TrimSpace(text[len(words[0]):])
@@ -231,14 +231,20 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	} else {
 		e := a.db.QueryRow("SELECT command FROM telegram_dialogs WHERE user_id=$1 AND expires_at>now()", u.ID).Scan(&command)
 		if e != nil {
-			return errors.New("Сначала выберите команду /withdraw или /expense в меню")
+			return errors.New("Сначала выберите команду /withdraw, /expense или /transfer в меню")
 		}
 		args = text
+	}
+	if command == "transfer" && u.Role != "collector" {
+		return errors.New("Перевод доступен только сборщику")
 	}
 	if args == "" {
 		_, e := a.db.Exec("INSERT INTO telegram_dialogs(user_id,command,expires_at) VALUES($1,$2,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET command=EXCLUDED.command,expires_at=EXCLUDED.expires_at,updated_at=now()", u.ID, command)
 		if e != nil {
 			return errors.New("Не удалось начать ввод")
+		}
+		if command == "transfer" {
+			return a.telegramTransferOptions(u, message.Chat.ID)
 		}
 		if command == "withdraw" {
 			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
@@ -246,7 +252,29 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
-	if command == "withdraw" {
+	if command == "transfer" {
+		fields := strings.Fields(args)
+		if len(fields) != 2 {
+			return errors.New("Укажите номер получателя и сумму: 1 1000,00. Список: /transfer")
+		}
+		choice, err := strconv.Atoi(fields[0])
+		if err != nil || choice < 1 {
+			return errors.New("Выберите номер получателя из списка /transfer")
+		}
+		recipients, err := a.telegramTransferRecipients(u)
+		if err != nil || choice > len(recipients) {
+			return errors.New("Получатель недоступен. Повторите /transfer")
+		}
+		cents, err := telegramAmount(fields[1])
+		if err != nil || cents <= 0 {
+			return errors.New("Укажите положительную сумму перевода")
+		}
+		payload["amount"] = rub(cents)
+		payload["amount_cents"] = cents
+		payload["from_custodian_id"] = u.CustodianID
+		payload["to_custodian_id"] = recipients[choice-1].ID
+		payload["to_custodian_name"] = recipients[choice-1].Name
+	} else if command == "withdraw" {
 		intents, e := a.telegramParseWithdrawals(u, args)
 		if e != nil {
 			return e
@@ -264,7 +292,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		payload["amount_cents"] = total
 		payload["custodian_id"] = u.CustodianID
 		payload["withdrawal_items"] = items
-	} else {
+	} else if command == "expense" {
 		intents, e := a.telegramParseExpenses(u, args)
 		if e != nil {
 			return e
@@ -292,7 +320,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	if command == "expense" {
 		items, _ := telegramExpenseItems(payload)
 		auditDetail["item_count"] = len(items)
-	} else {
+	} else if command == "withdraw" {
 		items, _ := telegramWithdrawalItems(payload)
 		auditDetail["item_count"] = len(items)
 	}
@@ -303,6 +331,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 func commandKind(command string) string {
 	if command == "withdraw" {
 		return "withdrawal"
+	}
+	if command == "transfer" {
+		return "transfer"
 	}
 	return "expense"
 }
@@ -327,7 +358,10 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	actor := str(p, "telegram_actor_name")
 	var heading, details string
 	items, itemsErr := telegramExpenseItems(p)
-	if itemsErr == nil && len(items) == 1 {
+	if str(p, "to_custodian_id") != "" {
+		heading = "Подтвердите перевод наличных"
+		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents)
+	} else if itemsErr == nil && len(items) == 1 {
 		itemAmount, _ := telegramInt(items[0]["amount_cents"])
 		heading = "Подтвердите расход по карте"
 		details = "Автор: " + actor + "\nКарта: " + str(items[0], "telegram_mask") + "\nСумма расхода: " + telegramMoney(itemAmount) + "\nКатегория: " + telegramCategoryName(str(items[0], "category"))

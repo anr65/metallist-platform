@@ -66,6 +66,64 @@ func testApp(t *testing.T) *App {
 func testPaymentDate() string {
 	return time.Now().In(time.FixedZone("MSK", 3*60*60)).Format("2006-01-02")
 }
+
+func TestCollectorTransferDraftAndReversal(t *testing.T) {
+	a := testApp(t)
+	reset(t, a)
+	chief, _, _, _ := fixtures(t, a)
+	var from string
+	if e := a.db.QueryRow("SELECT id FROM custodians WHERE kind='collector'").Scan(&from); e != nil {
+		t.Fatal(e)
+	}
+	to := id()
+	if _, e := a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,'Сборщик Б','collector')", to); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = put(tx, "test_funding", id(), "transfer-web-funding-"+id(), chief.ID, time.Now(), time.Now(), []Posting{{Account: "1200", Side: "debit", Amount: 10000, Custodian: from}, {Account: "3100", Side: "credit", Amount: 10000}}, ""); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	if code, _ := req(t, a.draft, chief, M{"kind": "transfer", "from_custodian_id": from, "to_custodian_id": from, "amount": "10.00"}); code != 400 {
+		t.Fatal("self transfer accepted", code)
+	}
+	code, created := req(t, a.draft, chief, M{"kind": "transfer", "from_custodian_id": from, "to_custodian_id": to, "amount": "50.00"})
+	if code != 201 {
+		t.Fatal("transfer draft failed", code, created)
+	}
+	draftID := created["id"].(string)
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "49.00"}); code != 409 {
+		t.Fatal("changed transfer amount accepted", code)
+	}
+	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "50.00"}); code != 200 || out["status"] != "posted" {
+		t.Fatal("transfer confirmation failed", code, out)
+	}
+	if code, _ := req(t, a.reverseDraft, chief, M{"id": draftID, "reason": "Исправление"}); code != 200 {
+		t.Fatal("transfer reversal failed", code)
+	}
+	tx, e = a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	left, _ := balance(tx, "1200", "custodian", from)
+	received, _ := balance(tx, "1200", "custodian", to)
+	tx.Rollback()
+	if left != 10000 || received != 0 {
+		t.Fatal("reversal did not restore custody", left, received)
+	}
+	code, created = req(t, a.draft, chief, M{"kind": "transfer", "from_custodian_id": from, "to_custodian_id": to, "amount": "101.00"})
+	if code != 201 {
+		t.Fatal("overdrawn draft creation failed", code, created)
+	}
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": created["id"], "version": "1", "confirm_amount": "101.00"}); code != 409 {
+		t.Fatal("overdrawn transfer posted", code)
+	}
+}
 func reset(t *testing.T, a *App) {
 	t.Helper()
 	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")

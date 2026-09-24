@@ -114,6 +114,89 @@ func telegramButtonUpdate(updateID int64, telegramID int64, action, draftID stri
 	return M{"update_id": updateID, "callback_query": M{"id": "synthetic-callback", "data": action + ":" + draftID, "from": M{"id": telegramID}, "message": M{"message_id": int64(500), "chat": M{"id": telegramTestGroup, "type": "supergroup"}}}}
 }
 
+func TestTelegramCollectorTransfer(t *testing.T) {
+	a := testApp(t)
+	reset(t, a)
+	_, _, _, card := fixtures(t, a)
+	_, sender, from, fake := telegramFixture(t, a, card)
+	to := id()
+	recipient := User{ID: id(), Role: "collector"}
+	if _, e := a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,'Получатель','collector')", to); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash,telegram_id,custodian_id) VALUES($1,'recipient','Получатель','collector','x',556,$2)", recipient.ID, to); e != nil {
+		t.Fatal(e)
+	}
+	tx, e := a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = put(tx, "test_funding", id(), "transfer-funding-"+id(), sender.ID, time.Now(), time.Now(), []Posting{{Account: "1200", Side: "debit", Amount: 10000, Custodian: from}, {Account: "3100", Side: "credit", Amount: 10000}}, ""); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(3101, 555, "/transfer")); code != 200 || !fake.contains("Получатель") {
+		t.Fatal("recipient selection unavailable", code, fake.calls)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(3102, 555, "1 50,00")); code != 200 || !fake.contains("Подтвердите перевод наличных") {
+		t.Fatal("transfer preview unavailable", code)
+	}
+	var draftID, status string
+	if e := a.db.QueryRow("SELECT id,status FROM drafts WHERE idempotency_key='telegram:3102'").Scan(&draftID, &status); e != nil || status != "draft" {
+		t.Fatal("transfer draft missing", e, status)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(3103, 556, "confirm", draftID)); code != 200 {
+		t.Fatal("recipient callback failed", code)
+	}
+	var entries int
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_type='transfer' AND event_id=$1", draftID).Scan(&entries); e != nil || entries != 0 {
+		t.Fatal("recipient confirmed someone else's transfer", entries, e)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(3104, 555, "confirm", draftID)); code != 200 {
+		t.Fatal("sender confirmation failed", code)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(3105, 555, "confirm", draftID)); code != 200 {
+		t.Fatal("sender retry failed", code)
+	}
+	tx, e = a.tx()
+	if e != nil {
+		t.Fatal(e)
+	}
+	left, e := balance(tx, "1200", "custodian", from)
+	if e != nil {
+		t.Fatal(e)
+	}
+	received, e := balance(tx, "1200", "custodian", to)
+	if e != nil {
+		t.Fatal(e)
+	}
+	tx.Rollback()
+	if left != 5000 || received != 5000 {
+		t.Fatal("transfer balances", left, received)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_type='transfer' AND event_id=$1", draftID).Scan(&entries); e != nil || entries != 1 {
+		t.Fatal("transfer was duplicated", entries, e)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(3106, 555, "/transfer 1 60,00")); code != 200 {
+		t.Fatal("second preview failed", code)
+	}
+	var secondID string
+	if e := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:3106'").Scan(&secondID); e != nil {
+		t.Fatal(e)
+	}
+	if code := telegramRequest(t, a, telegramButtonUpdate(3107, 555, "confirm", secondID)); code != 200 {
+		t.Fatal("insufficient balance callback failed", code)
+	}
+	if e := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", secondID).Scan(&status); e != nil || status != "draft" {
+		t.Fatal("insufficient balance transfer posted", status, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_type='transfer' AND event_id=$1", secondID).Scan(&entries); e != nil || entries != 0 {
+		t.Fatal("insufficient balance created entry", entries, e)
+	}
+}
+
 func (f *fakeTelegram) contains(text string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -716,7 +799,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		t.Fatal("group command menus have wrong scopes", call)
 	}
 	commands, ok := call["commands"].([]interface{})
-	if !ok || len(commands) != 6 {
+	if !ok || len(commands) != 7 {
 		t.Fatal("group command menu has wrong size", call)
 	}
 	names := make([]string, 0, len(commands))
@@ -727,7 +810,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		}
 		names = append(names, str(M(command), "command"))
 	}
-	if strings.Join(names, ",") != "start,cards_balance,my_balance,expense,withdraw,cancel" {
+	if strings.Join(names, ",") != "start,cards_balance,my_balance,expense,withdraw,transfer,cancel" {
 		t.Fatal("group command menu contains unexpected commands", names)
 	}
 }

@@ -42,12 +42,12 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	kind := str(m, "kind")
-	allowed := map[string]bool{"withdrawal": true, "handover": true, "repayment": true, "expense": true, "injection": true, "shortage": true, "writeoff": true, "surplus": true, "surplus_income": true, "surplus_merchant": true, "surplus_shortage": true, "surplus_return": true, "collection": true, "recovery": true, "forgive_injection": true}
+	allowed := map[string]bool{"withdrawal": true, "handover": true, "transfer": true, "repayment": true, "expense": true, "injection": true, "shortage": true, "writeoff": true, "surplus": true, "surplus_income": true, "surplus_merchant": true, "surplus_shortage": true, "surplus_return": true, "collection": true, "recovery": true, "forgive_injection": true}
 	if !allowed[kind] {
 		fail(w, 400, errors.New("неизвестный тип"))
 		return
 	}
-	if u.Role == "operator" && kind != "withdrawal" && kind != "handover" {
+	if u.Role == "operator" && kind != "withdrawal" && kind != "handover" && kind != "transfer" {
 		a.logAudit(u.ID, "web", "draft_create", kind, "", "rejected", "role", M{})
 		fail(w, 403, errors.New("только главный администратор"))
 		return
@@ -55,6 +55,18 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 	if (kind == "shortage" || kind == "writeoff" || kind == "surplus_income" || kind == "surplus_merchant" || kind == "surplus_shortage" || kind == "recovery") && str(m, "reason") == "" {
 		fail(w, 400, errors.New("нужно основание"))
 		return
+	}
+	if kind == "transfer" {
+		from, to := str(m, "from_custodian_id"), str(m, "to_custodian_id")
+		if from == "" || to == "" || from == to {
+			fail(w, 400, errors.New("выберите разных сборщиков"))
+			return
+		}
+		var activeCount int
+		if e = a.db.QueryRow("SELECT count(*) FROM custodians WHERE id IN ($1,$2) AND active AND kind='collector'", from, to).Scan(&activeCount); e != nil || activeCount != 2 {
+			fail(w, 400, errors.New("выберите активных сборщиков"))
+			return
+		}
 	}
 	v, e := amount(str(m, "amount"))
 	if e != nil {
@@ -101,7 +113,13 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 	query := "SELECT id,kind,payload,status,version,created_at FROM drafts ORDER BY created_at DESC LIMIT 100"
 	var rows *sql.Rows
 	var e error
-	if u.Role == "operator" {
+	if requested := r.URL.Query().Get("id"); requested != "" {
+		if u.Role == "operator" {
+			rows, e = a.db.Query("SELECT id,kind,payload,status,version,created_at FROM drafts WHERE id=$1 AND created_by=$2 AND kind<>'expense'", requested, u.ID)
+		} else {
+			rows, e = a.db.Query("SELECT id,kind,payload,status,version,created_at FROM drafts WHERE id=$1", requested)
+		}
+	} else if u.Role == "operator" {
 		query = "SELECT id,kind,payload,status,version,created_at FROM drafts WHERE created_by=$1 AND kind<>'expense' ORDER BY created_at DESC LIMIT 100"
 		rows, e = a.db.Query(query, u.ID)
 	} else {
@@ -383,6 +401,25 @@ func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64,
 		}
 		ta, _ := cashAccount(tx, to)
 		return []Posting{debit(ta, "", "", to, "", ""), credit(fa, "", "", from, "", "")}, nil
+	case "transfer":
+		from, to := str(p, "from_custodian_id"), str(p, "to_custodian_id")
+		if from == "" || to == "" || from == to {
+			return nil, errors.New("выберите разных сборщиков")
+		}
+		for _, custodian := range []string{from, to} {
+			var kind string
+			if e := tx.QueryRow("SELECT kind FROM custodians WHERE id=$1 AND active", custodian).Scan(&kind); e != nil || kind != "collector" {
+				return nil, errors.New("перевод доступен только между активными сборщиками")
+			}
+		}
+		availableCash, e := balance(tx, "1200", "custodian", from)
+		if e != nil {
+			return nil, e
+		}
+		if availableCash < v {
+			return nil, errors.New("у отправителя недостаточно наличных")
+		}
+		return []Posting{debit("1200", "", "", to, "", ""), credit("1200", "", "", from, "", "")}, nil
 	case "repayment":
 		s, e := source()
 		if e != nil {

@@ -70,7 +70,7 @@ func (a *App) telegramEditMessageText(chatID, messageID int64, text string, mark
 }
 
 func telegramCommands() []M {
-	return []M{{"command": "start", "description": "Начать работу"}, {"command": "cards_balance", "description": "Балансы всех карт"}, {"command": "my_balance", "description": "Мой баланс наличных"}, {"command": "expense", "description": "Расход по карте"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "cancel", "description": "Отменить текущий ввод"}}
+	return []M{{"command": "start", "description": "Начать работу"}, {"command": "cards_balance", "description": "Балансы всех карт"}, {"command": "my_balance", "description": "Мой баланс наличных"}, {"command": "expense", "description": "Расход по карте"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "transfer", "description": "Перевод другому сборщику"}, {"command": "cancel", "description": "Отменить текущий ввод"}}
 }
 
 func (a *App) telegramSetGroupCommands(chatID int64) error {

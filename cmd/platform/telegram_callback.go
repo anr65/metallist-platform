@@ -33,7 +33,7 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 		return "Операция не найдена", false
 	}
 	p, e := decodeMap(raw)
-	if e != nil || creator != u.ID || p["telegram_confirmation_required"] != true || (kind != "withdrawal" && kind != "expense") {
+	if e != nil || creator != u.ID || p["telegram_confirmation_required"] != true || (kind != "withdrawal" && kind != "expense" && kind != "transfer") {
 		return "Нет доступа к этой операции", false
 	}
 	storedChat, e := telegramInt(p["telegram_chat_id"])
@@ -68,7 +68,9 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 		return e.Error(), false
 	}
 	var lines []Posting
-	if kind == "expense" {
+	if kind == "transfer" {
+		lines, e = a.eventLines(tx, kind, p, amountCents)
+	} else if kind == "expense" {
 		lines, e = a.telegramExpenseLines(tx, p, amountCents)
 	} else {
 		lines, e = a.telegramWithdrawalLines(tx, p, amountCents)
@@ -99,7 +101,7 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	if kind == "expense" {
 		items, _ := telegramExpenseItems(p)
 		auditDetail["item_count"] = len(items)
-	} else {
+	} else if kind == "withdrawal" {
 		items, _ := telegramWithdrawalItems(p)
 		auditDetail["item_count"] = len(items)
 	}
@@ -108,6 +110,10 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	}
 	if e = tx.Commit(); e != nil {
 		return "Не удалось провести операцию", false
+	}
+	if kind == "transfer" {
+		_ = a.telegramReply(chat, "Перевод подтверждён: "+telegramMoney(amountCents)+" → "+str(p, "to_custodian_name")+". Остатки сборщиков обновлены.", nil)
+		return "Подтверждено", true
 	}
 	label := "Снятие"
 	if kind == "expense" {
@@ -142,6 +148,16 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 	e := tx.QueryRow("SELECT role,COALESCE(custodian_id::text,'') FROM users WHERE id=$1 AND active FOR SHARE", u.ID).Scan(&role, &currentCustodian)
 	if e != nil || currentCustodian != u.CustodianID || (!telegramFieldRole(role) && role != "chief") {
 		return errors.New("Связь Telegram с ответственным изменилась")
+	}
+	if kind == "transfer" {
+		if role != "collector" || str(p, "from_custodian_id") != currentCustodian || str(p, "to_custodian_id") == currentCustodian {
+			return errors.New("Отправитель перевода изменился")
+		}
+		var active bool
+		if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM custodians c JOIN users u ON u.custodian_id=c.id AND u.active AND u.role='collector' WHERE c.id=$1 AND c.active AND c.kind='collector')", str(p, "to_custodian_id")).Scan(&active); e != nil || !active {
+			return errors.New("Получатель перевода недоступен")
+		}
+		return nil
 	}
 	if kind == "withdrawal" {
 		if str(p, "custodian_id") != currentCustodian {
