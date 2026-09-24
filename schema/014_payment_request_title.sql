@@ -12,6 +12,17 @@ ALTER TABLE payment_requests ALTER COLUMN title SET NOT NULL;
 ALTER TABLE payment_requests ADD CONSTRAINT payment_requests_title_check
     CHECK (length(btrim(title)) BETWEEN 1 AND 120);
 
+-- Old writers may still insert a request without the new optional display field.
+CREATE FUNCTION payment_request_fill_title() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.title IS NULL OR btrim(NEW.title) = '' THEN
+        NEW.title := NEW.external_ref;
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER payment_request_fill_title_before_insert
+    BEFORE INSERT ON payment_requests FOR EACH ROW EXECUTE FUNCTION payment_request_fill_title();
+
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metallist_demo_app') THEN
