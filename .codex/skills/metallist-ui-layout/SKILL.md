@@ -10,7 +10,7 @@ Read `AGENTS.md` and `DESIGN.md` first. Inspect the current screen, routes, API 
 ## Page architecture
 
 - Open a section on its list or overview. Put creation on a separate route. Give each editable record a direct route that survives refresh and browser history navigation.
-- Put the primary create action above the list. Use the shared shadcn `Table` for desktop data lists; let wide tables fill the main area up to the sidebar. Use compact stacked rows below 768 px without page-level horizontal scroll.
+- Put the list's primary create action at the right of the shared application header in place of the role badge, only for roles allowed to create. Shorten its visible label on narrow screens and do not repeat it above the list. Use the shared shadcn `Table` for desktop data lists; let wide tables fill the main area up to the sidebar. Use compact stacked rows below 768 px without page-level horizontal scroll.
 - Put an icon-only ellipsis trigger in each row. Use the shared shadcn `DropdownMenu` portal so opening actions does not change row height. Show only actions allowed by the role and object state; keep the server as the final authority.
 - Use the shared `Breadcrumb` in the application header for section and parent navigation on desktop and mobile. Do not add a duplicate «К списку» button in page content.
 - Use `Button` variants from `DESIGN.md`: `primary` for the main save or create action, `secondary` for a neighboring neutral action, `destructive-secondary` for deletion. Use `Button asChild` for a download link. Keep an action group's controls at the same height; align a record title input with that group on desktop.

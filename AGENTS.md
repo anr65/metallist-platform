@@ -57,4 +57,5 @@ Update documentation in the same change whenever behavior, accounting, schema, p
 ## Interface navigation and components
 
 - Show the current page hierarchy with the shared shadcn `Breadcrumb` component in the application header. Parent crumbs navigate to their page, including on mobile; do not add separate «К списку» buttons inside pages.
+- Place the single primary create action for a list in the top right of the shared application header, where the role badge used to be. Show it only for roles allowed to open the create route; use a shorter visible label on narrow screens. Do not duplicate it above the table.
 - Use shared shadcn components and the button variants documented in `DESIGN.md` for page actions. Keep data tables within the available content width without creating horizontal scroll for the whole page.
