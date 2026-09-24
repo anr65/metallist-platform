@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -110,20 +112,95 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	query := "SELECT id,kind,payload,status,version,created_at FROM drafts ORDER BY created_at DESC LIMIT 100"
+	query := "SELECT id,kind,payload,status,version,created_at FROM drafts"
 	var rows *sql.Rows
 	var e error
 	if requested := r.URL.Query().Get("id"); requested != "" {
 		if u.Role == "operator" {
-			rows, e = a.db.Query("SELECT id,kind,payload,status,version,created_at FROM drafts WHERE id=$1 AND created_by=$2 AND kind<>'expense'", requested, u.ID)
+			rows, e = a.db.Query(query+" WHERE id=$1 AND created_by=$2 AND kind<>'expense'", requested, u.ID)
 		} else {
-			rows, e = a.db.Query("SELECT id,kind,payload,status,version,created_at FROM drafts WHERE id=$1", requested)
+			rows, e = a.db.Query(query+" WHERE id=$1", requested)
 		}
-	} else if u.Role == "operator" {
-		query = "SELECT id,kind,payload,status,version,created_at FROM drafts WHERE created_by=$1 AND kind<>'expense' ORDER BY created_at DESC LIMIT 100"
-		rows, e = a.db.Query(query, u.ID)
 	} else {
-		rows, e = a.db.Query(query)
+		filters := []string{}
+		args := []any{}
+		add := func(expr string, value any) {
+			args = append(args, value)
+			filters = append(filters, fmt.Sprintf(expr, len(args)))
+		}
+		if u.Role == "operator" {
+			add("created_by=$%d", u.ID)
+			filters = append(filters, "kind<>'expense'")
+		}
+		values := r.URL.Query()
+		if kind := values.Get("kind"); kind != "" {
+			add("kind=$%d", kind)
+		}
+		sourceExpressions := map[string]string{
+			"card":      "(payload->>'card_id'=$%d OR (payload->>'source_kind'='card' AND payload->>'source_id'=$%d))",
+			"custodian": "(payload->>'from_custodian_id'=$%d OR (payload->>'source_kind'='cash' AND payload->>'source_id'=$%d) OR payload->>'person_id'=$%d OR (kind IN ('shortage','writeoff') AND payload->>'custodian_id'=$%d))",
+		}
+		recipientExpressions := map[string]string{
+			"card":      "(payload->>'destination_kind'='card' AND payload->>'destination_id'=$%d)",
+			"custodian": "(payload->>'to_custodian_id'=$%d OR (kind='withdrawal' AND payload->>'custodian_id'=$%d) OR (payload->>'destination_kind'='cash' AND payload->>'destination_id'=$%d))",
+			"merchant":  "payload->>'merchant_id'=$%d",
+			"category":  "(kind='expense' AND payload->>'category'=$%d)",
+		}
+		for _, field := range []struct {
+			name        string
+			expressions map[string]string
+		}{{"source", sourceExpressions}, {"recipient", recipientExpressions}} {
+			if raw := values.Get(field.name); raw != "" {
+				parts := strings.SplitN(raw, ":", 2)
+				if len(parts) != 2 || parts[1] == "" || field.expressions[parts[0]] == "" {
+					fail(w, 400, errors.New("неверный фильтр участника"))
+					return
+				}
+				args = append(args, parts[1])
+				placeholder := fmt.Sprintf("$%d", len(args))
+				filters = append(filters, strings.ReplaceAll(field.expressions[parts[0]], "$%d", placeholder))
+			}
+		}
+		cents := "CASE WHEN payload->>'amount_cents' ~ '^[0-9]+$' THEN (payload->>'amount_cents')::bigint ELSE 0 END"
+		for _, field := range []struct{ name, op string }{{"amount_from", ">="}, {"amount_to", "<="}} {
+			if raw := values.Get(field.name); raw != "" {
+				normalized := strings.TrimSpace(strings.ReplaceAll(raw, ",", "."))
+				var value int64
+				var err error
+				if normalized != "0" && normalized != "0.0" && normalized != "0.00" {
+					value, err = amount(raw)
+				}
+				if err != nil {
+					fail(w, 400, err)
+					return
+				}
+				add("("+cents+")"+field.op+"$%d", value)
+			}
+		}
+		day := "CASE WHEN kind='expense' AND payload->>'date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN payload->>'date' ELSE to_char(created_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') END"
+		for _, field := range []struct{ name, op string }{{"date_from", ">="}, {"date_to", "<="}} {
+			if raw := values.Get(field.name); raw != "" {
+				if _, err := time.Parse("2006-01-02", raw); err != nil {
+					fail(w, 400, errors.New("неверная дата фильтра"))
+					return
+				}
+				add("("+day+")"+field.op+"$%d", raw)
+			}
+		}
+		if len(filters) > 0 {
+			query += " WHERE " + strings.Join(filters, " AND ")
+		}
+		page := 1
+		if raw := values.Get("page"); raw != "" {
+			page, e = strconv.Atoi(raw)
+			if e != nil || page < 1 || page > 10000 {
+				fail(w, 400, errors.New("неверная страница"))
+				return
+			}
+		}
+		args = append(args, (page-1)*100)
+		query += fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT 100 OFFSET $%d", len(args))
+		rows, e = a.db.Query(query, args...)
 	}
 	if e != nil {
 		fail(w, 500, e)
@@ -142,6 +219,10 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 		}
 		m, _ := decodeMap(payload)
 		out = append(out, M{"id": id, "kind": kind, "payload": m, "status": status, "version": version, "created_at": at})
+	}
+	if e = rows.Err(); e != nil {
+		fail(w, 500, e)
+		return
 	}
 	respond(w, 200, out)
 }
