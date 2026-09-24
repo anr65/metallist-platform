@@ -4,7 +4,7 @@ import { allowedPages, pageForRole, stripQueryFromLocation } from './access.js';
 
 test('operator starts on card requests and cannot open restricted sections by URL', () => {
   assert.equal(pageForRole('operator', ''), 'requests');
-  for (const hash of ['#overview', '#expenses', '#balances', '#reports', '#audit']) {
+  for (const hash of ['#overview', '#expenses', '#balances', '#reports', '#audit', '#merchants', '#merchants/new', '#merchants/11111111-1111-4111-8111-111111111111']) {
     assert.equal(pageForRole('operator', hash), 'requests');
   }
   assert.equal(pageForRole('operator', '#registries'), 'registries');
@@ -15,6 +15,14 @@ test('operator starts on card requests and cannot open restricted sections by UR
 test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('chief', ''), 'overview');
   assert.equal(pageForRole('chief', '#balances'), 'balances');
+  assert.equal(pageForRole('chief', '#merchants'), 'merchants');
+  assert.equal(pageForRole('chief', '#merchants/new'), 'merchants/new');
+  for (const role of ['accountant', 'auditor', 'sysadmin', 'collector']) {
+    assert.ok(!allowedPages(role).includes('merchants'));
+    for (const hash of ['#merchants', '#merchants/new', '#merchants/11111111-1111-4111-8111-111111111111']) {
+      assert.notEqual(pageForRole(role, hash), hash.slice(1));
+    }
+  }
   assert.equal(pageForRole('accountant', '#balances'), 'balances');
   assert.equal(pageForRole('auditor', '#balances'), 'balances');
   assert.equal(pageForRole('sysadmin', ''), 'catalog');
