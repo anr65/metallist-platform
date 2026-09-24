@@ -3,6 +3,7 @@ import { LoaderCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox';
@@ -256,19 +257,20 @@ export function CardPANCorrection({ role }) {
   </Card>;
 }
 
-export function PaymentRequests({ role }) {
+export function PaymentRequests({ role, route = "requests", onNavigate = () => {} }) {
   const canCreate = role === 'chief' || role === 'operator';
   const blankRow = () => ({ key: crypto.randomUUID(), card_id: '', full_name: '', phone: '' });
-  const [data, setData] = useState(null), [merchant, setMerchant] = useState(''), [reference, setReference] = useState('');
+  const [data, setData] = useState(null), [merchant, setMerchant] = useState(''), [reference, setReference] = useState(''), [title, setTitle] = useState(''), [editTitle, setEditTitle] = useState(''), [pageNo, setPageNo] = useState(1);
   const [draftRows, setDraftRows] = useState([]), [showAuto, setShowAuto] = useState(false);
   const [count, setCount] = useState('');
   const [selected, setSelected] = useState(null), [rows, setRows] = useState([]), [editRows, setEditRows] = useState([]), [editing, setEditing] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false);
-  const load = (refreshReference = false) => Promise.all([get('/api/catalog'), get('/api/payment-requests'), canCreate ? get('/api/payment-request/next-reference') : Promise.resolve({ next_reference: '' })]).then(([catalog, requests, next]) => {
-    setData({ catalog, requests });
+  const load = (refreshReference = false) => Promise.all([get('/api/catalog'), get('/api/payment-requests?page=' + pageNo), canCreate ? get('/api/payment-request/next-reference') : Promise.resolve({ next_reference: '' })]).then(([catalog, requests, next]) => {
+    setData({ catalog, requests: requests.items || [] , hasMore: requests.has_more, total: requests.total });
     setMerchant(current => current || catalog.merchants?.[0]?.id || '');
     if (refreshReference) setReference(next.next_reference || '');
   });
-  useEffect(() => { load(true).catch(e => setError(userError(e))); }, []);
+  useEffect(() => { load(true).catch(e => setError(userError(e))); }, [pageNo]);
+  useEffect(() => { if (!route?.startsWith('requests/') || route === 'requests/new') return; let live = true; Promise.all([get('/api/payment-request?id=' + encodeURIComponent(route.slice(9))), get('/api/payment-request/rows?id=' + encodeURIComponent(route.slice(9)))]).then(([item, loaded]) => { if (!live) return; setSelected(item); setEditTitle(item.title || item.external_ref); setRows(loaded); setEditRows(loaded.map(row => ({ key: crypto.randomUUID(), card_id: row.card_id || '', full_name: row.contact_name, phone: row.contact_phone }))); setEditing(canCreate && item.mode === 'cards' && item.response_count === 0); setError(''); }).catch(e => { if (live) setError(userError(e)); }); return () => { live = false; }; }, [route]);
   const cards = data?.catalog.request_cards || [];
   const editRow = (key, changes) => setDraftRows(current => current.map(row => row.key === key ? { ...row, ...changes } : row));
   const usedCards = new Set(draftRows.map(row => row.card_id).filter(Boolean));
@@ -282,7 +284,7 @@ export function PaymentRequests({ role }) {
     setDraftRows(Array.from({ length: quantity }, (_, index) => ({ ...blankRow(), card_id: cards[index].id })));
     setError(''); setShowAuto(false);
   }
-  async function open(item) { setSelected(item); setRows([]); setEditing(false); setError(''); setMessage(''); try { const loaded = await get('/api/payment-request/rows?id=' + encodeURIComponent(item.id)); setRows(loaded); setEditRows(loaded.map(row => ({ key: crypto.randomUUID(), card_id: row.card_id || '', full_name: row.contact_name, phone: row.contact_phone }))); } catch (e) { setError(userError(e)); } }
+  async function open(item) { setSelected(item); setEditTitle(item.title || item.external_ref); setRows([]); setEditing(false); setError(''); setMessage(''); try { const loaded = await get('/api/payment-request/rows?id=' + encodeURIComponent(item.id)); setRows(loaded); setEditRows(loaded.map(row => ({ key: crypto.randomUUID(), card_id: row.card_id || '', full_name: row.contact_name, phone: row.contact_phone }))); } catch (e) { setError(userError(e)); } }
   async function saveEdit(event) {
     event.preventDefault();
     if (!editRows.length || editRows.length > 500 || editRows.some(row => !row.card_id || !row.full_name.trim() || !row.phone.trim()) || new Set(editRows.map(row => row.card_id)).size !== editRows.length) { setError('Добавьте от 1 до 500 строк с разными картами, ФИО и телефоном.'); return; }
@@ -294,17 +296,17 @@ export function PaymentRequests({ role }) {
         if (!saved.has(key)) saved.set(key, (await post('/api/catalog/create', { kind: 'payment_contact', ...contact })).id);
         requestRows.push({ card_id: row.card_id, contact_id: saved.get(key) });
       }
-      await post('/api/payment-request/update', { id: selected.id, version: String(selected.version), rows: requestRows });
+      await post('/api/payment-request/update', { id: selected.id, version: String(selected.version), title: editTitle, rows: requestRows });
       await load();
-      const fresh = (await get('/api/payment-requests')).find(item => item.id === selected.id);
-      if (fresh) await open(fresh);
+      const fresh = await get('/api/payment-request?id=' + encodeURIComponent(selected.id));
+      if (fresh) { await open(fresh); setEditing(true); }
       setMessage('Изменения сохранены. Скачайте обновлённый XLSX перед передачей мерчанту.');
     } catch (e) { setError(userError(e)); } finally { setBusy(false); }
   }
   async function removeRequest() {
     if (!window.confirm(`Удалить запрос «${selected.external_ref}»? Он исчезнет из списка, действие останется в аудите.`)) return;
     setBusy(true); setError('');
-    try { await post('/api/payment-request/delete', { id: selected.id, version: String(selected.version) }); setSelected(null); setRows([]); setEditing(false); await load(); setMessage('Запрос удалён.'); }
+    try { await post('/api/payment-request/delete', { id: selected.id, version: String(selected.version) }); setSelected(null); setRows([]); setEditing(false); await load(); setMessage('Запрос удалён.'); onNavigate('requests'); }
     catch (e) { setError(userError(e)); } finally { setBusy(false); }
   }
   async function submit(event) {
@@ -323,43 +325,55 @@ export function PaymentRequests({ role }) {
         if (!saved.has(key)) saved.set(key, (await post('/api/catalog/create', { kind: 'payment_contact', ...contact })).id);
         requestRows.push({ card_id: row.card_id, contact_id: saved.get(key) });
       }
-      const created = await post('/api/payment-request/create', { merchant_id: merchant, external_ref: reference, mode: 'cards', rows: requestRows });
+      const created = await post('/api/payment-request/create', { merchant_id: merchant, external_ref: reference, title: title.trim() || reference, mode: 'cards', rows: requestRows });
       setMessage(`Запрос создан: ${created.card_count} карт. XLSX доступен для скачивания.`);
       setDraftRows([]);
-      await load(true);
+      onNavigate('requests/' + created.id);
     } catch (e) { setError(userError(e)); } finally { setBusy(false); }
   }
-  return <PageState title="Карты к оплате" subtitle="Подготовьте список карт, затем свяжите запрос с ответным реестром. Создание запроса не меняет баланс.">
-    {canCreate && <Card className="mb-7 rounded-2xl">
-      <CardHeader><CardTitle>Новый запрос мерчанта</CardTitle><CardDescription>Выберите карты с сохранёнными полными номерами и заполните контакты получателей.</CardDescription></CardHeader>
-      <CardContent>{data ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
-        <label className="grid gap-2 text-sm font-medium">Мерчант<Select value={merchant} onValueChange={setMerchant}><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(data.catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Название запроса<Input value={reference} onChange={e => setReference(e.target.value)} maxLength="80" placeholder="ЗК-2026-0001" required /><small className="font-normal text-muted-foreground">Следующий номер заполнен автоматически — название можно изменить.</small></label>
-        <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold">Контакты получателей</h3><p className="text-sm text-muted-foreground">Добавьте строку, выберите карту, ФИО и телефон. Сумму укажет мерчант в ответном реестре.</p></div><Button type="button" onClick={() => { setDraftRows(current => [...current, blankRow()]); setError(''); }} disabled={draftRows.length >= 500}>Добавить реквизит +</Button></div>
-          {!cards.length && <Alert className="mt-5"><AlertDescription>Карт с сохранёнными полными номерами пока нет. Строку можно добавить сейчас; для выбора карты и создания запроса главный администратор должен сохранить её полный номер в справочнике.</AlertDescription></Alert>}
-          {draftRows.length ? <div className="mt-5 grid gap-3">{draftRows.map((row, index) => <div className="grid gap-3 rounded-xl border bg-background p-4" key={row.key}>
-            <div className="flex items-center justify-between gap-3"><strong className="text-sm">Реквизит {index + 1}</strong><Button type="button" variant="outline" size="sm" onClick={() => setDraftRows(current => current.filter(item => item.key !== row.key))}>Удалить строку</Button></div>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={usedCards} onValueChange={value => editRow(row.key, { card_id: value })} /></label>
-              <label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={value => editRow(row.key, { full_name: value })} onContactSelect={contact => editRow(row.key, { full_name: contact.full_name, phone: contact.phone })} /></label>
-              <label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => editRow(row.key, { phone: value })} onContactSelect={contact => editRow(row.key, { full_name: contact.full_name, phone: contact.phone })} /></label>
-            </div>
-          </div>)}</div> : <p className="mt-5 rounded-xl bg-muted p-5 text-sm text-muted-foreground">Пока нет строк. Нажмите «Добавить реквизит +».</p>}
-          <p className="mt-4 text-sm text-muted-foreground">Выбрано карт: {selectedCardCount} из {draftRows.length}</p>
-        </div>
-        <div className="md:col-span-2 rounded-2xl border p-4 sm:p-5"><Button type="button" variant="outline" onClick={() => setShowAuto(current => !current)}>Подобрать карты по количеству</Button>
-          {showAuto && <div className="mt-4 grid gap-4 md:grid-cols-2"><p className="md:col-span-2 text-sm text-muted-foreground">Автоподбор использует активные карты без учёта исторических оборотов. Проверьте каждую строку перед созданием запроса. Текущие строки будут заменены.</p><label className="grid gap-2 text-sm font-medium">Сколько карт<Input value={count} onChange={e => setCount(e.target.value)} type="number" min="1" max="500" /></label><div className="md:col-span-2"><Button type="button" onClick={generateRows}>Сформировать строки</Button></div></div>}
-        </div>
-        <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" type="submit" disabled={busy || !draftRows.length}>{busy ? 'Создание…' : 'Создать запрос'}</Button></div>
-      </form> : <p>Загрузка…</p>}</CardContent>
-    </Card>}
-    <Card className="rounded-2xl"><CardHeader><CardTitle>Подготовленные запросы</CardTitle><CardDescription>Откройте запрос, чтобы проверить карты и скачать XLSX для мерчанта.</CardDescription></CardHeader><CardContent className="grid gap-2">{data?.requests?.length ? data.requests.map(item => <button key={item.id} type="button" onClick={() => open(item)} className="grid gap-1 rounded-xl border p-4 text-left transition-colors hover:bg-muted md:grid-cols-[1fr_auto_auto]"><strong>{item.external_ref} <span className="font-normal text-muted-foreground">· {item.merchant}</span></strong><span className="text-sm text-muted-foreground">Карт: {item.card_count}</span><span className="text-sm text-muted-foreground">Ответных реестров: {item.response_count}</span></button>) : <p className="text-muted-foreground">Запросов пока нет.</p>}</CardContent></Card>
-    {selected && <Card className="mt-7 rounded-2xl"><CardHeader><CardTitle>Запрос {selected.external_ref}</CardTitle><CardDescription>{selected.merchant}. Карт: {selected.card_count}; ответных реестров: {selected.response_count}.</CardDescription></CardHeader><CardContent>
-      <div className="flex flex-wrap gap-2"><a className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground" href={'/api/payment-request/export?id=' + encodeURIComponent(selected.id)}>Скачать XLSX для мерчанта</a>{canCreate && selected.mode === 'cards' && selected.response_count === 0 && <><Button type="button" variant="outline" onClick={() => { setEditing(value => !value); setError(''); }}> {editing ? 'Отмена редактирования' : 'Изменить карты'} </Button><Button type="button" variant="destructive" disabled={busy} onClick={removeRequest}>Удалить запрос</Button></>}</div>
-      {selected.response_count > 0 && <p className="mt-4 text-sm text-muted-foreground">К запросу привязан ответный реестр. Его состав сохранён для истории и сверки.</p>}
-      {editing ? <form className="mt-5 grid gap-3" onSubmit={saveEdit}><p className="text-sm text-muted-foreground">Добавьте или удалите реквизиты. После сохранения прежний XLSX замените обновлённым.</p>{editRows.map((row, index) => <div key={row.key} className="grid gap-3 rounded-xl border p-4"><div className="flex items-center justify-between"><strong>Реквизит {index + 1}</strong><Button type="button" variant="outline" size="sm" onClick={() => setEditRows(current => current.filter(item => item.key !== row.key))}>Удалить строку</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={new Set(editRows.map(item => item.card_id).filter(Boolean))} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, card_id: value } : item))} /></label><label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: value } : item))} onContactSelect={contact => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: contact.full_name, phone: contact.phone } : item))} /></label><label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => setEditRows(current => current.map(item => item.key === row.key ? { ...item, phone: value } : item))} onContactSelect={contact => setEditRows(current => current.map(item => item.key === row.key ? { ...item, full_name: contact.full_name, phone: contact.phone } : item))} /></label></div></div>)}<div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={editRows.length >= 500} onClick={() => setEditRows(current => [...current, blankRow()])}>Добавить реквизит +</Button><Button type="submit" disabled={busy || !editRows.length}>{busy ? 'Сохранение…' : 'Сохранить изменения'}</Button></div></form> : <div className="mt-5 grid gap-2">{rows.map(row => <div className="grid gap-1 rounded-lg bg-muted px-3 py-2 text-sm md:grid-cols-[50px_1fr_1fr_1fr]" key={row.row_no}><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div>}
-    </CardContent></Card>}
-    {(error || message) && <div className="mt-4"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}</div>}
+  const isList = route === 'requests';
+  const isNew = route === 'requests/new';
+  const editable = canCreate && selected?.mode === 'cards' && selected?.response_count === 0;
+  const changedRows = editRows.map(({ card_id, full_name, phone }) => [card_id, full_name, phone]);
+  const savedRows = rows.map(row => [row.card_id || '', row.contact_name, row.contact_phone]);
+  const dirty = !isList && !isNew && editable && (editTitle !== (selected.title || selected.external_ref) || JSON.stringify(changedRows) !== JSON.stringify(savedRows));
+  useEffect(() => {
+    const guard = () => !dirty || window.confirm('Есть несохранённые изменения. Покинуть страницу?');
+    const beforeUnload = event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
+    window.__requestLeaveGuard = guard;
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => { if (window.__requestLeaveGuard === guard) delete window.__requestLeaveGuard; window.removeEventListener('beforeunload', beforeUnload); };
+  }, [dirty]);
+  const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Moscow' });
+  const exportURL = item => '/api/payment-request/export?id=' + encodeURIComponent(item.id);
+  async function removeItem(item) { if (!window.confirm(`Удалить запрос «${item.external_ref}»? Действие останется в истории.`)) return; setBusy(true); setError(''); try { await post('/api/payment-request/delete', { id: item.id, version: String(item.version) }); if (isList) await load(); else { window.__requestLeaveGuard = () => true; onNavigate('requests'); } setMessage('Запрос удалён.'); } catch(e) { setError(userError(e)); } finally { setBusy(false); } }
+  function RequestMenu({ item }) { const canChange = canCreate && item.mode === 'cards' && item.response_count === 0; return <details className="relative"><summary className="flex min-h-11 cursor-pointer list-none items-center justify-center rounded-md border px-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-primary" aria-label={'Действия с запросом ' + item.external_ref}>Действия</summary><div className="mt-1 grid min-w-44 gap-1 rounded-md border bg-white p-1 shadow-lg">{canChange && <button type="button" className="min-h-11 rounded px-3 text-left text-sm hover:bg-muted" onClick={() => onNavigate('requests/' + item.id)}>Редактировать</button>}{!canChange && <button type="button" className="min-h-11 rounded px-3 text-left text-sm hover:bg-muted" onClick={() => onNavigate('requests/' + item.id)}>Открыть</button>}{canCreate && item.mode === 'cards' && <a className="flex min-h-11 items-center rounded px-3 text-sm hover:bg-muted" href={exportURL(item)}>Скачать XLSX</a>}{canChange && <button type="button" className="min-h-11 rounded px-3 text-left text-sm text-destructive hover:bg-muted" onClick={() => removeItem(item)}>Удалить</button>}</div></details>; }
+  if (isList) return <PageState title="Карты к оплате" subtitle="Запросы на карты для мерчантов и связанные ответные реестры.">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{data ? `Всего запросов: ${data.total}` : 'Загрузка запросов…'}</p>{canCreate && <Button type="button" onClick={() => onNavigate('requests/new')}>Сформировать реестр</Button>}</div>
+    <Message error={error} />{error && <Button className="mt-3" variant="outline" onClick={() => load().catch(e => setError(userError(e)))}>Повторить</Button>}
+    <Card className="overflow-visible rounded-2xl"><CardContent className="p-0">{data?.requests?.length ? <Table className="request-table"><TableHeader><TableRow><TableHead>Номер</TableHead><TableHead>Название</TableHead><TableHead>Мерчант</TableHead><TableHead>Создан</TableHead><TableHead>Карт</TableHead><TableHead>Ответных реестров</TableHead><TableHead>Действия</TableHead></TableRow></TableHeader><TableBody>{data.requests.map(item => <TableRow key={item.id}><TableCell className="font-mono"><button className="text-left text-primary underline-offset-2 hover:underline" onClick={() => onNavigate('requests/' + item.id)}>{item.external_ref}</button></TableCell><TableCell>{item.title || item.external_ref}</TableCell><TableCell>{item.merchant}</TableCell><TableCell>{dateFormat.format(new Date(item.created_at))}</TableCell><TableCell>{item.card_count}</TableCell><TableCell>{item.response_count}</TableCell><TableCell><RequestMenu item={item} /></TableCell></TableRow>)}</TableBody></Table> : <p className="p-6 text-sm text-muted-foreground">{data ? 'Запросов пока нет.' : 'Загрузка…'}</p>}</CardContent></Card>
+    {data?.total > 50 && <div className="mt-5 flex items-center justify-end gap-3"><Button variant="outline" disabled={pageNo === 1} onClick={() => setPageNo(x => x-1)}>Назад</Button><span className="text-sm">Страница {pageNo}</span><Button variant="outline" disabled={!data.hasMore} onClick={() => setPageNo(x => x+1)}>Далее</Button></div>}
+    {message && <Alert className="mt-4"><AlertDescription>{message}</AlertDescription></Alert>}
+  </PageState>;
+  if (isNew) return <PageState title="Новый запрос на карты" subtitle="Выберите мерчанта, карты и контакты получателей. Сумму укажет мерчант в ответном реестре.">
+    <Button className="mb-5" variant="outline" onClick={() => onNavigate('requests')}>К списку</Button>
+    <Card><CardContent className="pt-6">{data ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
+      <label className="grid gap-2 text-sm font-medium">Мерчант<Select value={merchant} onValueChange={setMerchant}><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(data.catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
+      <label className="grid gap-2 text-sm font-medium">Номер запроса<Input value={reference} onChange={e => setReference(e.target.value)} maxLength="80" required /><small className="font-normal text-muted-foreground">Предложенный номер можно изменить.</small></label>
+      <label className="grid gap-2 text-sm font-medium md:col-span-2">Название<Input value={title} onChange={e => setTitle(e.target.value)} maxLength="120" placeholder="Например, карты к оплате на четверг" /><small className="font-normal text-muted-foreground">Если оставить пустым, названием станет номер запроса.</small></label>
+      <div className="md:col-span-2 rounded-2xl border p-4"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Контакты получателей</h2><Button type="button" disabled={draftRows.length >= 500} onClick={() => setDraftRows(x => [...x, blankRow()])}>Добавить реквизит +</Button></div>
+      {!cards.length && <p className="mt-4 text-sm text-muted-foreground">Нет карт с сохранёнными полными номерами.</p>}
+      <div className="mt-4 grid gap-3">{draftRows.map((row,index) => <div key={row.key} className="grid gap-3 rounded-xl border p-4"><div className="flex items-center justify-between gap-2"><strong>Реквизит {index+1}</strong><Button type="button" variant="outline" onClick={() => setDraftRows(x => x.filter(y => y.key !== row.key))}>Удалить строку</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={usedCards} onValueChange={value => editRow(row.key,{card_id:value})} /></label><label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={value => editRow(row.key,{full_name:value})} onContactSelect={contact => editRow(row.key,{full_name:contact.full_name,phone:contact.phone})} /></label><label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={value => editRow(row.key,{phone:value})} onContactSelect={contact => editRow(row.key,{full_name:contact.full_name,phone:contact.phone})} /></label></div></div>)}</div><p className="mt-3 text-sm text-muted-foreground">Выбрано карт: {selectedCardCount} из {draftRows.length}</p></div>
+      <div className="md:col-span-2 rounded-2xl border p-4"><Button type="button" variant="outline" onClick={() => setShowAuto(x => !x)}>Подобрать карты по количеству</Button>{showAuto && <div className="mt-4 grid gap-3"><p className="text-sm text-muted-foreground">Подбор заменит текущие строки и не учитывает исторические обороты. Проверьте каждую строку.</p><label className="grid gap-2 text-sm font-medium">Сколько карт<Input type="number" min="1" max="500" value={count} onChange={e => setCount(e.target.value)} /></label><Button type="button" className="w-fit" onClick={generateRows}>Сформировать строки</Button></div>}</div>
+      <div className="md:col-span-2"><Message error={error} /><Button className="mt-4" type="submit" disabled={busy || !draftRows.length}>{busy ? 'Создание…' : 'Создать запрос'}</Button></div>
+    </form> : <p>Загрузка…</p>}</CardContent></Card>
+  </PageState>;
+  return <PageState title={selected ? `Запрос ${selected.external_ref}` : 'Запрос на карты'} subtitle={selected ? `${selected.merchant} · ${dateFormat.format(new Date(selected.created_at))} · Карт: ${selected.card_count} · Ответных реестров: ${selected.response_count}` : 'Загрузка запроса…'}>
+    <Button className="mb-5" variant="outline" onClick={() => onNavigate('requests')}>К списку</Button>
+    <Message error={error} />{selected && <form onSubmit={saveEdit} onChange={() => {}}><div className="mb-5 flex flex-wrap items-start justify-between gap-4"><label className="grid min-w-0 flex-1 gap-2 text-sm font-medium">Название запроса{editable ? <Input value={editTitle} maxLength="120" required onChange={e => setEditTitle(e.target.value)} /> : <strong className="text-lg">{selected.title}</strong>}</label><div className="flex flex-wrap gap-2">{editable && <Button type="submit" disabled={busy}>{busy ? 'Сохранение…' : 'Сохранить изменения'}</Button>}{canCreate && selected.mode === 'cards' && <a className="inline-flex min-h-11 items-center rounded-md border px-4 text-sm font-medium" href={exportURL(selected)}>Скачать XLSX</a>}{editable && <Button type="button" variant="destructive" disabled={busy} onClick={() => removeItem(selected)}>Удалить</Button>}</div></div>
+    {selected.response_count > 0 && <p className="mb-4 text-sm text-muted-foreground">Ответный реестр уже привязан. Состав запроса сохранён для сверки.</p>}
+    <div className="grid gap-3">{editable ? editRows.map((row,index) => <div key={row.key} className="grid gap-3 rounded-xl border bg-white p-4"><div className="flex items-center justify-between gap-2"><strong>Реквизит {index+1}</strong><Button type="button" variant="outline" onClick={() => setEditRows(x => x.filter(y => y.key !== row.key))}>Удалить строку</Button></div><div className="grid gap-3 md:grid-cols-3"><label className="grid gap-2 text-sm font-medium">Карта<CardCombobox cards={cards} value={row.card_id} usedCards={new Set(editRows.map(x => x.card_id).filter(Boolean))} onValueChange={v => setEditRows(x => x.map(y => y.key === row.key ? {...y,card_id:v}:y))} /></label><label className="grid gap-2 text-sm font-medium">ФИО<ContactCombobox kind="name" value={row.full_name} onValueChange={v => setEditRows(x => x.map(y => y.key === row.key ? {...y,full_name:v}:y))} onContactSelect={c => setEditRows(x => x.map(y => y.key === row.key ? {...y,full_name:c.full_name,phone:c.phone}:y))} /></label><label className="grid gap-2 text-sm font-medium">Телефон<ContactCombobox kind="phone" value={row.phone} onValueChange={v => setEditRows(x => x.map(y => y.key === row.key ? {...y,phone:v}:y))} onContactSelect={c => setEditRows(x => x.map(y => y.key === row.key ? {...y,full_name:c.full_name,phone:c.phone}:y))} /></label></div></div>) : rows.map(row => <div key={row.row_no} className="grid gap-1 border-b py-3 text-sm md:grid-cols-4"><span>{row.row_no}</span><span>{row.mask}</span><span>{row.contact_name}</span><span>{row.contact_phone || '—'}</span></div>)}</div>
+    {editable && <Button className="mt-5" type="button" variant="outline" disabled={editRows.length >= 500} onClick={() => setEditRows(x => [...x,blankRow()])}>Добавить реквизит +</Button>}
+    {message && <Alert className="mt-4"><AlertDescription>{message}</AlertDescription></Alert>}</form>}
   </PageState>;
 }

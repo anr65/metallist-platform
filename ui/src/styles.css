@@ -165,3 +165,15 @@ select:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(49,
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+@media (max-width: 767px) {
+  .request-table, .request-table tbody { display: block; width: 100%; }
+  .request-table thead { display: none; }
+  .request-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .75rem; padding: .75rem; }
+  .request-table td { display: block; min-width: 0; padding: .15rem; white-space: normal; overflow-wrap: anywhere; }
+  .request-table td:nth-child(1), .request-table td:nth-child(2), .request-table td:nth-child(3), .request-table td:nth-child(4) { grid-column: 1; }
+  .request-table td:nth-child(5), .request-table td:nth-child(6) { grid-column: 1; font-size: .8rem; color: var(--muted-foreground); }
+  .request-table td:nth-child(5)::before { content: 'Карт: '; }
+  .request-table td:nth-child(6)::before { content: 'Ответных реестров: '; }
+  .request-table td:nth-child(7) { grid-column: 2; grid-row: 1 / span 3; }
+}

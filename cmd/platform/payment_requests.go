@@ -226,6 +226,14 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 400, errors.New("номер запроса: до 80 букв, цифр и знаков . _ / -"))
 		return
 	}
+	title := strings.TrimSpace(str(m, "title"))
+	if title == "" {
+		title = ref
+	}
+	if len([]rune(title)) > 120 {
+		fail(w, 400, errors.New("название запроса: не более 120 символов"))
+		return
+	}
 	mode := str(m, "mode")
 	if mode != "cards" {
 		fail(w, 400, errors.New("создайте запрос из выбранных карт без суммы"))
@@ -335,7 +343,7 @@ func (a *App) createPaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 		selected = append(selected, card)
 	}
 	requestID := id()
-	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,mode,payment_count,created_by) VALUES($1,$2,$3,'cards',$4,$5)", requestID, merchantID, ref, len(selected), u.ID)
+	_, e = tx.Exec("INSERT INTO payment_requests(id,merchant_id,external_ref,title,mode,payment_count,created_by) VALUES($1,$2,$3,$4,'cards',$5,$6)", requestID, merchantID, ref, title, len(selected), u.ID)
 	if e != nil {
 		fail(w, 409, errors.New("такой номер запроса уже есть у мерчанта"))
 		return
@@ -402,6 +410,11 @@ func (a *App) updatePaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 	manualRows, e := cardRequestRows(m)
 	if e != nil {
 		fail(w, 400, e)
+		return
+	}
+	title := strings.TrimSpace(str(m, "title"))
+	if title != "" && len([]rune(title)) > 120 {
+		fail(w, 400, errors.New("название запроса: не более 120 символов"))
 		return
 	}
 	tx, e := a.tx()
@@ -474,7 +487,7 @@ func (a *App) updatePaymentRequest(w http.ResponseWriter, r *http.Request, u Use
 			return
 		}
 	}
-	if _, e = tx.Exec("UPDATE payment_requests SET payment_count=$2,version=version+1 WHERE id=$1", requestID, len(manualRows)); e != nil {
+	if _, e = tx.Exec("UPDATE payment_requests SET payment_count=$2,title=COALESCE(NULLIF($3,''),title),version=version+1 WHERE id=$1", requestID, len(manualRows), title); e != nil {
 		fail(w, 500, e)
 		return
 	}
@@ -542,9 +555,22 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.mode,p.payment_count,p.created_at,p.version,
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	limit := 50
+	if !r.URL.Query().Has("page") {
+		limit = 100
+	}
+	var total int
+	if e := a.db.QueryRow("SELECT count(*) FROM payment_requests WHERE deleted_at IS NULL").Scan(&total); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
 		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id)
-		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC LIMIT 100`)
+		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, (page-1)*50)
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -552,16 +578,47 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 	defer rows.Close()
 	out := []M{}
 	for rows.Next() {
-		var reqID, merchantID, merchant, ref, mode string
+		var reqID, merchantID, merchant, ref, title, mode string
 		var count, linkedCount, version int
 		var createdAt interface{}
-		if e = rows.Scan(&reqID, &merchantID, &merchant, &ref, &mode, &count, &createdAt, &version, &linkedCount); e != nil {
+		if e = rows.Scan(&reqID, &merchantID, &merchant, &ref, &title, &mode, &count, &createdAt, &version, &linkedCount); e != nil {
 			fail(w, 500, e)
 			return
 		}
-		out = append(out, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "mode": mode, "card_count": count, "response_count": linkedCount, "version": version, "created_at": createdAt})
+		out = append(out, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "title": title, "mode": mode, "card_count": count, "response_count": linkedCount, "version": version, "created_at": createdAt})
 	}
-	respond(w, 200, out)
+	if r.URL.Query().Has("page") {
+		respond(w, 200, M{"items": out, "page": page, "total": total, "has_more": page*50 < total})
+	} else {
+		respond(w, 200, out)
+	}
+}
+
+func (a *App) paymentRequest(w http.ResponseWriter, r *http.Request, u User) {
+	if r.Method != http.MethodGet || !a.require(w, u, "chief", "operator", "accountant", "auditor") {
+		return
+	}
+	requestID := r.URL.Query().Get("id")
+	if !validID(requestID) {
+		fail(w, 400, errors.New("неверный запрос"))
+		return
+	}
+	var reqID, merchantID, merchant, ref, title, mode string
+	var count, linkedCount, version int
+	var createdAt time.Time
+	e := a.db.QueryRow(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
+		(SELECT count(*) FROM registries r WHERE r.payment_request_id=p.id)
+		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.id=$1 AND p.deleted_at IS NULL`, requestID).
+		Scan(&reqID, &merchantID, &merchant, &ref, &title, &mode, &count, &createdAt, &version, &linkedCount)
+	if errors.Is(e, sql.ErrNoRows) {
+		fail(w, 404, errors.New("запрос не найден"))
+		return
+	}
+	if e != nil {
+		fail(w, 500, e)
+		return
+	}
+	respond(w, 200, M{"id": reqID, "merchant_id": merchantID, "merchant": merchant, "external_ref": ref, "title": title, "mode": mode, "card_count": count, "response_count": linkedCount, "version": version, "created_at": createdAt})
 }
 
 func (a *App) paymentRequestRows(w http.ResponseWriter, r *http.Request, u User) {

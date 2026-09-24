@@ -269,6 +269,7 @@ func main() {
 	mux.HandleFunc("/api/payment-request/next-reference", app.auth(app.paymentRequestNextReference))
 	mux.HandleFunc("/api/payment-contacts", app.auth(app.paymentContacts))
 	mux.HandleFunc("/api/payment-requests", app.auth(app.paymentRequests))
+	mux.HandleFunc("/api/payment-request", app.auth(app.paymentRequest))
 	mux.HandleFunc("/api/payment-request/rows", app.auth(app.paymentRequestRows))
 	mux.HandleFunc("/api/payment-request/export", app.auth(app.paymentRequestExport))
 	mux.HandleFunc("/api/registries", app.auth(app.registries))
