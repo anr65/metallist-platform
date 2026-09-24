@@ -1,5 +1,5 @@
 export const navigationByRole = {
-  chief: ['overview', 'requests', 'registries', 'merchants', 'expenses', 'money', 'balances', 'catalog', 'reports', 'audit'],
+  chief: ['overview', 'requests', 'registries', 'merchants', 'money', 'balances', 'catalog', 'reports', 'audit'],
   operator: ['requests', 'registries', 'money', 'catalog'],
   accountant: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
   auditor: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
@@ -14,6 +14,7 @@ export function allowedPages(role) {
 export function pageForRole(role, hash) {
   const allowed = allowedPages(role);
   const requested = hash.replace(/^#/, '');
+  if (requested === 'expenses' && role === 'chief') return 'money';
   if (allowed.includes('requests') && /^requests\/[0-9a-f-]{36}$/i.test(requested)) return requested;
   if (allowed.includes('requests') && ['chief', 'operator'].includes(role) && requested === 'requests/new') return requested;
   if (allowed.includes('registries') && /^registries\/[0-9a-f-]{36}$/i.test(requested)) return requested;

@@ -20,6 +20,8 @@ test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('chief', '#merchants'), 'merchants');
   assert.equal(pageForRole('chief', '#merchants/new'), 'merchants/new');
   assert.equal(pageForRole('chief', '#money/new'), 'money/new');
+  assert.equal(pageForRole('chief', '#expenses'), 'money');
+  assert.ok(!allowedPages('chief').includes('expenses'));
   assert.equal(pageForRole('accountant', '#money/new'), 'overview');
   for (const role of ['accountant', 'auditor', 'sysadmin', 'collector']) {
     assert.ok(!allowedPages(role).includes('merchants'));

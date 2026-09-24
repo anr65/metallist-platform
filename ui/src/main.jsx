@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { ArrowUpRight, BookOpen, Building2, ChartNoAxesCombined, Check, CreditCard, Files, History, LayoutDashboard, LogOut, Menu, ReceiptText, Settings, ShieldCheck, Sparkles, WalletCards } from 'lucide-react';
+import { ArrowUpRight, BookOpen, Building2, ChartNoAxesCombined, Check, CreditCard, Files, History, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Sparkles, WalletCards } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,7 @@ import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger 
 import { Audit, Catalog, Reports } from './pages';
 import { MoneyPage } from './money';
 import { Balances } from './balances';
-import { CardPANCorrection, CatalogManager, DraftActivity, ExpenseForm, PaymentRequests, RegistryUpload, TelegramLinkManager, UserManager } from './forms';
+import { CardPANCorrection, CatalogManager, PaymentRequests, RegistryUpload, TelegramLinkManager, UserManager } from './forms';
 import { Merchants } from './merchants';
 import { allowedPages, navigationByRole, pageForRole, stripQueryFromLocation } from './access';
 import './styles.css';
@@ -23,7 +23,7 @@ gsap.registerPlugin(useGSAP, ScrollTrigger);
 stripQueryFromLocation(window.location, window.history);
 
 const nav = [
-  ['overview', 'Обзор', LayoutDashboard], ['requests', 'Карты к оплате', CreditCard], ['registries', 'Реестры оплат', Files], ['merchants', 'Мерчанты', Building2], ['expenses', 'Расходы', ReceiptText], ['money', 'Движение денег', WalletCards],
+  ['overview', 'Обзор', LayoutDashboard], ['requests', 'Карты к оплате', CreditCard], ['registries', 'Реестры оплат', Files], ['merchants', 'Мерчанты', Building2], ['money', 'Операции', WalletCards],
   ['balances', 'Остатки', WalletCards], ['catalog', 'Справочники', BookOpen], ['reports', 'Отчёты', ChartNoAxesCombined], ['audit', 'История действий', History]
 ];
 function syncLocation(role) {
@@ -74,8 +74,8 @@ function Overview({ report, onNavigate }) {
   return <div ref={root} className="pb-10"><div className="metric-grid grid grid-flow-dense gap-3 md:grid-cols-12">{metricMeta.map((item, index) => <MetricCard key={item[1]} item={item} report={report} index={index} />)}<Card data-metric className="metric-card quick-cell md:col-span-4"><CardContent className="flex h-full flex-col justify-between p-6 lg:p-7"><div><p className="text-sm text-foreground/55">Быстрый маршрут</p><h2 className="mt-3 text-2xl font-semibold tracking-[-.045em]">От события<br />к учёту.</h2></div><Button className="mt-8 w-fit" onClick={() => onNavigate('requests')}>Начать работу<ArrowUpRight /></Button></CardContent></Card></div>
     <section className="mt-6"><div className="action-accordion grid overflow-hidden rounded-[1.75rem] border border-border/70 lg:grid-cols-3">{[
       ['Карты к оплате', 'Создать запрос и подготовить файл для мерчанта.', 'requests', '01'],
-      ['Новый расход', 'Зафиксировать сумму, тип и дату операции.', 'expenses', '02'],
-      ['Движение денег', 'Снятие, передача, возврат или расхождение.', 'money', '03']
+      ['Реестры оплат', 'Проверить ответные реестры и подтвердить поступление.', 'registries', '02'],
+      ['Операции', 'Снятие, передача, расход или возврат.', 'money', '03']
     ].map(([title, copy, target, number]) => <button data-stack-card className="action-panel group" key={target} onClick={() => onNavigate(target)}><span className="font-mono text-xs text-foreground/35">{number}</span><span className="mt-16 block text-left text-xl font-semibold tracking-[-.035em]">{title}</span><span className="mt-2 block max-w-[17rem] text-left text-sm leading-6 text-muted-foreground">{copy}</span><span className="mt-8 grid size-10 place-items-center rounded-full border border-border transition-all group-hover:border-primary group-hover:bg-primary group-hover:text-white"><ArrowUpRight className="size-4" /></span></button>)}</div></section>
   </div>;
 }
@@ -107,10 +107,10 @@ function App() {
   const sectionLabel = nav.find(([id]) => id === section)?.[1] || 'Настройки входа';
   const currentLabel = page === 'requests/new' ? 'Сформировать реестр' : page?.startsWith('requests/') ? 'Запрос' : page === 'registries/new' ? 'Новый реестр' : page?.startsWith('registries/') ? 'Реестр' : page === 'merchants/new' ? 'Новый мерчант' : page?.startsWith('merchants/') ? 'Мерчант' : page === 'money/new' ? 'Новая операция' : page?.startsWith('money/') ? 'Операция' : sectionLabel;
   const parentPage = ['requests', 'registries', 'merchants', 'money'].find(id => page?.startsWith(`${id}/`)) || null;
-  const parentLabel = parentPage === 'requests' ? 'Карты к оплате' : parentPage === 'registries' ? 'Реестры оплат' : parentPage === 'merchants' ? 'Мерчанты' : parentPage === 'money' ? 'Движение денег' : 'Обзор';
+  const parentLabel = parentPage === 'requests' ? 'Карты к оплате' : parentPage === 'registries' ? 'Реестры оплат' : parentPage === 'merchants' ? 'Мерчанты' : parentPage === 'money' ? 'Операции' : 'Обзор';
   const createAction = createActions[page];
   const canCreate = createAction && pageForRole(user.Role, `#${createAction.route}`) === createAction.route;
-  const pages = { requests: <PaymentRequests role={user.Role} route={page} onNavigate={go} />, registries: <RegistryUpload role={user.Role} route={page} onNavigate={go} />, merchants: <Merchants role={user.Role} route={page} onNavigate={go} />, expenses: <><ExpenseForm /><DraftActivity role={user.Role} /></>, money: <MoneyPage role={user.Role} route={page} onNavigate={go} />, balances: <Balances />, catalog: <><Catalog role={user.Role} /><CatalogManager role={user.Role} /><CardPANCorrection role={user.Role} /><UserManager role={user.Role} /><TelegramLinkManager role={user.Role} /></>, reports: <Reports role={user.Role} />, audit: <Audit />, account: <AccountPage /> };
+  const pages = { requests: <PaymentRequests role={user.Role} route={page} onNavigate={go} />, registries: <RegistryUpload role={user.Role} route={page} onNavigate={go} />, merchants: <Merchants role={user.Role} route={page} onNavigate={go} />, money: <MoneyPage role={user.Role} route={page} onNavigate={go} />, balances: <Balances />, catalog: <><Catalog role={user.Role} /><CatalogManager role={user.Role} /><CardPANCorrection role={user.Role} /><UserManager role={user.Role} /><TelegramLinkManager role={user.Role} /></>, reports: <Reports role={user.Role} />, audit: <Audit />, account: <AccountPage /> };
   return <div className="app-shell min-h-[100dvh] lg:grid lg:grid-cols-[268px_minmax(0,1fr)]"><aside className="sidebar hidden lg:flex lg:flex-col"><BrandMark compact /><div className="my-7 h-px bg-border/60" /><p className="mb-3 px-3 text-[10px] font-semibold tracking-[.18em] text-muted-foreground uppercase">Рабочее пространство</p><Nav /><div className="mt-auto rounded-2xl border border-white/60 bg-white/45 p-3 backdrop-blur-xl"><div className="mb-2 flex items-center gap-3 px-2 py-2"><span className="grid size-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{user.Name?.slice(0, 1) || 'М'}</span><div className="min-w-0"><p className="truncate text-sm font-semibold">{user.Name}</p><p className="truncate text-[11px] text-muted-foreground">{roleNames[user.Role] || 'Пользователь'}</p></div></div><Button variant="ghost" className="nav-button w-full justify-start" onClick={() => go('account')}><Settings className="size-4" />Настройки</Button><Button variant="ghost" className="nav-button w-full justify-start" onClick={logout}><LogOut className="size-4" />Выйти</Button></div></aside><main className="min-w-0"><header className="app-header flex h-[72px] items-center gap-2 px-3 sm:px-5 lg:px-10"><Sheet><SheetTrigger asChild><Button variant="outline" size="icon" className="lg:hidden"><Menu /></Button></SheetTrigger><SheetContent side="left" className="w-72 bg-[#f3f5f2]/95 backdrop-blur-xl"><SheetHeader><SheetTitle><BrandMark compact /></SheetTitle></SheetHeader><div className="mt-8"><Nav mobile /></div></SheetContent></Sheet><Breadcrumb className="min-w-0 flex-1"><BreadcrumbList className="flex-nowrap"><BreadcrumbItem className="min-w-0">{parentPage && page !== parentPage ? <BreadcrumbLink className="max-w-40 truncate" onClick={() => go(parentPage)}>{parentLabel}</BreadcrumbLink> : <BreadcrumbPage>{currentLabel}</BreadcrumbPage>}</BreadcrumbItem>{parentPage && page !== parentPage && <><BreadcrumbSeparator /><BreadcrumbItem className="min-w-0"><BreadcrumbPage>{currentLabel}</BreadcrumbPage></BreadcrumbItem></>}</BreadcrumbList></Breadcrumb>{canCreate && <Button variant="primary" className="ml-auto shrink-0" aria-label={createAction.label} onClick={() => go(createAction.route)}><span className="sm:hidden">{createAction.compactLabel}</span><span className="hidden sm:inline">{createAction.label}</span></Button>}</header><div ref={content} className={`mx-auto w-full py-7 lg:py-10 ${['registries', 'money'].includes(page) ? 'max-w-none px-0' : ['requests', 'merchants'].includes(page) ? 'max-w-none px-5 lg:px-6' : 'max-w-[1520px] px-5 lg:px-10'}`}>{error && <Alert variant="destructive" className="mb-5"><AlertDescription>{error}</AlertDescription></Alert>}{page?.startsWith('requests/') ? <PaymentRequests role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('registries/') ? <RegistryUpload role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('merchants/') ? <Merchants role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('money/') ? <MoneyPage role={user.Role} route={page} onNavigate={go} /> : page === 'overview' ? report ? <Overview report={report} onNavigate={go} /> : !error && <p>Загрузка обзора…</p> : pages[page] || <AccountPage />}</div></main></div>;
 }
 

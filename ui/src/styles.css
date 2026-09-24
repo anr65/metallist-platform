@@ -186,7 +186,7 @@ select:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(49,
   .section-table--merchants td:nth-child(4)::before { content: 'Статус: '; }
   .section-table--money td:nth-child(2), .section-table--money td:nth-child(3), .section-table--money td:nth-child(4) { font-size: .8rem; color: var(--muted-foreground); }
   .section-table--money td:nth-child(2)::before { content: 'Сумма: '; }
-  .section-table--money td:nth-child(3)::before { content: 'Создано: '; }
+  .section-table--money td:nth-child(3)::before { content: 'Дата операции: '; }
   .section-table--money td:nth-child(4)::before { content: 'Статус: '; }
 }
 
