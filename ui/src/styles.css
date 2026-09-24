@@ -168,17 +168,22 @@ select:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(49,
 }
 
 @media (max-width: 767px) {
-  .request-table, .request-table tbody { display: block; width: 100%; }
-  .request-table thead { display: none; }
-  .request-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .75rem; padding: .75rem; }
-  .request-table td { display: block; min-width: 0; padding: .15rem; white-space: normal; overflow-wrap: anywhere; }
-  .request-table td:nth-child(1), .request-table td:nth-child(2), .request-table td:nth-child(3), .request-table td:nth-child(4) { grid-column: 1; }
-  .request-table td:nth-child(5), .request-table td:nth-child(6) { grid-column: 1; font-size: .8rem; color: var(--muted-foreground); }
-  .request-table td:nth-child(5)::before { content: 'Карт: '; }
-  .request-table td:nth-child(6)::before { content: 'Ответных реестров: '; }
-  .request-table td:nth-child(7) { grid-column: 2; grid-row: 1 / span 3; }
+  .section-table, .section-table tbody { display: block; width: 100%; }
+  .section-table thead { display: none; }
+  .section-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .25rem .75rem; padding: .75rem; }
+  .section-table td { display: block; min-width: 0; grid-column: 1; padding: .15rem; white-space: normal; overflow-wrap: anywhere; }
+  .section-table td:last-child { grid-column: 2; grid-row: 1 / span 4; align-self: start; }
+  .section-table--requests td:nth-child(5), .section-table--requests td:nth-child(6),
+  .section-table--registries td:nth-child(3), .section-table--registries td:nth-child(4),
+  .section-table--merchants td:nth-child(3), .section-table--merchants td:nth-child(4) { font-size: .8rem; color: var(--muted-foreground); }
+  .section-table--requests td:nth-child(5)::before { content: 'Карт: '; }
+  .section-table--requests td:nth-child(6)::before { content: 'Ответных реестров: '; }
+  .section-table--registries td:nth-child(3)::before { content: 'Сумма: '; }
+  .section-table--registries td:nth-child(4)::before { content: 'Комиссия: '; }
+  .section-table--merchants td:nth-child(3)::before { content: 'Ставка: '; }
+  .section-table--merchants td:nth-child(4)::before { content: 'Статус: '; }
 }
 
-.request-table-wrap [data-slot="table-container"] { overflow-x: auto; }
-.request-table-wrap [data-slot="table"] { background: transparent; }
-.request-table-wrap [data-slot="table-header"] { background: #dce6de; }
+.section-table-wrap [data-slot="table-container"] { overflow-x: auto; }
+.section-table-wrap [data-slot="table"] { background: transparent; }
+.section-table-wrap [data-slot="table-header"] { background: #dce6de; }
