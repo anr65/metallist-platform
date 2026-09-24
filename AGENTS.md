@@ -52,3 +52,8 @@ Never commit tokens, passwords, PINs, private keys, full card data, production d
 ## Documentation
 
 Update documentation in the same change whenever behavior, accounting, schema, permissions, integrations, deployment, or operational procedures change. Preserve AS IS and TO BE as separate statements.
+
+## Interface navigation and components
+
+- Show the current page hierarchy with the shared shadcn `Breadcrumb` component in the application header. Parent crumbs navigate to their page, including on mobile; do not add separate «К списку» buttons inside pages.
+- Use shared shadcn components and the button variants documented in `DESIGN.md` for page actions. Keep data tables within the available content width without creating horizontal scroll for the whole page.
