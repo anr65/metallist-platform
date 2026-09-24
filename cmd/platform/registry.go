@@ -322,10 +322,19 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
 	var rows *sql.Rows
 	var e error
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if u.Role == "operator" {
-		rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 ORDER BY r.created_at DESC LIMIT 100", u.ID)
+		if id != "" {
+			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.id::text=$2", u.ID, id)
+		} else {
+			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 ORDER BY r.created_at DESC LIMIT 100", u.ID)
+		}
 	} else {
-		rows, e = a.db.Query(query + " ORDER BY r.created_at DESC LIMIT 100")
+		if id != "" {
+			rows, e = a.db.Query(query+" WHERE r.id::text=$1", id)
+		} else {
+			rows, e = a.db.Query(query + " ORDER BY r.created_at DESC LIMIT 100")
+		}
 	}
 	if e != nil {
 		fail(w, 500, e)

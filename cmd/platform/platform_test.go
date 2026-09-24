@@ -957,6 +957,23 @@ func TestRegistryRequiresEffectiveRate(t *testing.T) {
 	if _, e := a.db.Exec("INSERT INTO registry_rows(id,registry_id,row_no,raw,card_id,amount_cents) VALUES($1,$2,1,'[]',$3,100000)", id(), reg, card); e != nil {
 		t.Fatal(e)
 	}
+	for _, tc := range []struct {
+		user User
+		id   string
+		want int
+	}{
+		{u, reg, 1},
+		{User{ID: id(), Role: "accountant"}, reg, 1},
+		{User{ID: id(), Role: "operator"}, reg, 0},
+		{u, id(), 0},
+	} {
+		w := httptest.NewRecorder()
+		a.registries(w, httptest.NewRequest("GET", "/api/registries?id="+tc.id, nil), tc.user)
+		var out []M
+		if e := json.Unmarshal(w.Body.Bytes(), &out); e != nil || w.Code != 200 || len(out) != tc.want {
+			t.Fatalf("registry direct lookup: %d %s %v", w.Code, w.Body.String(), e)
+		}
+	}
 	read := func() M {
 		w := httptest.NewRecorder()
 		a.registries(w, httptest.NewRequest("GET", "/api/registries", nil), u)
