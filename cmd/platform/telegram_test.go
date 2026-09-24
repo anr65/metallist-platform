@@ -687,8 +687,8 @@ func TestTelegramCardBalancesArePaginated(t *testing.T) {
 	if !fake.contains("страница 1 из 2") {
 		t.Fatal("first balance page was not sent")
 	}
-	message, remove := a.telegramCallback(telegramActor{User: collector, CustodianID: custodian}, telegramTestGroup, "cards:1")
-	if message != "Страница балансов открыта" || remove || !fake.contains("страница 2 из 2") {
+	message, remove := a.telegramCallback(telegramActor{User: collector, CustodianID: custodian}, telegramTestGroup, 500, "cards:1")
+	if message != "Страница балансов открыта" || remove || !fake.contains("страница 2 из 2") || !fake.called("editMessageText") {
 		t.Fatal("second balance page was not sent", message, remove)
 	}
 }

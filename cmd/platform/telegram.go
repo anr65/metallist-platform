@@ -158,7 +158,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if x.CallbackQuery != nil {
-		message, remove := a.telegramCallback(u, chat, x.CallbackQuery.Data)
+		message, remove := a.telegramCallback(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
 		if e := a.telegramAnswer(x.CallbackQuery.ID, message); e != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return

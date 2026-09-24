@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-func (a *App) telegramCallback(u telegramActor, chat int64, data string) (string, bool) {
+func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data string) (string, bool) {
 	if page, ok := telegramCardsBalancePageNumber(data); ok {
-		if err := a.telegramCardsBalancePage(u, chat, page, 0); err != nil {
+		if err := a.telegramCardsBalancePage(u, chat, messageID, page, 0); err != nil {
 			return err.Error(), false
 		}
 		return "Страница балансов открыта", false

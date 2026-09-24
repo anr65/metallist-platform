@@ -58,6 +58,17 @@ func (a *App) telegramCall(method string, payload M) error {
 	return nil
 }
 
+func (a *App) telegramEditMessageText(chatID, messageID int64, text string, markup interface{}) error {
+	body := M{"chat_id": chatID, "message_id": messageID, "text": text}
+	if markup != nil {
+		body["reply_markup"] = markup
+	}
+	if err := a.telegramCall("editMessageText", body); err != nil {
+		return errTelegramDelivery
+	}
+	return nil
+}
+
 func telegramCommands() []M {
 	return []M{{"command": "start", "description": "Начать работу"}, {"command": "cards_balance", "description": "Балансы всех карт"}, {"command": "my_balance", "description": "Мой баланс наличных"}, {"command": "expense", "description": "Расход по карте"}, {"command": "withdraw", "description": "Снятие с карты"}, {"command": "cancel", "description": "Отменить текущий ввод"}}
 }

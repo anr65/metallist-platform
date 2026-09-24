@@ -17,10 +17,10 @@ type telegramCardBalance struct {
 // telegramCardsBalance returns the latest factual observation for each card.
 // It intentionally never substitutes a ledger amount for a missing observation.
 func (a *App) telegramCardsBalance(u telegramActor, chatID, updateID int64) error {
-	return a.telegramCardsBalancePage(u, chatID, 0, updateID)
+	return a.telegramCardsBalancePage(u, chatID, 0, 0, updateID)
 }
 
-func (a *App) telegramCardsBalancePage(u telegramActor, chatID int64, page int, updateID int64) error {
+func (a *App) telegramCardsBalancePage(u telegramActor, chatID, messageID int64, page int, updateID int64) error {
 	rows, err := a.db.Query(`SELECT c.mask,o.observed_cents
 	FROM cards c LEFT JOIN LATERAL (
 		SELECT observed_cents FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1
@@ -95,7 +95,11 @@ func (a *App) telegramCardsBalancePage(u telegramActor, chatID int64, page int, 
 		detail["update_id"] = updateID
 	}
 	a.logAudit(u.ID, "telegram", "cards_balance_view", "balance", "", "success", "", detail)
-	return a.telegramReply(chatID, strings.Join(lines, "\n"), markup)
+	message := strings.Join(lines, "\n")
+	if messageID > 0 {
+		return a.telegramEditMessageText(chatID, messageID, message, markup)
+	}
+	return a.telegramReply(chatID, message, markup)
 }
 
 func (a *App) telegramMyBalance(u telegramActor, chatID, updateID int64) error {
