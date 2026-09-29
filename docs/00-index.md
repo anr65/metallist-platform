@@ -69,6 +69,7 @@
 - [Миграция Telegram-сборщиков](operations/telegram-collector-migration.md)
 - [Миграция профилей импорта мерчантов](operations/merchant-import-profiles-migration.md)
 - [Миграция ФИО и телефонов запросов карт](operations/payment-contact-migration.md)
+- [Право редактирования ФИО и телефона](operations/payment-contact-edit-grant.md)
 - [Миграция ручного состава запросов карт](operations/manual-payment-request-migration.md)
 - [Миграция рабочего экспорта карт](operations/production-card-request-migration.md)
 - [Редактирование запросов карт](operations/card-request-edit-migration.md)
