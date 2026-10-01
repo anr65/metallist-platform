@@ -939,7 +939,7 @@ func TestExpenseTypePostingAndBlockedPayouts(t *testing.T) {
 			t.Fatal("wrong expense account or duplicate posting", category, account, count, e)
 		}
 	}
-	for _, category := range []string{"repayment", "dividends", "losses", "unknown"} {
+	for _, category := range []string{"repayment", "losses", "unknown"} {
 		status, _ := req(t, a.draft, u, M{"kind": "expense", "source_kind": "card", "source_id": card, "category": category, "amount": "1.00"})
 		if status != 400 {
 			t.Fatal("unsupported expense category accepted", category, status)

@@ -21,6 +21,8 @@ func valIf(ok bool, a, b string) string {
 
 func expenseAccount(category string) (string, error) {
 	switch category {
+	case "dividends":
+		return "3300", nil
 	case "agent_fee":
 		return "5200", nil
 	case "bank_fee":

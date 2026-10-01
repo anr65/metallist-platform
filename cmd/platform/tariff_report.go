@@ -256,7 +256,7 @@ func (a *App) report(w http.ResponseWriter, r *http.Request, u User) {
 			fail(w, 500, e)
 			return
 		}
-		if acc == "2100" || acc == "2110" || acc == "2200" || acc == "2300" || acc == "4100" || acc == "4200" || acc == "3100" || acc == "3200" {
+		if acc == "2100" || acc == "2110" || acc == "2200" || acc == "2300" || acc == "4100" || acc == "4200" || acc == "3100" || acc == "3200" || acc == "3300" {
 			value = -value
 		}
 		balances = append(balances, M{"account": acc, "merchant_id": merchant, "card_id": card, "custodian_id": cust, "ref_id": ref, "amount": rub(value)})
@@ -265,7 +265,7 @@ func (a *App) report(w http.ResponseWriter, r *http.Request, u User) {
 	summary := M{"card_cash": rub(totals["1100"] + totals["1200"] + totals["1210"]), "merchant_payable": rub(totals["2100"]), "merchant_receivable": rub(totals["1300"]), "other_receivable": rub(totals["1400"] + totals["1390"]), "commission_revenue": rub(totals["4100"]), "other_revenue": rub(totals["4200"]), "expenses": rub(totals["5100"] + totals["5200"] + totals["5300"] + totals["5400"] + totals["5900"]), "profit": rub(totals["4100"] + totals["4200"] - totals["5100"] - totals["5200"] - totals["5300"] - totals["5400"] - totals["5900"])}
 	assets := totals["1100"] + totals["1200"] + totals["1210"] + totals["1220"] + totals["1300"] + totals["1390"] + totals["1400"]
 	liabilities := totals["2100"] + totals["2110"] + totals["2200"] + totals["2290"] + totals["2300"]
-	equity := totals["3100"] + totals["3200"]
+	equity := totals["3100"] + totals["3200"] + totals["3300"]
 	profit := totals["4100"] + totals["4200"] - totals["5100"] - totals["5200"] - totals["5300"] - totals["5400"] - totals["5900"]
 	summary["assets"] = rub(assets)
 	summary["liabilities"] = rub(liabilities)

@@ -21,6 +21,7 @@
 | 2290 | Прочая кредиторка | liability | counterparty_id |
 | 3100 | Opening balance / капитал перехода | equity | opening_batch_id |
 | 3200 | Капитал от прощения долга | equity | person_id, decision_id |
+| 3300 | Выплаты дивидендов собственникам (уменьшение капитала) | equity | category=dividends |
 | 4100 | Комиссионная выручка | revenue | merchant_id, commission_type |
 | 4200 | Прочие доходы | revenue | category_id |
 | 5100 | Операционные расходы | expense | expense_category_id |
