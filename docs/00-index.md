@@ -64,6 +64,7 @@
 
 - [Окружения](operations/environments.md)
 - [Развёртывание](operations/deployment.md)
+- [Комиссия вместе со снятием: релиз и откат](operations/telegram-withdrawal-bank-fee-release.md)
 - [Первая демонстрационная версия](operations/demo-v1.md)
 - [Миграция запросов карт к оплате](operations/payment-request-migration.md)
 - [Миграция Telegram-сборщиков](operations/telegram-collector-migration.md)

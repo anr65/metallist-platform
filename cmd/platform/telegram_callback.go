@@ -86,6 +86,9 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	if kind == "withdrawal" {
 		items, _ := telegramWithdrawalItems(p)
 		for i, item := range items {
+			if e = a.telegramPostWithdrawalFee(tx, u, draftID, i, item, now); e != nil {
+				return "Не удалось провести банковскую комиссию", false
+			}
 			observed, _ := telegramInt(item["observed_cents"])
 			observedAt := now.Add(time.Duration(i) * time.Microsecond)
 			if _, e = tx.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,$4,$5,$6)", id(), str(item, "card_id"), observed, observedAt, u.ID, "telegram:"+draftID); e != nil {
@@ -126,6 +129,17 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 		return "Подтверждено", true
 	}
 	items, _ := telegramWithdrawalItems(p)
+	var feeMessages []string
+	for _, item := range items {
+		fee, _ := telegramWithdrawalFee(item)
+		if fee > 0 {
+			feeMessages = append(feeMessages, "Банк. Комиссия: "+str(item, "telegram_mask")+" · "+telegramMoney(fee))
+		}
+	}
+	if len(feeMessages) > 0 {
+		_ = a.telegramReply(chat, "Снятия подтверждены на "+telegramMoney(amountCents)+". Созданы расходы:\n"+strings.Join(feeMessages, "\n")+"\nБалансы и остатки обновлены.", nil)
+		return "Подтверждено", true
+	}
 	if len(items) > 1 {
 		_ = a.telegramReply(chat, "Снятия подтверждены: "+telegramWithdrawalCount(len(items))+" на "+telegramMoney(amountCents)+". Балансы и остатки обновлены.", nil)
 		return "Подтверждено", true
@@ -181,6 +195,10 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 			observed, observedErr := telegramInt(item["observed_cents"])
 			if amountErr != nil || itemAmount <= 0 || observedErr != nil || observed < 0 || itemAmount > math.MaxInt64-total {
 				return errors.New("Сумма снятия или остаток некорректны")
+			}
+			fee, feeErr := telegramWithdrawalFee(item)
+			if feeErr != nil || fee > math.MaxInt64-itemAmount {
+				return errors.New("Некорректная сумма банковской комиссии")
 			}
 			total += itemAmount
 		}
@@ -300,4 +318,28 @@ func telegramWithdrawalCount(n int) string {
 		return fmt.Sprintf("%d снятия", n)
 	}
 	return fmt.Sprintf("%d снятий", n)
+}
+
+// Each fee is a separate expense. The parent row lock and shared transaction
+// make withdrawal, fees, observations and audit atomic and retry-safe.
+func (a *App) telegramPostWithdrawalFee(tx *sql.Tx, u telegramActor, withdrawalID string, index int, item M, now time.Time) error {
+	fee, err := telegramWithdrawalFee(item)
+	if err != nil || fee == 0 {
+		return err
+	}
+	card := str(item, "card_id")
+	payload := M{"amount": rub(fee), "amount_cents": fee, "category": "bank_fee", "source_kind": "card", "source_id": card, "card_id": card, "telegram_mask": str(item, "telegram_mask"), "withdrawal_id": withdrawalID, "withdrawal_item_index": index, "telegram_sender_confirmed": true}
+	lines, err := a.eventLinesWithCardOverdraft(tx, "expense", payload, fee, true)
+	if err != nil {
+		return err
+	}
+	expenseID := id()
+	key := fmt.Sprintf("telegram-withdrawal-fee:%s:%d", withdrawalID, index)
+	if _, err = tx.Exec("INSERT INTO drafts(id,kind,payload,status,created_by,idempotency_key,confirmed_by,confirmed_at,confirmed_amount_cents) VALUES($1,'expense',$2,'posted',$3,$4,$3,$5,$6)", expenseID, encode(payload), u.ID, key, now, fee); err != nil {
+		return err
+	}
+	if _, err = put(tx, "expense", expenseID, "draft:"+expenseID, u.ID, now, now, lines, ""); err != nil {
+		return err
+	}
+	return txAudit(tx, u.ID, "telegram", "draft_confirm", "expense", expenseID, "success", "", M{"withdrawal_id": withdrawalID, "withdrawal_item_index": index, "confirmed_cents": fee})
 }

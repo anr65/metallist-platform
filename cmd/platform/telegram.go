@@ -247,7 +247,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return a.telegramTransferOptions(u, message.Chat.ID)
 		}
 		if command == "withdraw" {
-			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
+			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n3338 100к/143500 комса 2400\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
@@ -286,7 +286,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 				return errors.New("Общая сумма снятий слишком велика")
 			}
 			total += intent.Amount
-			items = append(items, M{"card_id": intent.CardID, "amount_cents": intent.Amount, "observed_cents": intent.Observed, "telegram_mask": intent.Mask})
+			items = append(items, M{"card_id": intent.CardID, "amount_cents": intent.Amount, "observed_cents": intent.Observed, "telegram_mask": intent.Mask, "bank_fee_cents": intent.BankFee})
 		}
 		payload["amount"] = rub(total)
 		payload["amount_cents"] = total
@@ -383,14 +383,14 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 			itemAmount, _ := telegramInt(withdrawals[0]["amount_cents"])
 			observed, _ := telegramInt(withdrawals[0]["observed_cents"])
 			heading = "Подтвердите снятие и остаток по карте"
-			details = "Автор: " + actor + "\nКарта: " + str(withdrawals[0], "telegram_mask") + "\nСумма снятия: " + telegramMoney(itemAmount) + "\nОстаток: " + telegramMoney(observed)
+			details = "Автор: " + actor + "\nКарта: " + str(withdrawals[0], "telegram_mask") + "\nСумма снятия: " + telegramMoney(itemAmount) + "\nОстаток: " + telegramMoney(observed) + telegramWithdrawalFeePreview(withdrawals[0])
 		} else {
 			heading = "Подтвердите снятия и остатки по картам"
 			lines := []string{"Автор: " + actor}
 			for i, item := range withdrawals {
 				itemAmount, _ := telegramInt(item["amount_cents"])
 				observed, _ := telegramInt(item["observed_cents"])
-				lines = append(lines, fmt.Sprintf("%d. %s · снято %s · остаток %s", i+1, str(item, "telegram_mask"), telegramMoney(itemAmount), telegramMoney(observed)))
+				lines = append(lines, fmt.Sprintf("%d. %s · снято %s · остаток %s", i+1, str(item, "telegram_mask"), telegramMoney(itemAmount), telegramMoney(observed))+telegramWithdrawalFeePreview(item))
 			}
 			lines = append(lines, "", "Итого снято: "+telegramMoney(amountCents))
 			details = strings.Join(lines, "\n")
@@ -496,4 +496,23 @@ func (a *App) telegramRemoveButtons(chat, messageID int64) {
 
 func (a *App) telegramDeleteMessage(chat, messageID int64) {
 	_ = a.telegramCall("deleteMessage", M{"chat_id": chat, "message_id": messageID})
+}
+
+func telegramWithdrawalFee(item M) (int64, error) {
+	if item["bank_fee_cents"] == nil {
+		return 0, nil // Older drafts have no attached fee.
+	}
+	fee, err := telegramInt(item["bank_fee_cents"])
+	if err != nil || fee < 0 {
+		return 0, errors.New("Некорректная сумма банковской комиссии")
+	}
+	return fee, nil
+}
+
+func telegramWithdrawalFeePreview(item M) string {
+	fee, _ := telegramWithdrawalFee(item)
+	if fee == 0 {
+		return ""
+	}
+	return "\nБанк. Комиссия с этой карты: " + telegramMoney(fee)
 }

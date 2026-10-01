@@ -845,3 +845,128 @@ func TestCollectorWebAccessIsRestricted(t *testing.T) {
 		t.Fatal("collector catalog leaked unrelated data", w.Code, e)
 	}
 }
+
+func TestTelegramWithdrawalBankFee(t *testing.T) {
+	a := testApp(t)
+	chief, _, _, card := fixtures(t, a)
+	_, _, custodian, fake := telegramFixture(t, a, card)
+	if _, err := a.db.Exec("UPDATE cards SET last4='3338',mask='000000******3338' WHERE id=$1", card); err != nil {
+		t.Fatal(err)
+	}
+	message := "3338 100к/143500 комса 2400"
+	telegramRequest(t, a, telegramMessageUpdate(9000, 555, "/withdraw"))
+	telegramRequest(t, a, telegramMessageUpdate(9001, 555, message))
+	telegramRequest(t, a, telegramMessageUpdate(9001, 555, message))
+	var draftID string
+	if err := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:9001'").Scan(&draftID); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.contains("Банк. Комиссия с этой карты: 2 400 ₽") || !fake.contains("Остаток: 143 500 ₽") {
+		t.Fatal("fee preview missing")
+	}
+	var count int
+	if err := a.db.QueryRow("SELECT count(*) FROM journal_entries").Scan(&count); err != nil || count != 0 {
+		t.Fatal("preview posted money", count, err)
+	}
+	telegramRequest(t, a, telegramButtonUpdate(9002, 555, "confirm", draftID))
+	telegramRequest(t, a, telegramButtonUpdate(9003, 555, "confirm", draftID))
+	var expenseID, source, category, status string
+	var fee int64
+	if err := a.db.QueryRow("SELECT id,payload->>'source_id',payload->>'category',status,confirmed_amount_cents FROM drafts WHERE kind='expense' AND payload->>'withdrawal_id'=$1", draftID).Scan(&expenseID, &source, &category, &status, &fee); err != nil || source != card || category != "bank_fee" || status != "posted" || fee != 240_000 {
+		t.Fatal("separate expense incorrect", source, category, status, fee, err)
+	}
+	if err := a.db.QueryRow("SELECT count(*) FROM journal_entries").Scan(&count); err != nil || count != 2 {
+		t.Fatal("duplicate or missing events", count, err)
+	}
+	var cash, cardBalance, expense int64
+	if err := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN account='1200' AND custodian_id=$1 THEN CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END ELSE 0 END),0),COALESCE(SUM(CASE WHEN account='1100' AND card_id=$2 THEN CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END ELSE 0 END),0),COALESCE(SUM(CASE WHEN account='5300' AND category='bank_fee' THEN CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END ELSE 0 END),0) FROM postings", custodian, card).Scan(&cash, &cardBalance, &expense); err != nil || cash != 10_000_000 || cardBalance != -10_240_000 || expense != 240_000 {
+		t.Fatal("wrong balances", cash, cardBalance, expense, err)
+	}
+	var observed int64
+	if err := a.db.QueryRow("SELECT observed_cents FROM observations WHERE source=$1", "telegram:"+draftID).Scan(&observed); err != nil || observed != 14_350_000 {
+		t.Fatal("observation changed", observed, err)
+	}
+	if err := a.db.QueryRow("SELECT count(*) FROM (SELECT entry_id FROM postings GROUP BY entry_id HAVING SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END)<>0) x").Scan(&count); err != nil || count != 0 {
+		t.Fatal("unbalanced entries", count, err)
+	}
+	w := httptest.NewRecorder()
+	a.report(w, httptest.NewRequest(http.MethodGet, "/api/report", nil), chief)
+	var report M
+	if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil || w.Code != 200 {
+		t.Fatal("fee report failed", w.Code, err)
+	}
+	summary, ok := report["summary"].(map[string]interface{})
+	if !ok || summary["expenses"] != "2400.00" || summary["profit"] != "-2400.00" || summary["merchant_payable"] != "0.00" || summary["balance_difference"] != "0.00" {
+		t.Fatal("fee report disagrees with ledger", report)
+	}
+	if code, out := req(t, a.reverseDraft, chief, M{"id": draftID, "reason": "Test withdrawal correction"}); code != 200 {
+		t.Fatal("withdrawal reversal", code, out)
+	}
+	if err := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", expenseID).Scan(&status); err != nil || status != "posted" {
+		t.Fatal("withdrawal reversal changed bank fee", status, err)
+	}
+	for i := 0; i < 2; i++ {
+		if code, out := req(t, a.reverseDraft, chief, M{"id": expenseID, "reason": "Test fee correction"}); code != 200 {
+			t.Fatal("expense reversal", code, out)
+		}
+	}
+	if err := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings WHERE account='1100' AND card_id=$1", card).Scan(&cardBalance); err != nil || cardBalance != 0 {
+		t.Fatal("reversal did not restore card", cardBalance, err)
+	}
+}
+
+func TestTelegramWithdrawalBankFeeBatchAndRollback(t *testing.T) {
+	a := testApp(t)
+	_, _, _, card := fixtures(t, a)
+	_, _, _, _ = telegramFixture(t, a, card)
+	message := "/withdraw 1234 1к/0 комса 25,50; 1234 2к/3к; 1234 3к/0 комса 1к"
+	telegramRequest(t, a, telegramMessageUpdate(9101, 555, message))
+	var draftID string
+	if err := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:9101'").Scan(&draftID); err != nil {
+		t.Fatal(err)
+	}
+	// A database failure after the withdrawal entry must roll back the entire command.
+	if _, err := a.db.Exec("CREATE FUNCTION qa_fail_fee() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.kind='expense' THEN RAISE EXCEPTION 'synthetic fee failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER qa_fail_fee BEFORE INSERT ON drafts FOR EACH ROW EXECUTE FUNCTION qa_fail_fee()"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = a.db.Exec("DROP TRIGGER IF EXISTS qa_fail_fee ON drafts; DROP FUNCTION IF EXISTS qa_fail_fee()")
+	})
+	telegramRequest(t, a, telegramButtonUpdate(9102, 555, "confirm", draftID))
+	var count int
+	if err := a.db.QueryRow("SELECT (SELECT count(*) FROM journal_entries)+(SELECT count(*) FROM observations)+(SELECT count(*) FROM drafts WHERE kind='expense')").Scan(&count); err != nil || count != 0 {
+		t.Fatal("partial posting after fee failure", count, err)
+	}
+	if _, err := a.db.Exec("DROP TRIGGER qa_fail_fee ON drafts; DROP FUNCTION qa_fail_fee()"); err != nil {
+		t.Fatal(err)
+	}
+	telegramRequest(t, a, telegramButtonUpdate(9103, 555, "confirm", draftID))
+	telegramRequest(t, a, telegramButtonUpdate(9104, 555, "confirm", draftID))
+	var total int64
+	if err := a.db.QueryRow("SELECT count(*),SUM(confirmed_amount_cents) FROM drafts WHERE kind='expense' AND payload->>'withdrawal_id'=$1", draftID).Scan(&count, &total); err != nil || count != 2 || total != 102_550 {
+		t.Fatal("mixed batch expenses wrong", count, total, err)
+	}
+}
+
+func TestTelegramWithdrawalBankFeeValidationAndRejection(t *testing.T) {
+	a := testApp(t)
+	_, _, _, card := fixtures(t, a)
+	_, _, _, _ = telegramFixture(t, a, card)
+	actor := telegramActor{User: User{Role: "collector"}}
+	for _, input := range []string{"1234 100к/0 комса", "1234 100к/0 комса 0", "1234 100к/0 комса -1", "1234 100к/0 комса abc", "1234 100к/0 прогрев 1", "1234 100к/0 комса 92233720368548к", "1234 92233720368547758,07/0 комса 1", "1234 1к/0 комса 1;1234 2к/0 комса -1"} {
+		if _, err := a.telegramParseWithdrawals(actor, input); err == nil {
+			t.Fatalf("accepted invalid fee %q", input)
+		}
+	}
+	telegramRequest(t, a, telegramMessageUpdate(9201, 555, "/withdraw 1234 100к/0 комса 2400"))
+	var draftID string
+	if err := a.db.QueryRow("SELECT id FROM drafts WHERE idempotency_key='telegram:9201'").Scan(&draftID); err != nil {
+		t.Fatal(err)
+	}
+	telegramRequest(t, a, telegramButtonUpdate(9202, 555, "reject", draftID))
+	telegramRequest(t, a, telegramButtonUpdate(9203, 555, "confirm", draftID))
+	var count int
+	if err := a.db.QueryRow("SELECT (SELECT count(*) FROM journal_entries)+(SELECT count(*) FROM observations)+(SELECT count(*) FROM drafts WHERE kind='expense')").Scan(&count); err != nil || count != 0 {
+		t.Fatal("rejected fee changed money", count, err)
+	}
+}

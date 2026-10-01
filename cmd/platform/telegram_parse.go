@@ -18,6 +18,7 @@ type telegramIntent struct {
 	Category string
 	Amount   int64
 	Observed int64
+	BankFee  int64
 }
 
 func (a *App) telegramCard(_ telegramActor, lastFour string) (string, string, error) {
@@ -53,8 +54,8 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 	words := strings.Fields(args)
 	var out telegramIntent
 	if command == "withdraw" {
-		if len(words) != 2 {
-			return out, errors.New("Формат: /withdraw 7898 100к/200")
+		if len(words) != 2 && len(words) != 4 {
+			return out, errors.New("Формат: /withdraw 7898 100к/200 [комса 2400]")
 		}
 		parts := strings.Split(words[1], "/")
 		if len(parts) != 2 {
@@ -69,6 +70,16 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 			return out, errors.New("Некорректный остаток карты")
 		}
 		out.Amount, out.Observed = amount, observed
+		if len(words) == 4 {
+			if !strings.EqualFold(words[2], "комса") {
+				return out, errors.New("После остатка укажите комса и сумму комиссии")
+			}
+			fee, err := telegramAmount(words[3])
+			if err != nil || fee <= 0 || fee > math.MaxInt64-amount {
+				return out, errors.New("Некорректная сумма банковской комиссии")
+			}
+			out.BankFee = fee
+		}
 	} else if command == "expense" {
 		if len(words) < 3 {
 			return out, errors.New("Формат: /expense 7898 прогрев 230")
