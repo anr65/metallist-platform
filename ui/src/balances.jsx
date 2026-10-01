@@ -17,6 +17,17 @@ function BalanceTotal({ label, value, prominent = false }) {
   return <Card className={`rounded-2xl ${prominent ? 'border-primary/25 bg-primary/5' : ''}`}><CardContent className="p-5"><p className="text-sm text-muted-foreground">{label}</p><strong className="mt-3 block font-mono text-xl font-semibold tabular-nums sm:text-2xl">{amount(value)}</strong></CardContent></Card>;
 }
 
+function CardBalanceTotal({ totals, cardCount }) {
+  return <Card className="rounded-2xl"><CardContent className="p-5">
+    <p className="text-sm text-muted-foreground">На картах</p>
+    <dl className="mt-3 space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"><dt className="text-xs text-muted-foreground">Учётный</dt><dd className="font-mono text-lg font-semibold tabular-nums">{amount(totals.cards)}</dd></div>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"><dt className="text-xs text-muted-foreground">Фактический</dt><dd className="font-mono text-lg font-semibold tabular-nums">{totals.cards_observed == null ? <span className="font-sans text-sm font-normal text-muted-foreground">Нет данных</span> : amount(totals.cards_observed)}</dd></div>
+    </dl>
+    <p className="mt-3 text-xs leading-4 text-muted-foreground">Последние внесённые остатки{totals.cards_observed_count < cardCount ? ` · данные по ${totals.cards_observed_count} из ${cardCount} карт` : ''}.</p>
+  </CardContent></Card>;
+}
+
 function CashTable({ title, rows, empty }) {
   const pagination = usePagination(rows);
   return <Card className="overflow-hidden rounded-2xl"><CardHeader><CardTitle>{title}</CardTitle><CardDescription>{rows.length} {rows.length === 1 ? 'хранитель' : 'хранителей'}</CardDescription></CardHeader><CardContent className="p-0">{rows.length ? <><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Ответственный</TableHead><TableHead className="text-right">Учётный остаток</TableHead></TableRow></TableHeader><TableBody>{pagination.rows.map(row => <TableRow key={row.id}><TableCell><span className="font-medium">{row.name}</span>{!row.active && <Badge variant="outline" className="ml-2">Неактивен</Badge>}</TableCell><TableCell className="text-right font-mono font-semibold tabular-nums">{amount(row.amount)}</TableCell></TableRow>)}</TableBody></Table></div><TablePagination page={pagination.page} totalPages={pagination.totalPages} total={rows.length} onPageChange={pagination.setPage} /></> : <p className="px-6 pb-6 text-sm text-muted-foreground">{empty}</p>}</CardContent></Card>;
@@ -41,7 +52,7 @@ export function Balances() {
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">{data ? `По состоянию на ${dateTime.format(new Date(data.as_of))}` : 'Загрузка остатков…'}</p><Button type="button" variant="outline" onClick={refresh} disabled={loading}>{loading ? 'Обновление…' : 'Обновить'}</Button></div>
     {error && <Card className="mb-5"><CardContent className="p-5 text-destructive">{error}</CardContent></Card>}
     {!data && loading ? <div className="grid gap-4"><Skeleton className="h-28 rounded-2xl" /><Skeleton className="h-64 rounded-2xl" /></div> : data && <>
-      <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><BalanceTotal label="Всего на картах и у хранителей" value={data.totals.all} prominent /><BalanceTotal label="На картах" value={data.totals.cards} /><BalanceTotal label="У сборщиков" value={data.totals.collectors} /><BalanceTotal label="У главного администратора" value={data.totals.chief} /></div>
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><BalanceTotal label="Всего на картах и у хранителей" value={data.totals.all} prominent /><CardBalanceTotal totals={data.totals} cardCount={cards.length} /><BalanceTotal label="У сборщиков" value={data.totals.collectors} /><BalanceTotal label="У главного администратора" value={data.totals.chief} /></div>
       {Number(data.totals.operators) !== 0 && <p className="mb-6 text-sm text-muted-foreground">В общей сумме также учтено у операционистов: <strong className="text-foreground">{amount(data.totals.operators)}</strong>.</p>}
       <div className="grid gap-5 xl:grid-cols-2"><CashTable title="Главный администратор" rows={custodians.filter(row => row.kind === 'chief')} empty="Хранитель не задан." /><CashTable title="Сборщики" rows={custodians.filter(row => row.kind === 'collector')} empty="Сборщиков пока нет." /></div>
       {custodians.some(row => row.kind === 'operator') && <div className="mt-5"><CashTable title="Операционисты с наличными" rows={custodians.filter(row => row.kind === 'operator')} empty="Операционистов пока нет." /></div>}

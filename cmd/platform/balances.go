@@ -41,6 +41,8 @@ func (a *App) balances(w http.ResponseWriter, r *http.Request, u User) {
 	defer rows.Close()
 	cards, custodians := []M{}, []M{}
 	var cardsTotal, collectorsTotal, chiefTotal, operatorsTotal int64
+	var cardsObservedTotal int64
+	var cardsObservedCount int
 	for rows.Next() {
 		var typ, id, name, owner, mask, status, kind string
 		var active bool
@@ -56,6 +58,8 @@ func (a *App) balances(w http.ResponseWriter, r *http.Request, u User) {
 			if observed.Valid && observedAt.Valid {
 				card["observed"] = rub(observed.Int64)
 				card["observed_at"] = observedAt.Time.Format(time.RFC3339)
+				cardsObservedTotal += observed.Int64
+				cardsObservedCount++
 			}
 			cards = append(cards, card)
 			cardsTotal += cents
@@ -75,7 +79,12 @@ func (a *App) balances(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, err)
 		return
 	}
+	var cardsObserved any
+	if cardsObservedCount > 0 {
+		cardsObserved = rub(cardsObservedTotal)
+	}
 	respond(w, 200, M{"cards": cards, "custodians": custodians, "totals": M{
+		"cards_observed": cardsObserved, "cards_observed_count": cardsObservedCount,
 		"cards": rub(cardsTotal), "collectors": rub(collectorsTotal), "chief": rub(chiefTotal),
 		"operators": rub(operatorsTotal), "all": rub(cardsTotal + collectorsTotal + chiefTotal + operatorsTotal),
 	}, "as_of": time.Now().UTC().Format(time.RFC3339)})
