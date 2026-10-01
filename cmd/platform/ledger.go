@@ -165,6 +165,13 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		LEFT JOIN LATERAL (SELECT r.contact_name,r.contact_phone FROM payment_request_rows r JOIN payment_requests p ON p.id=r.request_id
 		WHERE r.card_id=c.id AND r.contact_id IS NOT NULL AND p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC,r.row_no DESC LIMIT 1) previous ON true
 		WHERE c.status='active' ORDER BY b.name,c.mask,c.id`
+	// Only the chief can open the merchant directory. Keep debt out of catalogs
+	// used by operators and other roles; derive it from the same ledger as reports.
+	if u.Role == "chief" {
+		specs["merchants"] = `SELECT m.*,COALESCE(d.cents,0)::bigint AS payable_cents FROM (` + specs["merchants"] + `) m
+			LEFT JOIN (SELECT merchant_id,SUM(CASE WHEN side='credit' THEN amount_cents ELSE -amount_cents END) AS cents
+			FROM postings WHERE account='2100' GROUP BY merchant_id) d ON d.merchant_id=m.id ORDER BY m.name`
+	}
 	for name, q := range specs {
 		if u.Role == "collector" && name != "cards" {
 			continue
@@ -205,6 +212,10 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 				default:
 					m[c] = v
 				}
+			}
+			if cents, ok := m["payable_cents"].(int64); name == "merchants" && ok {
+				m["payable"] = rub(cents)
+				delete(m, "payable_cents")
 			}
 			if name == "cards" || name == "request_cards" {
 				cardID, _ := m["id"].(string)
