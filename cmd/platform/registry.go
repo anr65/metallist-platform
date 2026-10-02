@@ -31,7 +31,7 @@ type requestRegistryLookup struct {
 	numbers, masks, names map[string]string
 }
 
-var longDigits = regexp.MustCompile(`(?:[0-9][ -]?){12,19}`)
+var longDigits = regexp.MustCompile(`(?:[0-9][\s\p{Zs}-]?){12,19}`)
 var trailingFour = regexp.MustCompile(`([0-9]{4})\s*$`)
 var personNameSeparator = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 

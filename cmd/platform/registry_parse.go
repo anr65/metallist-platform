@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -262,6 +263,9 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 	headerRow := -1
 	var head map[string]int
 	for i, row := range sheet.Rows {
+		if svetaRequestHeader(sheet.Name, row) {
+			return parseSvetaRequestSheet(sheet, i)
+		}
 		candidate := headers(row)
 		_, amountOK := firstHeader(candidate, "сумма")
 		_, orderOK := firstHeader(candidate, "номер вх.")
@@ -292,7 +296,7 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 		}
 		x := importedRow{Number: rowNo + headerRow + 2, Sheet: sheet.Name, Raw: row, Order: valueAt(row, order)}
 		if cok {
-			x.Mask = valueAt(row, card)
+			x.Mask = normalizeSvetaCard(valueAt(row, card))
 		} else if nok {
 			x.ContactName = valueAt(row, name)
 		}
@@ -310,6 +314,78 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 		return nil, errors.New("выгрузка Светы без строк пополнений")
 	}
 	return out, nil
+}
+
+// The merchant fills column F of the exported request, sometimes without a header.
+// Only the complete known layout permits this positional amount mapping.
+func svetaRequestHeader(sheetName string, row []string) bool {
+	if sheetName != "Карты к оплате" || len(row) < 5 || len(row) > 6 {
+		return false
+	}
+	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "НОМЕР ТЕЛЕФОНА", "БАНК"} {
+		if normalizeHeader(valueAt(row, i)) != normalizeHeader(title) {
+			return false
+		}
+	}
+	return valueAt(row, 5) == "" || normalizeHeader(valueAt(row, 5)) == "сумма"
+}
+
+func normalizeSvetaCard(value string) string {
+	return strings.Join(strings.Fields(value), "")
+}
+
+func parseSvetaRequestSheet(sheet spreadsheetSheet, headerRow int) ([]importedRow, error) {
+	out := []importedRow{}
+	var total, declaredTotal int64
+	hasTotal, invalidAmount := false, false
+	for offset, row := range sheet.Rows[headerRow+1:] {
+		if emptyRow(row) {
+			continue
+		}
+		// The supplied response has a status/total footer, not another payment.
+		if valueAt(row, 0) == "" && valueAt(row, 1) == "" &&
+			normalizeHeader(valueAt(row, 2)) == "оплачены успешно" &&
+			valueAt(row, 3) == "" && valueAt(row, 4) == "" {
+			if hasTotal {
+				return nil, errors.New("в ответе Светы несколько итоговых строк")
+			}
+			var e error
+			declaredTotal, e = svetaResponseAmount(valueAt(row, 5))
+			if e != nil {
+				return nil, errors.New("неверная итоговая сумма в ответе Светы")
+			}
+			hasTotal = true
+			continue
+		}
+		x := importedRow{Number: headerRow + offset + 2, Sheet: sheet.Name, Raw: row,
+			Mask: normalizeSvetaCard(valueAt(row, 1))}
+		if x.Mask == "" {
+			x.Error = "missing_card_reference"
+		}
+		// Ruble suffix is accepted only for this documented response format.
+		if v, e := svetaResponseAmount(valueAt(row, 5)); e == nil {
+			x.Amount = v
+			if v > math.MaxInt64-total {
+				return nil, errors.New("сумма реестра слишком велика")
+			}
+			total += v
+		} else {
+			x.Error = "invalid_amount"
+			invalidAmount = true
+		}
+		out = append(out, x)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("выгрузка Светы без строк пополнений")
+	}
+	if hasTotal && !invalidAmount && total != declaredTotal {
+		return nil, errors.New("итоговая сумма в ответе Светы не совпадает с суммой строк")
+	}
+	return out, nil
+}
+
+func svetaResponseAmount(value string) (int64, error) {
+	return spreadsheetAmount(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "₽")))
 }
 
 func parseKatyaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
