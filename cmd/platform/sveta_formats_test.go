@@ -63,6 +63,23 @@ func TestSvetaResponseFormats(t *testing.T) {
 	if _, err := parseRows("sveta_cards_xls_v1", ".xlsx", data.Bytes()); err == nil {
 		t.Fatal("formula accepted")
 	}
+	if err := f.SetCellFormula(sheet.Name, "F5", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetRowVisible(sheet.Name, 5, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.SetCellStr(sheet.Name, "F8", "1 234,56 ₽"); err != nil {
+		t.Fatal(err)
+	}
+	data, err = f.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, excluded, err := parseRowsWithExclusions("sveta_cards_xls_v1", ".xlsx", data.Bytes())
+	if err != nil || len(visible) != 1 || visible[0].Number != 6 || !reflect.DeepEqual(excluded, []sourceRowExclusion{{Sheet: sheet.Name, Row: 5, Code: "source_row_hidden"}}) {
+		t.Fatal("XLSX hidden row diagnostics failed")
+	}
 }
 
 func TestSvetaResponseValidation(t *testing.T) {
@@ -131,7 +148,7 @@ func TestSvetaNewSourceSamples(t *testing.T) {
 		count    int
 		total    int64
 	}{
-		{"METALLIST_SAMPLE_SVETA_SEP30", ".xls", 33, 597826733},
+		{"METALLIST_SAMPLE_SVETA_SEP30", ".xls", 24, 592038700},
 		{"METALLIST_SAMPLE_SVETA_OCT01", ".xlsx", 24, 591340600},
 	} {
 		path := os.Getenv(sample.env)
@@ -142,7 +159,7 @@ func TestSvetaNewSourceSamples(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows, err := parseRows("sveta_cards_xls_v1", sample.ext, data)
+		rows, excluded, err := parseRowsWithExclusions("sveta_cards_xls_v1", sample.ext, data)
 		if err != nil || len(rows) != sample.count {
 			t.Fatalf("sample count=%d error=%v", len(rows), err)
 		}
@@ -155,6 +172,16 @@ func TestSvetaNewSourceSamples(t *testing.T) {
 		}
 		if total != sample.total {
 			t.Fatalf("sample total=%d want=%d", total, sample.total)
+		}
+		if sample.ext == ".xls" {
+			if len(excluded) != 9 {
+				t.Fatal("source hidden row diagnostics missing")
+			}
+			for i, x := range excluded {
+				if x.Row != 21+i || x.Code != "source_row_hidden" {
+					t.Fatal("wrong hidden source row")
+				}
+			}
 		}
 	}
 }

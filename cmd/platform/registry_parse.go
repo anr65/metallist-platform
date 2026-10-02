@@ -17,48 +17,70 @@ import (
 )
 
 type spreadsheetSheet struct {
-	Name string
-	Rows [][]string
+	Name       string
+	Rows       [][]string
+	HiddenRows map[int]bool
 }
 
 var avangardCard = regexp.MustCompile(`(?i)карта\s*:\s*\**([0-9]{4})(?:[^0-9]|$)`)
 
+type sourceRowExclusion struct {
+	Sheet string `json:"sheet"`
+	Row   int    `json:"row"`
+	Code  string `json:"code"`
+}
+
 func parseRows(parser, extension string, data []byte) ([]importedRow, error) {
+	rows, _, err := parseRowsWithExclusions(parser, extension, data)
+	return rows, err
+}
+
+func parseRowsWithExclusions(parser, extension string, data []byte) ([]importedRow, []sourceRowExclusion, error) {
+	if parser == "aliten_bank_csv_v1" {
+		rows, err := parseAlitenCSV(data)
+		return rows, nil, err
+	}
+	sheets, err := readRegistrySheets(parser, extension, data)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := parseMerchantSheets(parser, sheets)
+	if err != nil {
+		return nil, nil, err
+	}
+	var excluded []sourceRowExclusion
+	if parser == "sveta_cards_xls_v1" {
+		for _, sheet := range sheets {
+			for i, row := range sheet.Rows {
+				if sheet.HiddenRows[i+1] && !emptyRow(row) {
+					excluded = append(excluded, sourceRowExclusion{Sheet: sheet.Name, Row: i + 1, Code: "source_row_hidden"})
+				}
+			}
+		}
+	}
+	return rows, excluded, nil
+}
+
+func readRegistrySheets(parser, extension string, data []byte) ([]spreadsheetSheet, error) {
 	switch parser {
-	case "aliten_bank_csv_v1":
-		return parseAlitenCSV(data)
 	case "generic_xlsx_v1", "tolya_operations_xlsx_v1", "katya_payouts_xlsx_v1":
 		if extension != ".xlsx" {
 			return nil, errors.New("для выбранного мерчанта нужен файл XLSX")
 		}
-		sheets, e := readXLSX(data)
-		if e != nil {
-			return nil, e
-		}
-		return parseMerchantSheets(parser, sheets)
+		return readXLSX(data)
 	case "sveta_cards_xls_v1":
-		var sheets []spreadsheetSheet
-		var e error
 		if extension == ".xls" {
-			sheets, e = readLegacyXLS(data)
-		} else if extension == ".xlsx" {
-			sheets, e = readXLSX(data)
-		} else {
-			return nil, errors.New("для Светы нужен файл XLS или XLSX")
+			return readLegacyXLS(data)
 		}
-		if e != nil {
-			return nil, e
+		if extension == ".xlsx" {
+			return readXLSX(data)
 		}
-		return parseMerchantSheets(parser, sheets)
+		return nil, errors.New("для Светы нужен файл XLS или XLSX")
 	case "narkoman_avangard_xls_v1":
 		if extension != ".xls" {
 			return nil, errors.New("для выбранного мерчанта нужен файл XLS")
 		}
-		sheets, e := readLegacyXLS(data)
-		if e != nil {
-			return nil, e
-		}
-		return parseMerchantSheets(parser, sheets)
+		return readLegacyXLS(data)
 	default:
 		return nil, errors.New("тип разбора реестра не поддержан")
 	}
@@ -151,7 +173,17 @@ func readXLSX(data []byte) ([]spreadsheetSheet, error) {
 				}
 			}
 		}
-		out = append(out, spreadsheetSheet{Name: name, Rows: raw})
+		hidden := map[int]bool{}
+		for i := range raw {
+			visible, err := f.GetRowVisible(name, i+1)
+			if err != nil {
+				return nil, err
+			}
+			if !visible {
+				hidden[i+1] = true
+			}
+		}
+		out = append(out, spreadsheetSheet{Name: name, Rows: raw, HiddenRows: hidden})
 	}
 	if e := rejectSensitiveHeaders(out); e != nil {
 		return nil, e
@@ -174,12 +206,19 @@ func readLegacyXLS(data []byte) ([]spreadsheetSheet, error) {
 			return nil, errors.New("макросы в XLS запрещены")
 		}
 	}
+	hiddenRows, e := legacyXLSHiddenRows(doc)
+	if e != nil {
+		return nil, e
+	}
 	book, e := xls.OpenReader(bytes.NewReader(data))
 	if e != nil {
 		return nil, errors.New("не удалось прочитать XLS")
 	}
 	if book.GetNumberSheets() == 0 {
 		return nil, errors.New("XLS без листов")
+	}
+	if len(hiddenRows) != book.GetNumberSheets() {
+		return nil, errors.New("не совпадает число листов XLS")
 	}
 	out := make([]spreadsheetSheet, 0, book.GetNumberSheets())
 	for i := 0; i < book.GetNumberSheets(); i++ {
@@ -202,7 +241,7 @@ func readLegacyXLS(data []byte) ([]spreadsheetSheet, error) {
 			}
 			rows = append(rows, values)
 		}
-		out = append(out, spreadsheetSheet{Name: sheet.GetName(), Rows: rows})
+		out = append(out, spreadsheetSheet{Name: sheet.GetName(), Rows: rows, HiddenRows: hiddenRows[i]})
 	}
 	if e := rejectSensitiveHeaders(out); e != nil {
 		return nil, e
@@ -263,6 +302,9 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 	headerRow := -1
 	var head map[string]int
 	for i, row := range sheet.Rows {
+		if sheet.HiddenRows[i+1] {
+			continue
+		}
 		if svetaRequestHeader(sheet.Name, row) {
 			return parseSvetaRequestSheet(sheet, i)
 		}
@@ -287,11 +329,24 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 		return nil, errors.New("структура выгрузки Светы не распознана")
 	}
 	out := []importedRow{}
+	var declaredTotal, total int64
+	hasTotal, invalidAmount := false, false
 	for rowNo, row := range sheet.Rows[headerRow+1:] {
+		if sheet.HiddenRows[rowNo+headerRow+2] {
+			continue
+		}
 		if emptyRow(row) {
 			continue
 		}
 		if normalizeHeader(valueAt(row, 0)) == "итого" {
+			if valueAt(row, amountCol) != "" {
+				var e error
+				declaredTotal, e = spreadsheetAmount(valueAt(row, amountCol))
+				if e != nil {
+					return nil, errors.New("неверная итоговая сумма в выгрузке Светы")
+				}
+				hasTotal = true
+			}
 			break
 		}
 		x := importedRow{Number: rowNo + headerRow + 2, Sheet: sheet.Name, Raw: row, Order: valueAt(row, order)}
@@ -305,13 +360,21 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 		}
 		if value, e := spreadsheetAmount(valueAt(row, amountCol)); e == nil {
 			x.Amount = value
+			if value > math.MaxInt64-total {
+				return nil, errors.New("сумма реестра слишком велика")
+			}
+			total += value
 		} else {
 			x.Error = "invalid_amount"
+			invalidAmount = true
 		}
 		out = append(out, x)
 	}
 	if len(out) == 0 {
 		return nil, errors.New("выгрузка Светы без строк пополнений")
+	}
+	if hasTotal && !invalidAmount && total != declaredTotal {
+		return nil, errors.New("итоговая сумма в выгрузке Светы не совпадает с суммой видимых строк")
 	}
 	return out, nil
 }
@@ -339,6 +402,9 @@ func parseSvetaRequestSheet(sheet spreadsheetSheet, headerRow int) ([]importedRo
 	var total, declaredTotal int64
 	hasTotal, invalidAmount := false, false
 	for offset, row := range sheet.Rows[headerRow+1:] {
+		if sheet.HiddenRows[offset+headerRow+2] {
+			continue
+		}
 		if emptyRow(row) {
 			continue
 		}
@@ -616,12 +682,17 @@ func rejectSensitiveHeaders(sheets []spreadsheetSheet) error {
 }
 
 func readAndParseRows(parser, extension string, data []byte) ([]importedRow, error) {
-	rows, e := parseRows(parser, extension, data)
-	if e != nil {
-		return nil, e
+	rows, _, e := readAndParseRowsWithExclusions(parser, extension, data)
+	return rows, e
+}
+
+func readAndParseRowsWithExclusions(parser, extension string, data []byte) ([]importedRow, []sourceRowExclusion, error) {
+	rows, excluded, err := parseRowsWithExclusions(parser, extension, data)
+	if err != nil {
+		return nil, nil, err
 	}
 	if len(rows) == 0 {
-		return nil, errors.New("в файле нет строк операций")
+		return nil, nil, errors.New("в файле нет строк операций")
 	}
-	return rows, nil
+	return rows, excluded, nil
 }

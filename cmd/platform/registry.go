@@ -113,7 +113,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, errors.New("расширение файла не соответствует типу разбора этого мерчанта"))
 		return
 	}
-	rows, e := readAndParseRows(parserCode, ext, data)
+	rows, excludedRows, e := readAndParseRowsWithExclusions(parserCode, ext, data)
 	if e != nil {
 		fail(w, 400, e)
 		return
@@ -259,7 +259,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
-	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows), "parser_code": parserCode, "parser_version": parserVersion, "replaces_registry_id": replaces.String}); e != nil {
+	if e = txAudit(tx, u.ID, "web", "registry_upload", "registry", regID, "success", "", M{"sha256": sum, "rows": len(rows), "parser_code": parserCode, "parser_version": parserVersion, "excluded_source_rows": excludedRows, "replaces_registry_id": replaces.String}); e != nil {
 		fail(w, 500, e)
 		return
 	}

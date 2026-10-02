@@ -65,6 +65,7 @@
 - [Окружения](operations/environments.md)
 - [Развёртывание](operations/deployment.md)
 - [Новые форматы реестров Светы: выпуск](operations/sveta-formats-release.md)
+- [Скрытые строки XLS Светы: исправление](operations/sveta-hidden-rows-20261002.md)
 - [Выплаты дивидендов: релиз и восстановление](operations/dividend-payout-release.md)
 - [Комиссия вместе со снятием: релиз и откат](operations/telegram-withdrawal-bank-fee-release.md)
 - [Первая демонстрационная версия](operations/demo-v1.md)
