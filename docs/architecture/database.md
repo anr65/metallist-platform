@@ -115,4 +115,4 @@
 
 ## Миграция 020: версия parser Светы
 
-Подготовлена 02.10.2026; не применена к production. `020_sveta_response_formats.sql` требует версию схемы 18 или 19 и текущую версию parser Светы 2, обновляет только `registry_parser_types.version` до 3 и добавляет версию схемы 20. `source_documents.parser_version` прежних загрузок не меняется. Порядок применения и отката — в [интеграции реестров](../integrations/xlsx-import.md#дополнительные-форматы-светы--02102026).
+Применена к production 02.10.2026; [результат и контрольные показатели](../operations/sveta-formats-release.md). `020_sveta_response_formats.sql` требует версию схемы 18 или 19 и текущую версию parser Светы 2, обновляет только `registry_parser_types.version` до 3 и добавляет версию схемы 20. `source_documents.parser_version` прежних загрузок не меняется. Порядок применения и отката — в [интеграции реестров](../integrations/xlsx-import.md#дополнительные-форматы-светы--02102026).
