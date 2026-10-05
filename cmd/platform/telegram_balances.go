@@ -103,16 +103,13 @@ func (a *App) telegramCardsBalancePage(u telegramActor, chatID, messageID int64,
 }
 
 func (a *App) telegramMyBalance(u telegramActor, chatID, updateID int64) error {
-	var cents int64
-	err := a.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN p.side='debit' THEN p.amount_cents ELSE -p.amount_cents END),0)
+	var cents, reserved int64
+	err := a.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN p.side='debit' THEN p.amount_cents ELSE -p.amount_cents END),0),
+        (SELECT COALESCE(sum(amount_cents),0) FROM cash_reservations WHERE custodian_id=$1 AND released_at IS NULL)
 		FROM postings p JOIN custodians c ON c.id=p.custodian_id
-		WHERE p.custodian_id=$1 AND p.account=CASE WHEN c.kind='chief' THEN '1210' ELSE '1200' END`, u.CustodianID).Scan(&cents)
+		WHERE p.custodian_id=$1 AND p.account=CASE WHEN c.kind='chief' THEN '1210' ELSE '1200' END`, u.CustodianID).Scan(&cents, &reserved)
 	if err != nil {
 		return errors.New("Не удалось получить ваш баланс")
-	}
-	var reserved int64
-	if err = a.db.QueryRow("SELECT COALESCE(sum(amount_cents),0) FROM cash_reservations WHERE custodian_id=$1 AND released_at IS NULL", u.CustodianID).Scan(&reserved); err != nil {
-		return errors.New("Не удалось получить резервы")
 	}
 	a.logAudit(u.ID, "telegram", "own_cash_balance_view", "custodian", u.CustodianID, "success", "", M{"update_id": updateID})
 	return a.telegramReply(chatID, "👤 Ваш баланс наличных\n\n"+telegramMoney(cents)+"\nЗарезервировано: "+telegramMoney(reserved)+"\nДоступно: "+telegramMoney(cents-reserved), nil)
