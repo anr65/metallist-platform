@@ -94,6 +94,7 @@ func (a *App) telegramSetupCommands() {
 			log.Printf("Telegram webhook setup: %v", e)
 		}
 	}
+
 	chatID, ok := telegramAllowedGroup()
 	if !ok {
 		log.Print("Telegram group: TELEGRAM_ALLOWED_CHAT_ID is missing or invalid")
@@ -104,5 +105,8 @@ func (a *App) telegramSetupCommands() {
 	}
 	if e := a.telegramSetGroupCommands(chatID); e != nil {
 		log.Printf("Telegram group commands: %v", e)
+	}
+	if e := a.telegramCall("setMyCommands", M{"scope": M{"type": "all_private_chats"}, "commands": []M{{"command": "start", "description": "Подключить личные подтверждения"}, {"command": "pending", "description": "Ожидающие переводы"}}}); e != nil {
+		log.Printf("Telegram private commands: %v", e)
 	}
 }

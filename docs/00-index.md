@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Подтверждение Telegram-перевода: выпуск](operations/telegram-transfer-confirmation-release.md)
+
 - [Окружения](operations/environments.md)
 - [Развёртывание](operations/deployment.md)
 - [Новые форматы реестров Светы: выпуск](operations/sveta-formats-release.md)

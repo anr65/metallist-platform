@@ -92,6 +92,11 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 		}
 		m["date"] = date
 	}
+	for field := range m {
+		if strings.HasPrefix(field, "telegram_") {
+			delete(m, field)
+		}
+	}
 	m["amount_cents"] = v
 	newID := id()
 	m["draft_id"] = newID
@@ -114,7 +119,9 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
-	query := "SELECT id,kind,payload,status,version,created_at FROM drafts"
+	query := `SELECT id,kind,payload,status,version,created_at,
+ COALESCE((SELECT state FROM transfer_notifications n WHERE n.draft_id=drafts.id AND n.purpose='recipient_request'),''),
+ COALESCE((SELECT last_error FROM transfer_notifications n WHERE n.draft_id=drafts.id AND n.purpose='recipient_request'),'') FROM drafts`
 	var rows *sql.Rows
 	var e error
 	if requested := r.URL.Query().Get("id"); requested != "" {
@@ -211,16 +218,16 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 	defer rows.Close()
 	out := []M{}
 	for rows.Next() {
-		var id, kind, status string
+		var id, kind, status, deliveryState, deliveryError string
 		var payload []byte
 		var version int
 		var at time.Time
-		if e = rows.Scan(&id, &kind, &payload, &status, &version, &at); e != nil {
+		if e = rows.Scan(&id, &kind, &payload, &status, &version, &at, &deliveryState, &deliveryError); e != nil {
 			fail(w, 500, e)
 			return
 		}
 		m, _ := decodeMap(payload)
-		out = append(out, M{"id": id, "kind": kind, "payload": m, "status": status, "version": version, "created_at": at})
+		out = append(out, M{"id": id, "kind": kind, "payload": m, "status": status, "version": version, "created_at": at, "recipient_delivery_state": deliveryState, "recipient_delivery_error": deliveryError})
 	}
 	if e = rows.Err(); e != nil {
 		fail(w, 500, e)
@@ -295,6 +302,18 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	if kind != "handover" && cents != claimed {
 		fail(w, 409, errors.New("подтвердите точную сумму"))
+		return
+	}
+	if kind == "transfer" && p["telegram_recipient_confirmation_required"] == true {
+		if e = a.postConfirmedTransfer(tx, str(m, "id"), p, u, "web", "chief"); e != nil {
+			fail(w, 409, e)
+			return
+		}
+		if e = tx.Commit(); e != nil {
+			fail(w, 409, e)
+			return
+		}
+		respond(w, 200, M{"status": "posted"})
 		return
 	}
 	lines, e := a.eventLines(tx, kind, p, cents)
@@ -374,6 +393,10 @@ func (a *App) rejectDraft(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	if fmt.Sprint(version) != str(m, "version") {
 		fail(w, 409, errors.New("устаревший предпросмотр"))
+		return
+	}
+	if e = releaseTransfer(tx, str(m, "id"), u.ID, "web", "chief", reason); e != nil {
+		fail(w, 500, e)
 		return
 	}
 	if _, e = tx.Exec("UPDATE drafts SET status='rejected' WHERE id=$1", str(m, "id")); e != nil {
@@ -475,7 +498,7 @@ func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64,
 		if e != nil {
 			return nil, e
 		}
-		availableCash, e := balance(tx, fa, "custodian", from)
+		availableCash, e := availableCash(tx, fa, from)
 		if e != nil {
 			return nil, e
 		}
@@ -495,7 +518,7 @@ func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64,
 				return nil, errors.New("перевод доступен только между активными сборщиками")
 			}
 		}
-		availableCash, e := balance(tx, "1200", "custodian", from)
+		availableCash, e := availableCash(tx, "1200", from)
 		if e != nil {
 			return nil, e
 		}

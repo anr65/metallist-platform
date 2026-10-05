@@ -106,6 +106,10 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if chatType == "private" && chat == sender {
+		a.telegramPrivateUpdate(w, x, sender, chat)
+		return
+	}
 	if !telegramGroupAllowed(chat, chatType) {
 		if x.CallbackQuery != nil {
 			_ = a.telegramAnswer(x.CallbackQuery.ID, "Эта группа не подключена")
@@ -275,6 +279,15 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		if err != nil || cents <= 0 {
 			return errors.New("Укажите положительную сумму перевода")
 		}
+		var recipientUser string
+		var recipientTelegram int64
+		if err = a.db.QueryRow("SELECT id,COALESCE(telegram_id,0) FROM users WHERE custodian_id=$1 AND active AND role='collector'", recipients[choice-1].ID).Scan(&recipientUser, &recipientTelegram); err != nil {
+			return errors.New("Получатель недоступен")
+		}
+		payload["telegram_recipient_confirmation_required"] = true
+		payload["telegram_sender_id"] = message.From.ID
+		payload["telegram_recipient_user_id"] = recipientUser
+		payload["telegram_recipient_id"] = recipientTelegram
 		payload["amount"] = rub(cents)
 		payload["amount_cents"] = cents
 		payload["from_custodian_id"] = u.CustodianID
@@ -375,7 +388,7 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	items, itemsErr := telegramExpenseItems(p)
 	if str(p, "to_custodian_id") != "" {
 		heading = "Подтвердите перевод наличных"
-		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents)
+		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения сумма будет зарезервирована до подтверждения получателем или главным администратором."
 	} else if itemsErr == nil && len(items) == 1 && str(items[0], "source_kind") == "cash" {
 		heading = "Подтвердите расход «Зарплата»"
 		details = "Автор: " + actor + "\nИсточник: наличные автора\nСумма: " + telegramMoney(amountCents) + "\nКомментарий: " + str(items[0], "comment")

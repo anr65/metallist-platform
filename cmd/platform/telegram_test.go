@@ -160,6 +160,23 @@ func TestTelegramCollectorTransfer(t *testing.T) {
 	if code := telegramRequest(t, a, telegramButtonUpdate(3105, 555, "confirm", draftID)); code != 200 {
 		t.Fatal("sender retry failed", code)
 	}
+	// Sender confirmation reserves cash without moving it.
+	var held int64
+	if e := a.db.QueryRow("SELECT amount_cents FROM cash_reservations WHERE draft_id=$1 AND released_at IS NULL", draftID).Scan(&held); e != nil || held != 5000 {
+		t.Fatal("reservation missing", held, e)
+	}
+	if e := a.db.QueryRow("SELECT count(*) FROM journal_entries WHERE event_id=$1", draftID).Scan(&entries); e != nil || entries != 0 {
+		t.Fatal("sender posted money", entries, e)
+	}
+	telegramRequest(t, a, telegramMessageUpdateInChat(3190, 556, 556, "private", "/start"))
+	if e := a.deliverTransferNotifications(10); e != nil {
+		t.Fatal(e)
+	}
+	if !fake.contains("Подтвердите фактическое получение наличных") {
+		t.Fatal("private request missing")
+	}
+	telegramRequest(t, a, privateTransferButton(3191, 556, "receive", draftID))
+	telegramRequest(t, a, privateTransferButton(3192, 556, "receive", draftID))
 	tx, e = a.tx()
 	if e != nil {
 		t.Fatal(e)

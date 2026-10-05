@@ -40,6 +40,9 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	if e != nil || storedChat != chat {
 		return "Нет доступа к этой операции", false
 	}
+	if kind == "transfer" {
+		return a.telegramSenderTransfer(tx, u, draftID, status, p, action)
+	}
 	if status == "posted" || status == "rejected" {
 		return "Операция уже обработана", true
 	}

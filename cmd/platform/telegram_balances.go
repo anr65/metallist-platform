@@ -110,6 +110,10 @@ func (a *App) telegramMyBalance(u telegramActor, chatID, updateID int64) error {
 	if err != nil {
 		return errors.New("Не удалось получить ваш баланс")
 	}
+	var reserved int64
+	if err = a.db.QueryRow("SELECT COALESCE(sum(amount_cents),0) FROM cash_reservations WHERE custodian_id=$1 AND released_at IS NULL", u.CustodianID).Scan(&reserved); err != nil {
+		return errors.New("Не удалось получить резервы")
+	}
 	a.logAudit(u.ID, "telegram", "own_cash_balance_view", "custodian", u.CustodianID, "success", "", M{"update_id": updateID})
-	return a.telegramReply(chatID, "👤 Ваш баланс наличных\n\n"+telegramMoney(cents), nil)
+	return a.telegramReply(chatID, "👤 Ваш баланс наличных\n\n"+telegramMoney(cents)+"\nЗарезервировано: "+telegramMoney(reserved)+"\nДоступно: "+telegramMoney(cents-reserved), nil)
 }

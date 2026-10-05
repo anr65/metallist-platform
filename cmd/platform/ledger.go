@@ -52,6 +52,36 @@ func put(tx *sql.Tx, eventType, eventID, key, actor string, occurred, recognized
 	if d != c {
 		return "", fmt.Errorf("unbalanced entry: %d/%d", d, c)
 	}
+	// Reservations are workflow holds, not postings. Protect them at the common
+	// posting boundary, including shortages and reversals.
+	cashDelta := map[string]int64{}
+	for _, p := range lines {
+		if p.Account == "1200" && p.Custodian != "" {
+			if p.Side == "debit" {
+				cashDelta[p.Custodian] += p.Amount
+			} else {
+				cashDelta[p.Custodian] -= p.Amount
+			}
+		}
+	}
+	for custodian, delta := range cashDelta {
+		if delta >= 0 {
+			continue
+		}
+		reserved, err := reservedCash(tx, custodian)
+		if err != nil {
+			return "", err
+		}
+		if reserved > 0 {
+			cash, err := balance(tx, "1200", "custodian", custodian)
+			if err != nil {
+				return "", err
+			}
+			if cash < reserved || cash-reserved < -delta {
+				return "", errors.New("наличные зарезервированы для ожидающего перевода")
+			}
+		}
+	}
 	entry := id()
 	_, e := tx.Exec("INSERT INTO journal_entries(id,event_type,event_id,occurred_at,recognition_at,actor_id,reversal_of,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)", entry, eventType, eventID, occurred, recognized, actor, nilID(reversal), key)
 	if e != nil {
@@ -151,7 +181,7 @@ func available(tx *sql.Tx, p Posting) (int64, error) {
 	if p.Card != "" {
 		return balance(tx, p.Account, "card", p.Card)
 	}
-	return balance(tx, p.Account, "custodian", p.Custodian)
+	return availableCash(tx, p.Account, p.Custodian)
 }
 func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != "GET" {
