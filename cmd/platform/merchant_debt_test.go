@@ -11,8 +11,8 @@ import (
 func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 	a := testApp(t)
 	chief, merchant, _, card := fixtures(t, a)
-	zero, inactive := id(), id()
-	if _, err := a.db.Exec("INSERT INTO merchants(id,code,name,active) VALUES($1,'ZERO','Без операций',true),($2,'OLD','Отключённый',false)", zero, inactive); err != nil {
+	zero, inactive, overpaid := id(), id(), id()
+	if _, err := a.db.Exec("INSERT INTO merchants(id,code,name,active) VALUES($1,'ZERO','Без операций',true),($2,'OLD','Отключённый',false),($3,'OVER','Переплата',true)", zero, inactive, overpaid); err != nil {
 		t.Fatal(err)
 	}
 	post := func(key string, lines []Posting) {
@@ -34,6 +34,18 @@ func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 	post("correction", []Posting{{Account: "2100", Side: "debit", Amount: 101, Merchant: merchant}, {Account: "4100", Side: "credit", Amount: 101, Merchant: merchant}})
 	post("reversal", []Posting{{Account: "2100", Side: "credit", Amount: 101, Merchant: merchant}, {Account: "4100", Side: "debit", Amount: 101, Merchant: merchant}})
 	post("inactive-funding", []Posting{{Account: "1100", Side: "debit", Amount: 999, Card: card}, {Account: "2100", Side: "credit", Amount: 999, Merchant: inactive}})
+	// Reproduce a real confirmed 1.9m repayment against a 1.4m payable.
+	post("overpaid-funding", []Posting{{Account: "1100", Side: "debit", Amount: 190000000, Card: card}, {Account: "2100", Side: "credit", Amount: 140000000, Merchant: overpaid}, {Account: "3100", Side: "credit", Amount: 50000000}})
+	code, draft := req(t, a.draft, chief, M{"kind": "repayment", "merchant_id": overpaid, "source_kind": "card", "source_id": card, "amount": "1900000.00"})
+	if code != 201 {
+		t.Fatal(code, draft)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		code, out := req(t, a.confirmDraft, chief, M{"id": draft["id"], "version": "1", "confirm_amount": "1900000.00"})
+		if code != 200 {
+			t.Fatal(code, out)
+		}
+	}
 	// A proposed repayment does not affect the published balance.
 	if code, out := req(t, a.draft, chief, M{"kind": "repayment", "merchant_id": merchant, "amount": "10.00", "card_id": card}); code != 201 {
 		t.Fatal(code, out)
@@ -53,7 +65,7 @@ func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 		}
 		return out.Merchants
 	}
-	expected := map[string]string{merchant: "71.01", zero: "0.00", inactive: "9.99"}
+	expected := map[string]string{merchant: "71.01", zero: "0.00", inactive: "9.99", overpaid: "0.00"}
 	var total int64
 	for _, m := range read("chief") {
 		merchantID := m["id"].(string)
@@ -65,7 +77,14 @@ func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 			t.Fatal(err)
 		}
 		cents, err := balance(tx, "2100", "merchant", merchantID)
+		receivable, recErr := balance(tx, "1300", "merchant", merchantID)
 		tx.Rollback()
+		if recErr != nil || m["receivable"] != rub(receivable) || m["position"] != rub(cents-receivable) {
+			t.Fatal("position disagrees with ledger", m, recErr)
+		}
+		if merchantID == overpaid && (m["receivable"] != "500000.00" || m["position"] != "-500000.00") {
+			t.Fatal("overpayment missing", m)
+		}
 		if err != nil || m["payable"] != rub(cents) {
 			t.Fatal("debt disagrees with ledger", m, err)
 		}
@@ -76,8 +95,10 @@ func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 	}
 	for _, role := range []string{"operator", "accountant", "auditor", "sysadmin"} {
 		for _, m := range read(role) {
-			if _, exists := m["payable"]; exists {
-				t.Fatal("debt exposed to", role)
+			for _, field := range []string{"payable", "receivable", "position"} {
+				if _, exists := m[field]; exists {
+					t.Fatal(field, "exposed to", role)
+				}
 			}
 		}
 	}

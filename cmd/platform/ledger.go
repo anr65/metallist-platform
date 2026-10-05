@@ -168,9 +168,13 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 	// Only the chief can open the merchant directory. Keep debt out of catalogs
 	// used by operators and other roles; derive it from the same ledger as reports.
 	if u.Role == "chief" {
-		specs["merchants"] = `SELECT m.*,COALESCE(d.cents,0)::bigint AS payable_cents FROM (` + specs["merchants"] + `) m
-			LEFT JOIN (SELECT merchant_id,SUM(CASE WHEN side='credit' THEN amount_cents ELSE -amount_cents END) AS cents
-			FROM postings WHERE account='2100' GROUP BY merchant_id) d ON d.merchant_id=m.id ORDER BY m.name`
+		specs["merchants"] = `SELECT m.*,COALESCE(d.payable,0)::bigint AS payable_cents,
+            COALESCE(d.receivable,0)::bigint AS receivable_cents,
+            (COALESCE(d.payable,0)-COALESCE(d.receivable,0))::bigint AS position_cents FROM (` + specs["merchants"] + `) m
+			LEFT JOIN (SELECT merchant_id,
+            SUM(CASE WHEN account='2100' THEN CASE WHEN side='credit' THEN amount_cents ELSE -amount_cents END ELSE 0 END) AS payable,
+            SUM(CASE WHEN account='1300' THEN CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END ELSE 0 END) AS receivable
+            FROM postings WHERE account IN ('2100','1300') GROUP BY merchant_id) d ON d.merchant_id=m.id ORDER BY m.name`
 	}
 	for name, q := range specs {
 		if u.Role == "collector" && name != "cards" {
@@ -213,9 +217,13 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 					m[c] = v
 				}
 			}
-			if cents, ok := m["payable_cents"].(int64); name == "merchants" && ok {
-				m["payable"] = rub(cents)
-				delete(m, "payable_cents")
+			if name == "merchants" && u.Role == "chief" {
+				for _, field := range []string{"payable", "receivable", "position"} {
+					if cents, ok := m[field+"_cents"].(int64); ok {
+						m[field] = rub(cents)
+						delete(m, field+"_cents")
+					}
+				}
 			}
 			if name == "cards" || name == "request_cards" {
 				cardID, _ := m["id"].(string)
