@@ -112,14 +112,14 @@ func TestTransferReservationBlocksAllCashOutflows(t *testing.T) {
 		t.Fatal("available", available, err)
 	}
 	// Chief can accept instead of the recipient, even before private /start.
-	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "2", "confirm_amount": "70,00"}); code != 409 {
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "70,00"}); code != 409 {
 		t.Fatal("partial acceptance allowed", code)
 	}
-	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "2", "confirm_amount": "70,01"}); code != 200 {
+	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "70,01"}); code != 200 {
 		t.Fatal("chief acceptance", code, out)
 	}
 	assertTransferState(t, a, draftID, "posted", 0, 1)
-	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "2", "confirm_amount": "70,01"}); code != 200 {
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "70,01"}); code != 200 {
 		t.Fatal("chief retry", code)
 	}
 	tx, err = a.tx()
@@ -164,7 +164,7 @@ func TestTransferCancellationReleasesReservation(t *testing.T) {
 				telegramRequest(t, a, telegramMessageUpdateInChat(13002, 556, 556, "private", "/start"))
 				a.telegramRecipientTransfer(recipient, 556, 556, "decline:"+draftID)
 			case "chief":
-				if code, out := req(t, a.rejectDraft, chief, M{"id": draftID, "version": "2", "reason": "Отмена"}); code != 200 {
+				if code, out := req(t, a.rejectDraft, chief, M{"id": draftID, "version": "1", "reason": "Отмена"}); code != 200 {
 					t.Fatal(code, out)
 				}
 			}
@@ -196,7 +196,7 @@ func TestTransferPrivateAuthorizationAndBindingChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.telegramRecipientTransfer(recipient, 557, 557, "receive:"+draftID)
-	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "2", "confirm_amount": "50.00"}); code != 409 {
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "50.00"}); code != 409 {
 		t.Fatal("chief accepted changed binding", code)
 	}
 	assertTransferState(t, a, draftID, "draft", 1, 0)
@@ -366,7 +366,9 @@ func TestTransferConfirmationWithProductionStylePrivileges(t *testing.T) {
  GRANT USAGE ON SCHEMA public TO metallist_transfer_limited_test;
  GRANT SELECT ON users,custodians TO metallist_transfer_limited_test;
  GRANT UPDATE(telegram_id,custodian_id) ON users TO metallist_transfer_limited_test;
- GRANT SELECT,INSERT,UPDATE ON drafts,cash_reservations,transfer_notifications,telegram_private_chats TO metallist_transfer_limited_test;
+ GRANT SELECT,INSERT ON drafts TO metallist_transfer_limited_test;
+ GRANT UPDATE(payload,status,confirmed_by,confirmed_at,confirmed_amount_cents) ON drafts TO metallist_transfer_limited_test;
+ GRANT SELECT,INSERT,UPDATE ON cash_reservations,transfer_notifications,telegram_private_chats TO metallist_transfer_limited_test;
  GRANT SELECT,INSERT ON journal_entries,postings,audit_events TO metallist_transfer_limited_test;`); err != nil {
 		t.Fatal(err)
 	}
@@ -384,8 +386,8 @@ func TestTransferConfirmationWithProductionStylePrivileges(t *testing.T) {
 	})
 	limited := &App{db: db, storage: a.storage, location: a.location}
 	var name, currentRole string
-	var canUpdateCustodian bool
-	if err = db.QueryRow("SELECT current_database(),current_user,has_table_privilege(current_user,'custodians','UPDATE')").Scan(&name, &currentRole, &canUpdateCustodian); err != nil || name != "metallist_platform_test" || currentRole != role || canUpdateCustodian {
+	var canUpdateCustodian, canUpdateVersion bool
+	if err = db.QueryRow("SELECT current_database(),current_user,has_table_privilege(current_user,'custodians','UPDATE'),has_column_privilege(current_user,'drafts','version','UPDATE')").Scan(&name, &currentRole, &canUpdateCustodian, &canUpdateVersion); err != nil || name != "metallist_platform_test" || currentRole != role || canUpdateCustodian || canUpdateVersion {
 		t.Fatal("unsafe or non-representative restricted role", name, currentRole, canUpdateCustodian, err)
 	}
 	draftID := newTransfer(t, a, 20001, "50,00")
@@ -398,6 +400,20 @@ func TestTransferConfirmationWithProductionStylePrivileges(t *testing.T) {
 	assertTransferState(t, a, draftID, "posted", 0, 1)
 	if message != "Получение подтверждено. Перевод проведён" {
 		t.Fatal(message)
+	}
+	for i, cancellation := range []string{"sender", "recipient"} {
+		cancelID := newTransfer(t, a, int64(20003+i), "10,00")
+		confirmTransferSender(t, limited, sender, cancelID)
+		if cancellation == "sender" {
+			limited.telegramCallback(sender, telegramTestGroup, 500, "reject:"+cancelID)
+		} else {
+			limited.telegramRecipientTransfer(recipient, 556, 556, "decline:"+cancelID)
+		}
+		assertTransferState(t, a, cancelID, "rejected", 0, 0)
+	}
+	var version int
+	if err = a.db.QueryRow("SELECT version FROM drafts WHERE id=$1", draftID).Scan(&version); err != nil || version != 1 {
+		t.Fatal("confirmation changed draft version", version, err)
 	}
 	// A database permission failure must not masquerade as a changed binding.
 	if _, err = a.db.Exec("REVOKE SELECT ON custodians FROM " + role); err != nil {

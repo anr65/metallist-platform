@@ -109,7 +109,7 @@ func (a *App) telegramSenderTransfer(tx *sql.Tx, u telegramActor, draftID, statu
 	p["telegram_sender_confirmed"] = true
 	p["telegram_recipient_confirmation_required"] = true
 	p["telegram_sender_confirmed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.Exec("UPDATE drafts SET payload=$1,version=version+1 WHERE id=$2", encode(p), draftID); err != nil {
+	if _, err = tx.Exec("UPDATE drafts SET payload=$1 WHERE id=$2", encode(p), draftID); err != nil {
 		return "Не удалось сохранить подтверждение", false
 	}
 	for _, purpose := range []string{"recipient_request", "group_waiting"} {
@@ -160,7 +160,7 @@ func (a *App) postConfirmedTransfer(tx *sql.Tx, draftID string, p M, actor User,
 		p["telegram_recipient_confirmed"] = true
 	}
 	p["telegram_transfer_confirmed_at"] = now.UTC().Format(time.RFC3339Nano)
-	if _, err = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4,version=version+1 WHERE id=$5", encode(p), actor.ID, now, cents, draftID); err != nil {
+	if _, err = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4 WHERE id=$5", encode(p), actor.ID, now, cents, draftID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("UPDATE transfer_notifications SET state='cancelled' WHERE draft_id=$1 AND purpose IN ('recipient_request','group_waiting')", draftID); err != nil {
@@ -190,7 +190,7 @@ func releaseTransfer(tx *sql.Tx, draftID, actor, channel, rejectedBy, reason str
 		return err
 	}
 	p["telegram_transfer_rejected_by"] = rejectedBy
-	if _, err = tx.Exec("UPDATE drafts SET payload=$1,version=version+1 WHERE id=$2", encode(p), draftID); err != nil {
+	if _, err = tx.Exec("UPDATE drafts SET payload=$1 WHERE id=$2", encode(p), draftID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("UPDATE transfer_notifications SET state='cancelled' WHERE draft_id=$1 AND purpose IN ('recipient_request','group_waiting')", draftID); err != nil {
