@@ -119,7 +119,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && !telegramSensitiveNumber.MatchString(x.Message.Text) {
+	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && telegramMessageCommand(x.Message.Text) != "зп" && !telegramSensitiveNumber.MatchString(x.Message.Text) {
 		var waiting bool
 		e = a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM telegram_dialogs d JOIN users u ON u.id=d.user_id WHERE u.telegram_id=$1 AND u.active AND d.expires_at>now())", sender).Scan(&waiting)
 		if e != nil {
@@ -210,9 +210,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Чтобы выйти из ввода, отправьте /cancel.", nil)
+		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
 	if command == "cards_balance" {
 		return a.telegramCardsBalance(u, message.Chat.ID, updateID)
@@ -221,7 +221,10 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return a.telegramMyBalance(u, message.Chat.ID, updateID)
 	}
 	args := ""
-	if strings.HasPrefix(words[0], "/") {
+	if command == "зп" {
+		command = "salary"
+		args = strings.TrimSpace(text[len(words[0]):])
+	} else if strings.HasPrefix(words[0], "/") {
 		if command != "withdraw" && command != "expense" && command != "transfer" {
 			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw, /transfer и /cancel")
 		}
@@ -237,6 +240,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "transfer" && u.Role != "collector" {
 		return errors.New("Перевод доступен только сборщику")
+	}
+	if command == "salary" && args == "" {
+		return errors.New("Формат: зп 50000 комментарий")
 	}
 	if args == "" {
 		_, e := a.db.Exec("INSERT INTO telegram_dialogs(user_id,command,expires_at) VALUES($1,$2,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET command=EXCLUDED.command,expires_at=EXCLUDED.expires_at,updated_at=now()", u.ID, command)
@@ -274,6 +280,15 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		payload["from_custodian_id"] = u.CustodianID
 		payload["to_custodian_id"] = recipients[choice-1].ID
 		payload["to_custodian_name"] = recipients[choice-1].Name
+	} else if command == "salary" {
+		item, err := telegramSalary(args, u.CustodianID)
+		if err != nil {
+			return err
+		}
+		for key, value := range item {
+			payload[key] = value
+		}
+		payload["expense_items"] = []M{item}
 	} else if command == "withdraw" {
 		intents, e := a.telegramParseWithdrawals(u, args)
 		if e != nil {
@@ -317,7 +332,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	_, _ = a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
 	auditDetail := M{"update_id": updateID}
-	if command == "expense" {
+	if commandKind(command) == "expense" {
 		items, _ := telegramExpenseItems(payload)
 		auditDetail["item_count"] = len(items)
 	} else if command == "withdraw" {
@@ -361,6 +376,9 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	if str(p, "to_custodian_id") != "" {
 		heading = "Подтвердите перевод наличных"
 		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents)
+	} else if itemsErr == nil && len(items) == 1 && str(items[0], "source_kind") == "cash" {
+		heading = "Подтвердите расход «Зарплата»"
+		details = "Автор: " + actor + "\nИсточник: наличные автора\nСумма: " + telegramMoney(amountCents) + "\nКомментарий: " + str(items[0], "comment")
 	} else if itemsErr == nil && len(items) == 1 {
 		itemAmount, _ := telegramInt(items[0]["amount_cents"])
 		heading = "Подтвердите расход по карте"

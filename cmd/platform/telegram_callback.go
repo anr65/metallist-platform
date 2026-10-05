@@ -212,6 +212,22 @@ func (a *App) telegramValidateConfirmation(tx *sql.Tx, u telegramActor, kind str
 	if e != nil {
 		return errors.New("Список расходов повреждён")
 	}
+	if len(items) == 1 && str(items[0], "source_kind") == "cash" {
+		item := items[0]
+		if str(item, "category") != "salary" || str(item, "source_id") != currentCustodian || str(item, "card_id") != "" || strings.TrimSpace(str(item, "comment")) == "" {
+			return errors.New("Источник или категория зарплаты изменились")
+		}
+		var custodianKind string
+		if e = tx.QueryRow("SELECT kind FROM custodians WHERE id=$1 AND active", currentCustodian).Scan(&custodianKind); e != nil || custodianKind != role {
+			return errors.New("Ответственный за наличные недоступен")
+		}
+		itemAmount, err := telegramInt(item["amount_cents"])
+		claimed, claimErr := telegramInt(p["amount_cents"])
+		if err != nil || claimErr != nil || itemAmount <= 0 || itemAmount != claimed {
+			return errors.New("Сумма зарплаты изменилась")
+		}
+		return nil
+	}
 	var total int64
 	for _, item := range items {
 		cardID := str(item, "card_id")

@@ -242,3 +242,17 @@ func telegramMoney(cents int64) string {
 	}
 	return fmt.Sprintf("%s,%02d ₽", strings.Join(groups, " "), cents%100)
 }
+
+// Salary uses the author's cash, never a card or a caller-supplied custodian.
+func telegramSalary(args, custodian string) (M, error) {
+	words := strings.Fields(args)
+	if len(words) < 2 {
+		return nil, errors.New("Формат: зп 50000 комментарий")
+	}
+	cents, err := telegramAmount(words[0])
+	if err != nil || cents <= 0 {
+		return nil, errors.New("Укажите положительную сумму зарплаты")
+	}
+	comment := strings.TrimSpace(strings.TrimSpace(args)[len(words[0]):])
+	return M{"source_kind": "cash", "source_id": custodian, "category": "salary", "amount": rub(cents), "amount_cents": cents, "comment": comment}, nil
+}
