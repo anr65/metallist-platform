@@ -379,10 +379,10 @@ func parseSvetaSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 	return out, nil
 }
 
-// The merchant fills column F of the exported request, sometimes without a header.
+// The merchant fills column F or G of the exported request, sometimes without a header.
 // Only the complete known layout permits this positional amount mapping.
 func svetaRequestHeader(sheetName string, row []string) bool {
-	if sheetName != "Карты к оплате" || len(row) < 5 || len(row) > 6 {
+	if sheetName != "Карты к оплате" || len(row) < 5 || len(row) > 7 {
 		return false
 	}
 	for i, title := range []string{"№", "НОМЕР КАРТЫ", "ФИО", "НОМЕР ТЕЛЕФОНА", "БАНК"} {
@@ -390,7 +390,33 @@ func svetaRequestHeader(sheetName string, row []string) bool {
 			return false
 		}
 	}
+	if len(row) == 7 {
+		return valueAt(row, 5) == "" && (valueAt(row, 6) == "" || normalizeHeader(valueAt(row, 6)) == "сумма")
+	}
 	return valueAt(row, 5) == "" || normalizeHeader(valueAt(row, 5)) == "сумма"
+}
+
+// Select one amount column for the entire visible response, including its footer.
+// Never guess between two populated columns or ignore extra source data.
+func svetaRequestAmountColumn(sheet spreadsheetSheet, headerRow int) (int, error) {
+	filledF, filledG := false, false
+	for i, row := range sheet.Rows[headerRow:] {
+		if sheet.HiddenRows[headerRow+i+1] {
+			continue
+		}
+		if len(row) > 7 && !emptyRow(row[7:]) {
+			return 0, errors.New("неподдержанные колонки в ответе Светы")
+		}
+		filledF = filledF || valueAt(row, 5) != ""
+		filledG = filledG || valueAt(row, 6) != ""
+	}
+	if filledF && filledG {
+		return 0, errors.New("суммы в ответе Светы должны быть в одной колонке: F или G")
+	}
+	if filledG {
+		return 6, nil
+	}
+	return 5, nil
 }
 
 func normalizeSvetaCard(value string) string {
@@ -398,6 +424,10 @@ func normalizeSvetaCard(value string) string {
 }
 
 func parseSvetaRequestSheet(sheet spreadsheetSheet, headerRow int) ([]importedRow, error) {
+	amountCol, err := svetaRequestAmountColumn(sheet, headerRow)
+	if err != nil {
+		return nil, err
+	}
 	out := []importedRow{}
 	var total, declaredTotal int64
 	hasTotal, invalidAmount := false, false
@@ -416,7 +446,7 @@ func parseSvetaRequestSheet(sheet spreadsheetSheet, headerRow int) ([]importedRo
 				return nil, errors.New("в ответе Светы несколько итоговых строк")
 			}
 			var e error
-			declaredTotal, e = svetaResponseAmount(valueAt(row, 5))
+			declaredTotal, e = svetaResponseAmount(valueAt(row, amountCol))
 			if e != nil {
 				return nil, errors.New("неверная итоговая сумма в ответе Светы")
 			}
@@ -429,7 +459,7 @@ func parseSvetaRequestSheet(sheet spreadsheetSheet, headerRow int) ([]importedRo
 			x.Error = "missing_card_reference"
 		}
 		// Ruble suffix is accepted only for this documented response format.
-		if v, e := svetaResponseAmount(valueAt(row, 5)); e == nil {
+		if v, e := svetaResponseAmount(valueAt(row, amountCol)); e == nil {
 			x.Amount = v
 			if v > math.MaxInt64-total {
 				return nil, errors.New("сумма реестра слишком велика")

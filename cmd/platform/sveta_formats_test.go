@@ -127,6 +127,78 @@ func TestSvetaResponseValidation(t *testing.T) {
 	}
 }
 
+func svetaResponseColumnGFixture() spreadsheetSheet {
+	sheet := svetaResponseFixture()
+	for i, row := range sheet.Rows {
+		if len(row) == 6 {
+			sheet.Rows[i] = append(row[:5:5], "", row[5])
+		}
+	}
+	return sheet
+}
+
+func TestSvetaResponseColumnG(t *testing.T) {
+	for _, withHeader := range []bool{false, true} {
+		sheet := svetaResponseColumnGFixture()
+		if withHeader {
+			sheet.Rows[3] = append(sheet.Rows[3], "", "Сумма")
+		}
+		f := excelize.NewFile()
+		f.SetSheetName("Sheet1", sheet.Name)
+		for i, row := range sheet.Rows {
+			for j, value := range row {
+				cell, _ := excelize.CoordinatesToCellName(j+1, i+1)
+				if err := f.SetCellStr(sheet.Name, cell, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		data, err := f.WriteToBuffer()
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := parseRows("sveta_cards_xls_v1", ".xlsx", data.Bytes())
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("column G rows=%d err=%v", len(rows), err)
+		}
+		for i, want := range []int64{24234000, 123456} {
+			if rows[i].Amount != want || rows[i].Error != "" || rows[i].Number != i+5 || !reflect.DeepEqual(rows[i].Raw, sheet.Rows[i+4]) {
+				t.Fatal("column G mapping or evidence changed")
+			}
+		}
+	}
+	for _, mutate := range []func(*spreadsheetSheet){
+		func(s *spreadsheetSheet) { s.Rows[4][5] = "242340" },
+		func(s *spreadsheetSheet) { s.Rows[5][5], s.Rows[5][6] = s.Rows[5][6], "" },
+		func(s *spreadsheetSheet) { s.Rows[7][5], s.Rows[7][6] = s.Rows[7][6], "" },
+		func(s *spreadsheetSheet) { s.Rows[3] = append(s.Rows[3], "Сумма") },
+		func(s *spreadsheetSheet) { s.Rows[4] = append(s.Rows[4], "123") },
+		func(s *spreadsheetSheet) { s.Rows[7][6] = "1 ₽" },
+		func(s *spreadsheetSheet) { s.Rows[7][6] = "" },
+	} {
+		sheet := svetaResponseColumnGFixture()
+		mutate(&sheet)
+		if _, err := parseSvetaSheet(sheet); err == nil {
+			t.Fatal("ambiguous columns or invalid G total accepted")
+		}
+	}
+	sheet := svetaResponseColumnGFixture()
+	sheet.Rows[4][6] = "1.0011 ₽"
+	rows, err := parseSvetaSheet(sheet)
+	if err != nil || rows[0].Error != "invalid_amount" {
+		t.Fatal("invalid G payment not blocked")
+	}
+	sheet = svetaResponseColumnGFixture()
+	sheet.HiddenRows = map[int]bool{5: true}
+	sheet.Rows[4][5] = "242340"
+	sheet.Rows[7][6] = "1 234,56 ₽"
+	rows, err = parseSvetaSheet(sheet)
+	if err != nil || len(rows) != 1 || rows[0].Number != 6 || rows[0].Amount != 123456 {
+		t.Fatal("hidden row affected G selection or total")
+	}
+}
+
 func TestSvetaSpacedLegacyCards(t *testing.T) {
 	sheet := spreadsheetSheet{Name: "Лист_1", Rows: [][]string{
 		{}, {}, {}, {"№ п/п", "Номер вх.", "Сумма", "По номеру карты"},
@@ -150,6 +222,7 @@ func TestSvetaNewSourceSamples(t *testing.T) {
 	}{
 		{"METALLIST_SAMPLE_SVETA_SEP30", ".xls", 24, 592038700},
 		{"METALLIST_SAMPLE_SVETA_OCT01", ".xlsx", 24, 591340600},
+		{"METALLIST_SAMPLE_SVETA_OCT02", ".xlsx", 24, 590477000},
 	} {
 		path := os.Getenv(sample.env)
 		if path == "" {
