@@ -1,10 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -351,5 +355,62 @@ func TestTransferReservationBlocksTelegramSalary(t *testing.T) {
 	telegramRequest(t, a, telegramButtonUpdate(19004, 555, "confirm", salaryID))
 	if err := a.db.QueryRow("SELECT status FROM drafts WHERE id=$1", salaryID).Scan(&status); err != nil || status != "posted" {
 		t.Fatal("released cash not spendable", status, err)
+	}
+}
+
+func TestTransferConfirmationWithProductionStylePrivileges(t *testing.T) {
+	a, _, sender, recipient, _ := transferFixture(t)
+	// testApp has already proved effective disposable database/host/user identity.
+	const role = "metallist_transfer_limited_test"
+	if _, err := a.db.Exec(`CREATE ROLE metallist_transfer_limited_test;
+ GRANT USAGE ON SCHEMA public TO metallist_transfer_limited_test;
+ GRANT SELECT ON users,custodians TO metallist_transfer_limited_test;
+ GRANT UPDATE(telegram_id,custodian_id) ON users TO metallist_transfer_limited_test;
+ GRANT SELECT,INSERT,UPDATE ON drafts,cash_reservations,transfer_notifications,telegram_private_chats TO metallist_transfer_limited_test;
+ GRANT SELECT,INSERT ON journal_entries,postings,audit_events TO metallist_transfer_limited_test;`); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgx.ParseConfig(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RuntimeParams["role"] = role
+	db := sql.OpenDB(stdlib.GetConnector(*cfg))
+	t.Cleanup(func() {
+		db.Close()
+		if _, err := a.db.Exec("DROP OWNED BY " + role + "; DROP ROLE " + role); err != nil {
+			t.Error(err)
+		}
+	})
+	limited := &App{db: db, storage: a.storage, location: a.location}
+	var name, currentRole string
+	var canUpdateCustodian bool
+	if err = db.QueryRow("SELECT current_database(),current_user,has_table_privilege(current_user,'custodians','UPDATE')").Scan(&name, &currentRole, &canUpdateCustodian); err != nil || name != "metallist_platform_test" || currentRole != role || canUpdateCustodian {
+		t.Fatal("unsafe or non-representative restricted role", name, currentRole, canUpdateCustodian, err)
+	}
+	draftID := newTransfer(t, a, 20001, "50,00")
+	confirmTransferSender(t, limited, sender, draftID)
+	assertTransferState(t, a, draftID, "draft", 1, 0)
+	if code := telegramRequest(t, limited, telegramMessageUpdateInChat(20002, 556, 556, "private", "/start")); code != 200 {
+		t.Fatal("limited-role /start", code)
+	}
+	message, _ := limited.telegramRecipientTransfer(recipient, 556, 556, "receive:"+draftID)
+	assertTransferState(t, a, draftID, "posted", 0, 1)
+	if message != "Получение подтверждено. Перевод проведён" {
+		t.Fatal(message)
+	}
+	// A database permission failure must not masquerade as a changed binding.
+	if _, err = a.db.Exec("REVOKE SELECT ON custodians FROM " + role); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := limited.tx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := M{"telegram_sender_user_id": sender.ID, "from_custodian_id": sender.CustodianID, "telegram_sender_id": int64(555), "telegram_recipient_user_id": recipient.ID, "to_custodian_id": recipient.CustodianID, "telegram_recipient_id": int64(556)}
+	err = validateTransferParties(tx, p)
+	tx.Rollback()
+	if err == nil || publicError(http.StatusConflict, err).code != "DATABASE_ERROR" {
+		t.Fatal("database failure misclassified", err)
 	}
 }

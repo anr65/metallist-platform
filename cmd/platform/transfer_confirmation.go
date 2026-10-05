@@ -35,6 +35,8 @@ func queueTransferNotification(tx *sql.Tx, draftID, purpose string) error {
 }
 
 // Validate saved identities, never usernames or arbitrary chat IDs.
+// Lock users only: the production role can update user binding columns,
+// but custodians are read-only. Serializable reads still validate custodians.
 func validateTransferParties(tx *sql.Tx, p M) error {
 	for _, party := range []struct{ user, cust, telegram string }{
 		{"telegram_sender_user_id", "from_custodian_id", "telegram_sender_id"},
@@ -42,9 +44,12 @@ func validateTransferParties(tx *sql.Tx, p M) error {
 	} {
 		var telegramID int64
 		err := tx.QueryRow(`SELECT COALESCE(u.telegram_id,0) FROM users u JOIN custodians c ON c.id=u.custodian_id
-   WHERE u.id=$1 AND u.custodian_id=$2 AND u.active AND u.role='collector' AND c.active AND c.kind='collector' FOR SHARE OF u,c`, str(p, party.user), str(p, party.cust)).Scan(&telegramID)
-		if err != nil {
+   WHERE u.id=$1 AND u.custodian_id=$2 AND u.active AND u.role='collector' AND c.active AND c.kind='collector' FOR SHARE OF u`, str(p, party.user), str(p, party.cust)).Scan(&telegramID)
+		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("Связь участника перевода изменилась; отмените черновик и создайте новый")
+		}
+		if err != nil {
+			return err
 		}
 		saved, err := telegramInt(p[party.telegram])
 		if err != nil || (saved > 0 && telegramID != saved) {
@@ -82,7 +87,7 @@ func (a *App) telegramSenderTransfer(tx *sql.Tx, u telegramActor, draftID, statu
 	// Required also for legacy Telegram drafts upgraded by schema 023.
 	p["telegram_sender_user_id"] = u.ID
 	if err := validateTransferParties(tx, p); err != nil {
-		return err.Error(), false
+		return publicError(http.StatusConflict, err).message, false
 	}
 	if err := a.telegramValidateConfirmation(tx, u, "transfer", p); err != nil {
 		return err.Error(), false
