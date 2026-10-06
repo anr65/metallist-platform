@@ -162,7 +162,17 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if x.CallbackQuery != nil {
-		message, remove := a.telegramCallback(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
+		var message string
+		var remove bool
+		if strings.HasPrefix(x.CallbackQuery.Data, "tr:") || strings.HasPrefix(x.CallbackQuery.Data, "ta:") {
+			message, remove = a.telegramTransferInputCallback(u, chat, x.CallbackQuery.Message.MessageID, x.UpdateID, x.CallbackQuery.Data)
+			if message == errTelegramDelivery.Error() {
+				http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			message, remove = a.telegramCallback(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
+		}
 		if e := a.telegramAnswer(x.CallbackQuery.ID, message); e != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return
@@ -193,7 +203,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, updateID int64) error {
+func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, updateID int64, expectedTransferToken ...string) error {
 	text := strings.TrimSpace(message.Text)
 	if text == "" {
 		return nil
@@ -249,7 +259,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return errors.New("Формат: зп 50000 комментарий")
 	}
 	if args == "" {
-		_, e := a.db.Exec("INSERT INTO telegram_dialogs(user_id,command,expires_at) VALUES($1,$2,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET command=EXCLUDED.command,expires_at=EXCLUDED.expires_at,updated_at=now()", u.ID, command)
+		_, e := a.db.Exec("INSERT INTO telegram_dialogs(user_id,command,expires_at) VALUES($1,$2,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET command=EXCLUDED.command,expires_at=EXCLUDED.expires_at,updated_at=now(),context='{}'::jsonb", u.ID, command)
 		if e != nil {
 			return errors.New("Не удалось начать ввод")
 		}
@@ -261,27 +271,52 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		}
 		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
+	transferToken := ""
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "transfer" {
+		var recipient telegramTransferRecipient
 		fields := strings.Fields(args)
-		if len(fields) != 2 {
-			return errors.New("Укажите номер получателя и сумму: 1 1000,00. Список: /transfer")
+		amount := ""
+		if !strings.HasPrefix(words[0], "/") {
+			if len(fields) != 1 {
+				return errors.New("Отправьте только сумму перевода, например: 1000,00")
+			}
+			dialog, err := a.telegramTransferDialog(u)
+			if err != nil || dialog.Recipient.ID == "" {
+				return errors.New("Сначала выберите получателя кнопкой /transfer")
+			}
+			if len(expectedTransferToken) > 0 && expectedTransferToken[0] != dialog.Token {
+				return errors.New("Ввод уже изменился. Повторите /transfer")
+			}
+			transferToken = dialog.Token
+			recipient = dialog.Recipient
+			amount = fields[0]
+		} else {
+			if len(fields) != 2 {
+				return errors.New("Выберите получателя кнопкой /transfer и отправьте сумму")
+			}
+			choice, err := strconv.Atoi(fields[0])
+			if err != nil || choice < 1 {
+				return errors.New("Выберите номер получателя из списка /transfer")
+			}
+			recipients, err := a.telegramTransferRecipients(u)
+			if err != nil || choice > len(recipients) {
+				return errors.New("Получатель недоступен. Повторите /transfer")
+			}
+			recipient = recipients[choice-1]
+			amount = fields[1]
 		}
-		choice, err := strconv.Atoi(fields[0])
-		if err != nil || choice < 1 {
-			return errors.New("Выберите номер получателя из списка /transfer")
+		name, err := a.telegramTransferRecipientActive(recipient.ID)
+		if err != nil {
+			return err
 		}
-		recipients, err := a.telegramTransferRecipients(u)
-		if err != nil || choice > len(recipients) {
-			return errors.New("Получатель недоступен. Повторите /transfer")
-		}
-		cents, err := telegramAmount(fields[1])
+		cents, err := telegramAmount(amount)
 		if err != nil || cents <= 0 {
 			return errors.New("Укажите положительную сумму перевода")
 		}
 		var recipientUser string
 		var recipientTelegram int64
-		if err = a.db.QueryRow("SELECT id,COALESCE(telegram_id,0) FROM users WHERE custodian_id=$1 AND active AND role='collector'", recipients[choice-1].ID).Scan(&recipientUser, &recipientTelegram); err != nil {
+		if err = a.db.QueryRow("SELECT id,COALESCE(telegram_id,0) FROM users WHERE custodian_id=$1 AND active AND role='collector'", recipient.ID).Scan(&recipientUser, &recipientTelegram); err != nil {
 			return errors.New("Получатель недоступен")
 		}
 		payload["telegram_recipient_confirmation_required"] = true
@@ -291,8 +326,8 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		payload["amount"] = rub(cents)
 		payload["amount_cents"] = cents
 		payload["from_custodian_id"] = u.CustodianID
-		payload["to_custodian_id"] = recipients[choice-1].ID
-		payload["to_custodian_name"] = recipients[choice-1].Name
+		payload["to_custodian_id"] = recipient.ID
+		payload["to_custodian_name"] = name
 	} else if command == "salary" {
 		item, err := telegramSalary(args, u.CustodianID)
 		if err != nil {
@@ -339,11 +374,32 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		payload["expense_items"] = items
 	}
 	draftID := id()
-	_, e := a.db.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5)", draftID, commandKind(command), encode(payload), u.ID, fmt.Sprintf("telegram:%d", updateID))
-	if e != nil {
-		return errors.New("Черновик не сохранён; проверьте карту и повторите ввод")
+	var e error
+	if transferToken != "" {
+		tx, err := a.tx()
+		if err != nil {
+			return errors.New("Не удалось сохранить перевод")
+		}
+		defer tx.Rollback()
+		var claimed bool
+		err = tx.QueryRow("DELETE FROM telegram_dialogs WHERE user_id=$1 AND command='transfer' AND expires_at>now() AND context->>'Token'=$2 AND context->'Recipient'->>'ID'=$3 RETURNING true", u.ID, transferToken, str(payload, "to_custodian_id")).Scan(&claimed)
+		if err != nil || !claimed {
+			return errors.New("Ввод уже завершён или изменился. Повторите /transfer")
+		}
+		_, e = tx.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5)", draftID, commandKind(command), encode(payload), u.ID, fmt.Sprintf("telegram:%d", updateID))
+		if e == nil {
+			e = tx.Commit()
+		}
+	} else {
+		_, e = a.db.Exec("INSERT INTO drafts(id,kind,payload,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5)", draftID, commandKind(command), encode(payload), u.ID, fmt.Sprintf("telegram:%d", updateID))
+		if e == nil {
+			_, _ = a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
+		}
 	}
-	_, _ = a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
+	if e != nil {
+		return errors.New("Черновик не сохранён; повторите ввод")
+	}
+
 	auditDetail := M{"update_id": updateID}
 	if commandKind(command) == "expense" {
 		items, _ := telegramExpenseItems(payload)

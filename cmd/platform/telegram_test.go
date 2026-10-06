@@ -137,10 +137,14 @@ func TestTelegramCollectorTransfer(t *testing.T) {
 	if e = tx.Commit(); e != nil {
 		t.Fatal(e)
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(3101, 555, "/transfer")); code != 200 || !fake.contains("Получатель") {
+	if code := telegramRequest(t, a, telegramMessageUpdate(3101, 555, "/transfer")); code != 200 || !fake.contains("Выберите получателя") {
 		t.Fatal("recipient selection unavailable", code, fake.calls)
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(3102, 555, "1 50,00")); code != 200 || !fake.contains("Подтвердите перевод наличных") {
+	dialog := transferDialogForTest(t, a, sender, from)
+	if code := telegramRequest(t, a, telegramButtonUpdate(3199, 555, "tr", dialog.Token+":0")); code != 200 || !fake.contains("Текущий баланс наличных") {
+		t.Fatal("amount selection unavailable", code)
+	}
+	if code := telegramRequest(t, a, telegramMessageUpdate(3102, 555, "50,00")); code != 200 || !fake.contains("Подтвердите перевод наличных") {
 		t.Fatal("transfer preview unavailable", code)
 	}
 	var draftID, status string
