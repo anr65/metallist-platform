@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox';
 import { get, PageState, Status } from './pages';
 import { request as apiRequest, userError } from './api-errors';
+import { formatNumber } from './lib/number-input';
 import { ServerTablePagination, TablePagination, usePagination } from './pagination';
 
 const todayMoscow = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' });
@@ -67,39 +68,55 @@ export const expenseCategories = [
 
 export function MoneyForm({ role, onCreated }) {
   const [catalog, setCatalog] = useState(null);
-  const [kind, setKind] = useState('withdrawal');
+  const [kind, setKind] = useState('handover');
   const [sourceKind, setSourceKind] = useState('cash');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { get('/api/catalog').then(setCatalog).catch(e => setError(userError(e))); }, []);
 
-  async function submit(event) {
+  const [pending, setPending] = useState(null);
+  const [draftID, setDraftID] = useState('');
+  const [formVersion, setFormVersion] = useState(0);
+
+  function submit(event) {
     event.preventDefault();
-    const form = event.currentTarget;
-    const body = Object.fromEntries(new FormData(form));
+    setError(''); setMessage(''); setDraftID('');
+    setPending({ ...Object.fromEntries(new FormData(event.currentTarget)), kind,
+      source_kind: kind === 'repayment' || kind === 'expense' ? sourceKind : undefined });
+  }
+
+  async function save(confirm) {
+    if (busy || !pending) return;
     setBusy(true); setError('');
     try {
-      if (kind === 'observation') {
-        await post('/api/observation', body);
-        setMessage('Наблюдаемый остаток сохранён. Он не меняет официальный баланс.');
+      if (pending.kind === 'observation') {
+        await post('/api/observation', pending);
       } else {
-        const result = await post('/api/draft', {
-          ...body, kind,
-          source_kind: kind === 'repayment' || kind === 'expense' ? sourceKind : body.source_kind,
-        });
-        if (onCreated) onCreated(result.id);
-        else setMessage('Черновик сохранён. Остатки не меняются до отдельного подтверждения.');
+        let id = draftID;
+        if (!id) {
+          const result = await post('/api/draft', pending);
+          id = result.id; setDraftID(id);
+        }
+        if (confirm) {
+          const drafts = await get(`/api/drafts?id=${encodeURIComponent(id)}`);
+          const draft = drafts.find(item => item.id === id);
+          if (!draft) throw new Error('Черновик не найден. Повторите попытку.');
+          if (draft.status !== 'posted') await post('/api/draft/confirm', { id, version: String(draft.version), confirm_amount: pending.amount });
+        }
       }
-      form.reset();
+      setPending(null); setDraftID(''); setKind('handover'); setSourceKind('cash');
+      setFormVersion(value => value + 1);
+      setMessage(pending.kind === 'observation' ? 'Наблюдаемый остаток сохранён.' : confirm ? 'Операция подтверждена.' : 'Черновик сохранён.');
+      onCreated?.();
     } catch (e) { setError(userError(e)); }
     finally { setBusy(false); }
   }
 
   if (role !== 'chief' && role !== 'operator') return null;
   const kinds = role === 'operator'
-    ? [['withdrawal', 'Снятие'], ['handover', 'Передача'], ['transfer', 'Перевод']]
-    : [['withdrawal', 'Снятие'], ['handover', 'Передача'], ['transfer', 'Перевод'], ['expense', 'Расход'], ['repayment', 'Возврат мерчанту'], ['observation', 'Остаток карты']];
+    ? [['handover', 'Передача'], ['withdrawal', 'Снятие'], ['transfer', 'Перевод']]
+    : [['handover', 'Передача'], ['expense', 'Расход'], ['repayment', 'Возврат мерчанту'], ['withdrawal', 'Снятие'], ['transfer', 'Перевод'], ['observation', 'Остаток карты']];
   const sourceItems = sourceKind === 'card' ? (catalog?.cards || []) : (catalog?.custodians || []);
   const people = catalog?.custodians || [];
   const cards = catalog?.cards || [];
@@ -107,16 +124,16 @@ export function MoneyForm({ role, onCreated }) {
     <Select key={`${kind}-${sourceKind}`} name="source_id" required><SelectTrigger><SelectValue placeholder="Выберите источник" /></SelectTrigger><SelectContent>{sourceItems.map(x => <SelectItem key={x.id} value={x.id}>{x.mask || x.name}</SelectItem>)}</SelectContent></Select>
   </label>;
 
-  return <Card className="mb-7 rounded-2xl"><CardHeader><CardTitle>{kind === 'observation' ? 'Фактический остаток карты' : 'Новая операция'}</CardTitle><CardDescription>{kind === 'observation' ? 'Наблюдение используется для сверки и не меняет официальный баланс.' : 'Сначала создаётся черновик; фактическое движение подтверждает главный администратор.'}</CardDescription></CardHeader><CardContent>{catalog ? <>
+  return <Card className="mb-7 rounded-2xl"><CardHeader><CardTitle>{kind === 'observation' ? 'Фактический остаток карты' : 'Новая операция'}</CardTitle><CardDescription>{kind === 'observation' ? 'Наблюдение используется для сверки и не меняет официальный баланс.' : 'Проверьте операцию перед сохранением черновика или подтверждением.'}</CardDescription></CardHeader><CardContent>{catalog ? <>
     <div className="mb-5 flex flex-wrap gap-2">{kinds.map(([value, label]) => <Button key={value} type="button" variant={kind === value ? 'secondary' : 'outline'} onClick={() => { setKind(value); setError(''); setMessage(''); }}>{label}</Button>)}</div>
-    <form key={kind} className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
+    <form key={`${kind}-${formVersion}`} className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
       {kind === 'withdrawal' && <>
         <label className="grid gap-2 text-sm font-medium">Карта<Select name="card_id" required><SelectTrigger><SelectValue placeholder="Выберите карту" /></SelectTrigger><SelectContent>{cards.map(x => <SelectItem key={x.id} value={x.id}>{x.mask} · {x.name}</SelectItem>)}</SelectContent></Select></label>
         <label className="grid gap-2 text-sm font-medium">Кто получил наличные<Select name="custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите ответственного" /></SelectTrigger><SelectContent>{people.map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
       </>}
       {kind === 'handover' && <>
         <label className="grid gap-2 text-sm font-medium">Кто передаёт<Select name="from_custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите ответственного" /></SelectTrigger><SelectContent>{people.map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Кто принимает<Select name="to_custodian_id" required><SelectTrigger><SelectValue placeholder="Главный администратор" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'chief').map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid gap-2 text-sm font-medium">Кто принимает<Select name="to_custodian_id" defaultValue={people.find(x => x.kind === 'chief' && x.active)?.id} required><SelectTrigger><SelectValue placeholder="Главный администратор" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'chief').map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
       </>}
       {kind === 'transfer' && <>
         <label className="grid gap-2 text-sm font-medium">Отправитель<Select name="from_custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите сборщика" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'collector' && x.active).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
@@ -125,17 +142,30 @@ export function MoneyForm({ role, onCreated }) {
       {kind === 'repayment' && <label className="grid gap-2 text-sm font-medium">Мерчант<Select name="merchant_id" required><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>}
       {kind === 'expense' && <>
         <label className="grid gap-2 text-sm font-medium">Тип расхода<Select name="category" required><SelectTrigger><SelectValue placeholder="Выберите тип" /></SelectTrigger><SelectContent>{expenseCategories.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Дата расхода<Input name="date" type="date" defaultValue={todayMoscow()} required /></label>
       </>}
       {(kind === 'repayment' || kind === 'expense') && <>
         <label className="grid gap-2 text-sm font-medium">Источник денег<Select value={sourceKind} onValueChange={setSourceKind}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Наличные</SelectItem><SelectItem value="card">Карта</SelectItem></SelectContent></Select></label>
         {sourceSelect}
       </>}
       {kind === 'observation' && <label className="grid gap-2 text-sm font-medium md:col-span-2">Карта<Select name="card_id" required><SelectTrigger><SelectValue placeholder="Выберите карту" /></SelectTrigger><SelectContent>{cards.map(x => <SelectItem key={x.id} value={x.id}>{x.mask} · {x.name}</SelectItem>)}</SelectContent></Select></label>}
+      <label className="grid gap-2 text-sm font-medium">{kind === 'handover' ? 'Дата передачи' : 'Дата операции'}<Input name="date" type="date" defaultValue={todayMoscow()} required /></label>
       <label className="grid gap-2 text-sm font-medium">Сумма, ₽<Input name="amount" inputMode="decimal" placeholder="Например, 25 000,00" required /></label>
       {kind !== 'observation' && <label className="grid gap-2 text-sm font-medium">Основание или комментарий<Input name="reason" placeholder="При необходимости" /></label>}
-      <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button variant="primary" className="mt-4" disabled={busy}>{busy ? 'Сохранение…' : kind === 'observation' ? 'Сохранить остаток' : 'Сохранить черновик'}</Button></div>
+      <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button variant="primary" className="mt-4" disabled={busy}>Подтвердить</Button></div>
     </form>
+    <Dialog open={Boolean(pending)} onOpenChange={open => { if (!open && !busy) { setPending(null); setError(''); } }}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Проверьте операцию</DialogTitle><DialogDescription>{kinds.find(([value]) => value === pending?.kind)?.[1]}</DialogDescription></DialogHeader>{pending && <>
+      <dl className="grid gap-3 text-sm">
+        <div><dt className="text-muted-foreground">Откуда</dt><dd className="font-medium">{pending.source_kind === 'card' || pending.card_id ? cards.find(x => x.id === (pending.source_id || pending.card_id))?.mask : people.find(x => x.id === (pending.from_custodian_id || pending.source_id))?.name || '—'}</dd></div>
+        <div><dt className="text-muted-foreground">{pending.kind === 'expense' || pending.kind === 'observation' ? 'Назначение' : 'Куда'}</dt><dd className="font-medium">{pending.kind === 'expense' ? expenseCategories.find(([value]) => value === pending.category)?.[1] : pending.kind === 'observation' ? 'Наблюдаемый остаток карты' : pending.merchant_id ? catalog.merchants.find(x => x.id === pending.merchant_id)?.name : people.find(x => x.id === (pending.to_custodian_id || pending.custodian_id))?.name || '—'}</dd></div>
+        <div><dt className="text-muted-foreground">Сумма</dt><dd className="font-mono text-lg font-medium">{formatNumber(pending.amount)} ₽</dd></div>
+        <div><dt className="text-muted-foreground">Дата</dt><dd>{pending.date.split('-').reverse().join('.')}</dd></div>
+      </dl>
+      <Message error={error} />
+      <div className="grid gap-3">
+        {pending.kind !== 'observation' && <Button type="button" variant="secondary" disabled={busy} onClick={() => save(false)}>Сохранить черновик</Button>}
+        {role === 'chief' && <Button type="button" variant="primary" disabled={busy} onClick={() => save(true)}>{busy ? 'Выполняется…' : 'Подтвердить'}</Button>}
+      </div>
+    </>}</DialogContent></Dialog>
   </> : <p>Загрузка…</p>}</CardContent></Card>;
 }
 

@@ -82,16 +82,16 @@ func (a *App) draft(w http.ResponseWriter, r *http.Request, u User) {
 			fail(w, 400, err)
 			return
 		}
-		date := str(m, "date")
-		if date == "" {
-			date = time.Now().In(a.location).Format("2006-01-02")
-		}
-		if _, err := time.ParseInLocation("2006-01-02", date, a.location); err != nil {
-			fail(w, 400, errors.New("неверная дата расхода"))
-			return
-		}
-		m["date"] = date
 	}
+	date := str(m, "date")
+	if date == "" {
+		date = time.Now().In(a.location).Format("2006-01-02")
+	}
+	if _, err := operationOccurredAt(date, a.location, time.Now()); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	m["date"] = date
 	for field := range m {
 		if strings.HasPrefix(field, "telegram_") {
 			delete(m, field)
@@ -186,7 +186,7 @@ func (a *App) drafts(w http.ResponseWriter, r *http.Request, u User) {
 				add("("+cents+")"+field.op+"$%d", value)
 			}
 		}
-		day := "CASE WHEN kind='expense' AND payload->>'date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN payload->>'date' ELSE to_char(created_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') END"
+		day := "CASE WHEN payload->>'date' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN payload->>'date' ELSE to_char(created_at AT TIME ZONE 'Europe/Moscow','YYYY-MM-DD') END"
 		for _, field := range []struct{ name, op string }{{"date_from", ">="}, {"date_to", "<="}} {
 			if raw := values.Get(field.name); raw != "" {
 				if _, err := time.Parse("2006-01-02", raw); err != nil {
@@ -322,13 +322,10 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 409, e)
 		return
 	}
-	occurredAt := time.Now()
-	if kind == "expense" && str(p, "date") != "" {
-		occurredAt, e = time.ParseInLocation("2006-01-02", str(p, "date"), a.location)
-		if e != nil {
-			fail(w, 409, errors.New("дата расхода не определена"))
-			return
-		}
+	occurredAt, e := operationOccurredAt(str(p, "date"), a.location, time.Now())
+	if e != nil {
+		fail(w, 409, e)
+		return
 	}
 	_, e = put(tx, kind, str(m, "id"), "draft:"+str(m, "id"), u.ID, occurredAt, occurredAt, lines, "")
 	if e != nil {
@@ -696,4 +693,16 @@ func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64,
 		return []Posting{d, credit("4200", "", "", "", ref, "written_off_recovery")}, nil
 	}
 	return nil, errors.New("unsupported event")
+}
+
+// Missing dates on historical drafts retain the existing confirmation-time fallback.
+func operationOccurredAt(date string, location *time.Location, fallback time.Time) (time.Time, error) {
+	if date == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", date, location)
+	if err != nil {
+		return time.Time{}, errors.New("неверная дата операции")
+	}
+	return parsed, nil
 }

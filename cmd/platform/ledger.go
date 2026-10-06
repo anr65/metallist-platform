@@ -531,8 +531,13 @@ func (a *App) observation(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 400, e)
 		return
 	}
+	observedAt, e := operationOccurredAt(str(m, "date"), a.location, time.Now())
+	if e != nil {
+		fail(w, 400, e)
+		return
+	}
 	newID := id()
-	_, e = a.db.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,now(),$4,$5)", newID, str(m, "card_id"), v, u.ID, "web")
+	_, e = a.db.Exec("INSERT INTO observations(id,card_id,observed_cents,observed_at,reporter_id,source) VALUES($1,$2,$3,$4,$5,$6)", newID, str(m, "card_id"), v, observedAt, u.ID, "web")
 	if e != nil {
 		fail(w, 400, e)
 		return

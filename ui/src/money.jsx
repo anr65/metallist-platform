@@ -18,7 +18,7 @@ const rub = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB' 
 const date = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Moscow' });
 const categoryNames = { ...Object.fromEntries(expenseCategories), operating: 'Операционные расходы', transport: 'Транспорт' };
 function amountRub(item) { return rub.format(Number(item.payload?.amount_cents || 0) / 100); }
-function operationDate(item) { return item.kind === 'expense' && item.payload?.date ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeZone: 'Europe/Moscow' }).format(new Date(`${item.payload.date}T12:00:00+03:00`)) : date.format(new Date(item.created_at)); }
+function operationDate(item) { return item.payload?.date ? new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium', timeZone: 'Europe/Moscow' }).format(new Date(`${item.payload.date}T12:00:00+03:00`)) : date.format(new Date(item.created_at)); }
 async function post(path, body) { return request(() => fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF': '1' }, body: JSON.stringify(body) })); }
 function typeName(row) { return row.kind === 'expense' ? `Расход · ${categoryNames[row.payload?.category] || 'Тип не указан'}` : names[row.kind] || 'Денежная операция'; }
 const emptyFilters = { kind: 'all', source: 'all', recipient: 'all', amount_from: '', amount_to: '', date_from: '', date_to: '' };
@@ -116,7 +116,7 @@ export function MoneyPage({ role, route = 'money', onNavigate }) {
     else setAppliedFilters({ ...emptyFilters });
   }
 
-  if (route === 'money/new') return <PageState title="Новая операция" subtitle="Создание черновика не меняет остатки. Подтверждение выполняется отдельно."><MoneyForm role={role} onCreated={value => onNavigate(`money/${value}`)} /></PageState>;
+  if (route === 'money/new') return <PageState title="Новая операция" subtitle="Выберите тип операции и проверьте данные перед подтверждением."><MoneyForm role={role} /></PageState>;
   if (id) {
     const item = items.find(row => row.id === id);
     return <PageState title={item ? typeName(item) : 'Операция'} subtitle="Сведения об операции и её текущем состоянии.">
