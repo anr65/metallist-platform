@@ -541,30 +541,73 @@ func parseNarkomanSheet(sheet spreadsheetSheet) ([]importedRow, error) {
 	if len(sheet.Rows) < 9 {
 		return nil, errors.New("выписка Авангарда без строк")
 	}
-	if normalizeHeader(valueAt(sheet.Rows[6], 2)) != "дата док-та" || normalizeHeader(valueAt(sheet.Rows[6], 5)) != "номер док-та" || normalizeHeader(valueAt(sheet.Rows[6], 20)) != "назначение платежа" {
+	if normalizeHeader(valueAt(sheet.Rows[6], 2)) != "дата док-та" || normalizeHeader(valueAt(sheet.Rows[6], 5)) != "номер док-та" || normalizeHeader(valueAt(sheet.Rows[6], 20)) != "назначение платежа" || normalizeHeader(valueAt(sheet.Rows[6], 17)) != "обороты" || normalizeHeader(valueAt(sheet.Rows[7], 17)) != "по дебету" {
 		return nil, errors.New("структура выписки Авангарда не распознана")
 	}
 	out := []importedRow{}
-	for rowNo, row := range sheet.Rows[8:] {
+	var total, declaredTotal int64
+	hasTotal, invalidAmount := false, false
+	for offset, row := range sheet.Rows[8:] {
 		if emptyRow(row) {
 			continue
 		}
 		if normalizeHeader(valueAt(row, 2)) == "итого:" {
-			break
+			if hasTotal {
+				return nil, errors.New("в выписке Авангарда несколько итоговых строк")
+			}
+			var err error
+			declaredTotal, err = spreadsheetNonnegative(valueAt(row, 17))
+			if err != nil {
+				return nil, errors.New("неверная итоговая сумма в выписке Авангарда")
+			}
+			hasTotal = true
+			continue
 		}
-		x := importedRow{Number: rowNo + 9, Sheet: sheet.Name, Raw: row, Order: valueAt(row, 5)}
-		match := avangardCard.FindStringSubmatch(valueAt(row, 20))
-		if len(match) == 2 {
-			x.Mask = "****" + match[1]
-		} else {
+		if hasTotal {
+			return nil, errors.New("неподдержанные строки после итога выписки Авангарда")
+		}
+		x := importedRow{Number: offset + 9, Sheet: sheet.Name, Raw: row, Order: valueAt(row, 5)}
+		// Avangard appends its own card/location on a second line. The recipient
+		// reference belongs to the first line of the payment purpose.
+		purpose, _, _ := strings.Cut(valueAt(row, 20), "\n")
+		matches := avangardCard.FindAllStringSubmatch(purpose, -1)
+		if len(matches) == 0 {
 			x.Error = "missing_card_reference"
+		} else {
+			x.Mask = "****" + matches[0][1]
+			for _, match := range matches[1:] {
+				if match[1] != matches[0][1] {
+					x.Mask = ""
+					x.Error = "ambiguous_card_reference"
+					break
+				}
+			}
 		}
-		if v, e := spreadsheetAmount(valueAt(row, 17)); e == nil {
+		if v, err := spreadsheetAmount(valueAt(row, 17)); err == nil {
 			x.Amount = v
+			if v > math.MaxInt64-total {
+				return nil, errors.New("сумма реестра слишком велика")
+			}
+			total += v
 		} else {
 			x.Error = "invalid_amount"
+			invalidAmount = true
+		}
+		if credit := valueAt(row, 19); credit != "" {
+			if v, err := spreadsheetNonnegative(credit); err != nil || v != 0 {
+				x.Error = "unsupported_credit_operation"
+			}
 		}
 		out = append(out, x)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("выписка Авангарда без строк пополнений")
+	}
+	if !hasTotal {
+		return nil, errors.New("в выписке Авангарда нет итоговой суммы")
+	}
+	if !invalidAmount && total != declaredTotal {
+		return nil, errors.New("итоговая сумма выписки Авангарда не совпадает с суммой строк")
 	}
 	return out, nil
 }

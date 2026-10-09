@@ -28,7 +28,7 @@ type importedRow struct {
 }
 
 type requestRegistryLookup struct {
-	numbers, masks, names map[string]string
+	numbers, masks, names, lastFour map[string]string
 }
 
 var longDigits = regexp.MustCompile(`(?:[0-9][\s\p{Zs}-]?){12,19}`)
@@ -190,10 +190,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 					}
 				} else {
 					value := strings.TrimSpace(rows[i].Mask)
-					card = requestLookup.numbers[value]
-					if card == "" {
-						card = requestLookup.masks[value]
-					}
+					card = requestLookup.cardForReference(parserCode, value)
 				}
 				if card == "" {
 					err = errors.New("request_card_not_found_or_ambiguous")

@@ -715,22 +715,23 @@ func verifyRequest(tx *sql.Tx, requestID, merchantID string) (requestRegistryLoo
 	if e := tx.QueryRow("SELECT merchant_id FROM payment_requests WHERE id=$1 AND deleted_at IS NULL FOR SHARE", requestID).Scan(&owner); e != nil || owner != merchantID {
 		return empty, errors.New("запрос на карты не принадлежит выбранному мерчанту")
 	}
-	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext,COALESCE(x.contact_name,'') FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
+	rows, e := tx.Query("SELECT c.mask,x.card_id,c.pan_ciphertext,COALESCE(x.contact_name,''),c.last4 FROM payment_request_rows x JOIN cards c ON c.id=x.card_id WHERE x.request_id=$1", requestID)
 	if e != nil {
 		return empty, e
 	}
 	defer rows.Close()
-	lookup := requestRegistryLookup{numbers: map[string]string{}, masks: map[string]string{}, names: map[string]string{}}
+	lookup := requestRegistryLookup{numbers: map[string]string{}, masks: map[string]string{}, names: map[string]string{}, lastFour: map[string]string{}}
 	for rows.Next() {
-		var mask, card, name string
+		var mask, card, name, last4 string
 		var ciphertext []byte
-		if e = rows.Scan(&mask, &card, &ciphertext, &name); e != nil {
+		if e = rows.Scan(&mask, &card, &ciphertext, &name, &last4); e != nil {
 			return empty, e
 		}
 		pan, panErr := readCardPAN(card, ciphertext)
 		if panErr != nil {
 			return empty, errors.New("полный номер карты из запроса недоступен")
 		}
+		addUniqueRequestReference(lookup.lastFour, last4, card)
 		lookup.numbers[pan] = card
 		if prior, ok := lookup.masks[mask]; ok && prior != card {
 			lookup.masks[mask] = ""
@@ -747,4 +748,25 @@ func verifyRequest(tx *sql.Tx, requestID, merchantID string) (requestRegistryLoo
 		}
 	}
 	return lookup, rows.Err()
+}
+
+// A short Avangard reference is resolved only within the explicitly selected request.
+func (lookup requestRegistryLookup) cardForReference(parser, value string) string {
+	if parser == "narkoman_avangard_xls_v1" && avangardShortMask.MatchString(value) {
+		return lookup.lastFour[value[len(value)-4:]]
+	}
+	if card := lookup.numbers[value]; card != "" {
+		return card
+	}
+	return lookup.masks[value]
+}
+
+var avangardShortMask = regexp.MustCompile(`^\*+[0-9]{4}$`)
+
+func addUniqueRequestReference(refs map[string]string, reference, card string) {
+	if prior, exists := refs[reference]; !exists {
+		refs[reference] = card
+	} else if prior != card {
+		refs[reference] = ""
+	}
 }
