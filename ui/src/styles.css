@@ -79,6 +79,11 @@ body::before {
 button, input, select, textarea { font: inherit; }
 button { touch-action: manipulation; }
 
+/* Keep focused controls readable without iOS focus zoom, including landscape phones. */
+@media (max-width: 767px), (pointer: coarse) {
+  input, textarea, select { font-size: max(16px, 1em); }
+}
+
 .app-shell { background: rgba(245, 247, 244, .2); }
 .sidebar {
   position: sticky;
