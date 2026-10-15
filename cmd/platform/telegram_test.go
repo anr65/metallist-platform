@@ -519,7 +519,7 @@ func TestTelegramCollectorExpensePermissionsAndRejection(t *testing.T) {
 	if count != 0 {
 		t.Fatal("rejected expense posted")
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(2004, 555, "/expense")); code != 200 || !fake.contains("Введите последние 4 цифры карты") {
+	if code := telegramRequest(t, a, telegramMessageUpdate(2004, 555, "/expense")); code != 200 || !fake.contains("Введите последние 4 или 6 цифр карты") {
 		t.Fatal("command menu follow-up missing")
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(2005, 555, "1234 комса 25,50")); code != 200 {

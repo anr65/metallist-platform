@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var telegramLastFour = regexp.MustCompile(`^[0-9]{4}$`)
+var telegramCardSuffix = regexp.MustCompile(`^(?:[0-9]{4}|[0-9]{6})$`)
 
 const telegramBatchLimit = 20
 
@@ -21,11 +21,12 @@ type telegramIntent struct {
 	BankFee  int64
 }
 
-func (a *App) telegramCard(_ telegramActor, lastFour string) (string, string, error) {
-	if !telegramLastFour.MatchString(lastFour) {
-		return "", "", errors.New("Укажите ровно последние 4 цифры карты")
+func (a *App) telegramCard(_ telegramActor, suffix string) (string, string, error) {
+	if !telegramCardSuffix.MatchString(suffix) {
+		return "", "", errors.New("Укажите последние 4 или 6 цифр карты")
 	}
-	rows, e := a.db.Query("SELECT c.id,c.mask FROM cards c WHERE c.status='active' AND c.last4=$1", lastFour)
+	lastFour := suffix[len(suffix)-4:]
+	rows, e := a.db.Query("SELECT c.id,c.mask,c.pan_ciphertext FROM cards c WHERE c.status='active' AND c.last4=$1", lastFour)
 	if e != nil {
 		return "", "", errors.New("Не удалось найти карту")
 	}
@@ -33,19 +34,35 @@ func (a *App) telegramCard(_ telegramActor, lastFour string) (string, string, er
 	var card, mask string
 	count := 0
 	for rows.Next() {
-		count++
-		if e = rows.Scan(&card, &mask); e != nil {
+		var candidate, candidateMask string
+		var ciphertext []byte
+		if e = rows.Scan(&candidate, &candidateMask, &ciphertext); e != nil {
 			return "", "", errors.New("Не удалось найти карту")
 		}
+		if len(suffix) == 6 {
+			pan, err := readCardPAN(candidate, ciphertext)
+			if err != nil {
+				// Do not select another candidate when this card cannot be checked.
+				return "", "", errors.New("Не удалось проверить последние 6 цифр карты. Обратитесь к администратору")
+			}
+			if !strings.HasSuffix(pan, suffix) {
+				continue
+			}
+		}
+		count++
+		card, mask = candidate, candidateMask
 	}
 	if e = rows.Err(); e != nil {
 		return "", "", errors.New("Не удалось найти карту")
 	}
 	if count == 0 {
-		return "", "", errors.New("Активная карта с этими четырьмя цифрами не найдена")
+		return "", "", errors.New("Активная карта с этими цифрами не найдена")
 	}
 	if count != 1 {
-		return "", "", errors.New("Последние четыре цифры неоднозначны. Уточните карту у администратора")
+		if len(suffix) == 4 {
+			return "", "", errors.New("Последние четыре цифры неоднозначны: существует другая активная карта с таким же окончанием номера. Введите последние 6 цифр нужной карты вместо 4 и повторите весь пакет. Этот пакет не принят")
+		}
+		return "", "", errors.New("Последние 6 цифр совпадают у нескольких активных карт. Уточните карту у администратора. Этот пакет не принят")
 	}
 	return card, "****" + mask[len(mask)-4:], nil
 }

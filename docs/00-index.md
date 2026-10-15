@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Telegram: последние 4 или 6 цифр карты](operations/telegram-card-suffix-release.md)
+
 - [Парсер Наркомана: выпуск 09.10.2026](operations/narkoman-parser-release-20261009.md)
 
 - [Подтверждение Telegram-перевода: выпуск](operations/telegram-transfer-confirmation-release.md)

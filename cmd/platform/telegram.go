@@ -150,7 +150,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	inserted, _ := res.RowsAffected()
 	if x.Message != nil && telegramSensitiveNumber.MatchString(x.Message.Text) {
 		a.telegramDeleteMessage(chat, x.Message.MessageID)
-		_ = a.telegramReply(chat, "Не отправляйте полный номер карты или другие секреты. В команде нужны только последние 4 цифры.", nil)
+		_ = a.telegramReply(chat, "Не отправляйте полный номер карты или другие секреты. В команде нужны только последние 4 или 6 цифр.", nil)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -267,9 +267,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return a.telegramTransferOptions(u, message.Chat.ID)
 		}
 		if command == "withdraw" {
-			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 цифры карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n3338 100к/143500 комса 2400\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
+			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 или 6 цифр карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n3338 100к/143500 комса 2400\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Введите последние 4 цифры карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
+		return a.telegramReply(message.Chat.ID, "Введите последние 4 или 6 цифр карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
 	}
 	transferToken := ""
 	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
