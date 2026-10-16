@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { LoaderCircle, MoreHorizontal } from 'lucide-react';
+import { ListFilter, LoaderCircle, MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -200,7 +200,21 @@ function ManualRegistryForm({ onUploaded }) {
 
 function RegistryList({ role, id, onNavigate }) {
   const [items, setItems] = useState([]), [selected, setSelected] = useState(null), [rows, setRows] = useState([]), [candidates, setCandidates] = useState([]), [error, setError] = useState(''), [busy, setBusy] = useState(false), [loading, setLoading] = useState(true), [reload, setReload] = useState(0);
-  const pagination = usePagination(items, id || 'list');
+  const emptyFilters = { q: '', merchant_id: '', status: '', date_from: '', date_to: '' };
+  const [filters, setFilters] = useState(emptyFilters), [appliedFilters, setAppliedFilters] = useState(emptyFilters);
+  const [page, setPage] = useState(1), [hasMore, setHasMore] = useState(false), [merchants, setMerchants] = useState([]), [filterOpen, setFilterOpen] = useState(false), [catalogError, setCatalogError] = useState('');
+  const activeFilterCount = Object.values(appliedFilters).filter(Boolean).length;
+  const updateFilter = (field, value) => setFilters(current => ({ ...current, [field]: value }));
+  useEffect(() => {
+    if (id) return;
+    let live = true;
+    setCatalogError('');
+    get('/api/catalog').then(data => { if (live) setMerchants(data.merchants || []); }).catch(error => { if (live) setCatalogError(userError(error)); });
+    return () => { live = false; };
+  }, [id]);
+  function applyFilters(event) { event.preventDefault(); setPage(1); setAppliedFilters({ ...filters }); }
+  function resetFilters() { setFilters(emptyFilters); setAppliedFilters(emptyFilters); setPage(1); }
+
   async function loadDetails(item) {
     const loadedRows = await get('/api/registry/rows?id=' + encodeURIComponent(item.id));
     let available = [];
@@ -210,16 +224,18 @@ function RegistryList({ role, id, onNavigate }) {
   useEffect(() => {
     let live = true;
     setLoading(true); setError(''); setSelected(null); setRows([]); setCandidates([]);
-    get('/api/registries' + (id ? '?id=' + encodeURIComponent(id) : '')).then(async next => {
+    const params = new URLSearchParams(id ? { id } : { page: String(page) });
+    if (!id) Object.entries(appliedFilters).forEach(([key, value]) => { if (value) params.set(key, value.trim()); });
+    get('/api/registries?' + params).then(async next => {
       if (!live) return;
-      if (!id) { setItems(next); return; }
+      if (!id) { setItems(next.items); setHasMore(next.has_more); return; }
       const item = next[0];
       if (!item) { setError('Реестр не найден или недоступен.'); return; }
       await loadDetails(item);
       if (live) setSelected(item);
     }).catch(e => { if (live) setError(userError(e)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [id, role, reload]);
+  }, [id, role, reload, page, appliedFilters]);
   async function refreshSelected() { const next = await get('/api/registries?id=' + encodeURIComponent(id)); const refreshed = next[0]; if (refreshed) { setSelected(refreshed); await loadDetails(refreshed); } }
   async function reconcile(row, cardID) { setBusy(true); setError(''); try { await post('/api/registry/reconcile', { registry_id: selected.id, row: String(row.row), card_id: cardID, version: String(selected.version) }); await refreshSelected(); } catch (e) { setError(userError(e)); } finally { setBusy(false); } }
   async function confirm(event) { event.preventDefault(); const f = new FormData(event.currentTarget); setBusy(true); setError(''); try { await post('/api/registry/confirm', { id: selected.id, version: String(selected.version), confirm_total: f.get('confirm_total'), confirm_commission: f.get('confirm_commission'), confirm_rate_bp: String(selected.rate_bp) }); await refreshSelected(); } catch (e) { setError(userError(e)); } finally { setBusy(false); } }
@@ -227,9 +243,22 @@ function RegistryList({ role, id, onNavigate }) {
   const invalid = rows.filter(x => x.error);
   const missingRate = selected?.status === 'preview' && !selected?.rate_available;
   const rowError = value => ({ request_contact_not_found_or_ambiguous: 'ФИО не найдено в выбранном запросе или встречается несколько раз', request_card_not_found_or_ambiguous: 'Карта не найдена в выбранном запросе или неоднозначна' }[value] || value);
-  if (!id) return <div className="section-table-wrap border-y border-border">
-    {loading ? <p className="p-6 text-sm text-muted-foreground">Загрузка реестров…</p> : error ? <div className="p-6"><Message error={error} /></div> : items.length ? <Table className="section-table section-table--registries"><TableHeader><TableRow><TableHead>Номер</TableHead><TableHead>Мерчант</TableHead><TableHead>Дата оплат</TableHead><TableHead>Сумма</TableHead><TableHead>Комиссия</TableHead><TableHead>Статус</TableHead><TableHead>Действия</TableHead></TableRow></TableHeader><TableBody>{pagination.rows.map(item => <TableRow key={item.id}><TableCell className="font-mono"><button type="button" className="text-left text-primary underline-offset-2 hover:underline" onClick={() => onNavigate(`registries/${item.id}`)}>{registryDisplay(item)}</button></TableCell><TableCell>{item.merchant}</TableCell><TableCell>{registryDate(item.payment_date)}</TableCell><TableCell>{money.format(item.total || 0)}</TableCell><TableCell>{item.status === 'preview' && !item.rate_available ? 'Тариф не задан' : money.format(item.commission || 0)}</TableCell><TableCell><Status value={item.status} /></TableCell><TableCell><RegistryRowMenu item={item} role={role} onNavigate={onNavigate} onDone={() => setReload(value => value + 1)} /></TableCell></TableRow>)}</TableBody></Table> : <p className="p-6 text-sm text-muted-foreground">Реестров пока нет. Загрузите файл или внесите пополнения вручную.</p>}{items.length > 0 && <TablePagination page={pagination.page} totalPages={pagination.totalPages} total={items.length} onPageChange={pagination.setPage} />}
-  </div>;
+  if (!id) return <>
+    {catalogError && <div className="px-5 pb-4 lg:px-6"><Message error={catalogError} /></div>}
+    <Button type="button" variant="secondary" className="mx-5 mb-5 sm:hidden" aria-controls="registry-filters" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}><ListFilter className="size-4" />Фильтры{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}</Button>
+    <form id="registry-filters" className={`${filterOpen ? 'grid' : 'hidden sm:grid'} gap-3 px-5 pb-5 lg:px-6`} onSubmit={applyFilters}>
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">Номер или название<Input type="search" value={filters.q} onChange={event => updateFilter('q', event.target.value)} placeholder="Найти реестр" /></label>
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">Мерчант<Select value={filters.merchant_id || 'all'} onValueChange={value => updateFilter('merchant_id', value === 'all' ? '' : value)}><SelectTrigger aria-label="Мерчант" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все мерчанты</SelectItem>{merchants.map(item => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">Статус<Select value={filters.status || 'all'} onValueChange={value => updateFilter('status', value === 'all' ? '' : value)}><SelectTrigger aria-label="Статус реестра" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Все статусы</SelectItem><SelectItem value="preview">Ожидает подтверждения</SelectItem><SelectItem value="posted">Подтверждено</SelectItem><SelectItem value="reversed">Сторнировано</SelectItem></SelectContent></Select></label>
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">Дата оплат от<Input type="date" value={filters.date_from} max={filters.date_to || undefined} onChange={event => updateFilter('date_from', event.target.value)} /></label>
+        <label className="grid min-w-0 gap-1.5 text-sm font-medium">Дата оплат до<Input type="date" value={filters.date_to} min={filters.date_from || undefined} onChange={event => updateFilter('date_to', event.target.value)} /></label>
+      </div>
+      <div className="flex flex-wrap gap-2"><Button type="submit" variant="primary">Показать</Button><Button type="button" variant="secondary" onClick={resetFilters}>Сбросить</Button></div>
+    </form>
+    <div className="section-table-wrap border-y border-border">
+    {loading ? <p className="p-6 text-sm text-muted-foreground">Загрузка реестров…</p> : error ? <div className="p-6"><Message error={error} /></div> : items.length ? <Table className="section-table section-table--registries"><TableHeader><TableRow><TableHead>Номер</TableHead><TableHead>Мерчант</TableHead><TableHead>Дата оплат</TableHead><TableHead>Сумма</TableHead><TableHead>Комиссия</TableHead><TableHead>Статус</TableHead><TableHead>Действия</TableHead></TableRow></TableHeader><TableBody>{items.map(item => <TableRow key={item.id}><TableCell className="font-mono"><button type="button" className="text-left text-primary underline-offset-2 hover:underline" onClick={() => onNavigate(`registries/${item.id}`)}>{registryDisplay(item)}</button></TableCell><TableCell>{item.merchant}</TableCell><TableCell>{registryDate(item.payment_date)}</TableCell><TableCell>{money.format(item.total || 0)}</TableCell><TableCell>{item.status === 'preview' && !item.rate_available ? 'Тариф не задан' : money.format(item.commission || 0)}</TableCell><TableCell><Status value={item.status} /></TableCell><TableCell><RegistryRowMenu item={item} role={role} onNavigate={onNavigate} onDone={() => setReload(value => value + 1)} /></TableCell></TableRow>)}</TableBody></Table> : <p className="p-6 text-sm text-muted-foreground">{activeFilterCount ? 'По выбранным фильтрам реестры не найдены. Измените условия или сбросьте фильтры.' : 'Реестров пока нет. Загрузите файл или внесите пополнения вручную.'}</p>}{!loading && !error && <ServerTablePagination page={page} hasMore={hasMore} onPageChange={setPage} />}
+  </div></>;
   return <>{loading && <p className="text-muted-foreground">Загрузка реестра…</p>}{error && <div className="mb-4"><Message error={error} /></div>}{selected && <Card className="rounded-2xl"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><CardTitle>Реестр {registryDisplay(selected)}</CardTitle><div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{role === 'chief' && ['preview', 'posted'].includes(selected.status) && <ManualRateDialog item={selected} onChanged={refreshSelected} />}<RegistryRowMenu item={selected} role={role} onNavigate={onNavigate} onDone={action => action === 'delete' ? onNavigate('registries') : refreshSelected()} /></div></div><CardDescription>{selected.merchant}. Дата оплат: {registryDate(selected.payment_date)}.{selected.confirmed_at && ` Подтверждён: ${new Date(selected.confirmed_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}.`} Ошибок проверки: {invalid.length}. Исходные данные файла показаны отдельно от сопоставления с карточным запросом.</CardDescription></CardHeader><CardContent><div className="grid gap-3">{rows.map(row => <div key={row.row} className="grid gap-3 rounded-xl border bg-muted/50 p-4 text-sm md:grid-cols-[55px_minmax(180px,1fr)_150px_minmax(260px,1.2fr)]"><span>#{row.row}</span><div><small className="text-muted-foreground">В исходном файле</small><strong className="block">{row.source_contact_name || row.raw?.[0] || 'ФИО не указано'}</strong>{row.order && <span className="text-xs text-muted-foreground">Входящий № {row.order}</span>}</div><div><small className="text-muted-foreground">Сумма</small><strong className="block">{money.format(row.amount || 0)}</strong></div><div><small className="text-muted-foreground">Сопоставление</small>{selected.status === 'preview' && selected.payment_request_id && candidates.length ? <Select value={row.card_id || undefined} onValueChange={value => reconcile(row, value)} disabled={busy}><SelectTrigger className="mt-1 bg-white"><SelectValue placeholder="Выберите карту и получателя" /></SelectTrigger><SelectContent>{candidates.map(candidate => <SelectItem key={candidate.card_id} value={candidate.card_id}>{candidate.contact_name} · {candidate.mask} · {candidate.contact_phone}</SelectItem>)}</SelectContent></Select> : <strong className="block">{row.card_mask || row.card_id || 'Карта не определена'}</strong>}{row.request_contact_name && <span className="mt-1 block text-xs text-muted-foreground">{row.request_contact_name} · {row.request_contact_phone}</span>}{row.error && <span className="mt-1 block text-xs text-destructive">{rowError(row.error)}</span>}</div></div>)}</div>{error && <div className="mt-4"><Message error={error} /></div>}{role === 'chief' && selected.status === 'preview' && <form key={`${selected.id}:${selected.version}`} onSubmit={confirm} className="mt-6 grid grid-cols-1 gap-4 rounded-xl border p-5 md:grid-cols-2"><div className="md:col-span-2"><strong>Подтвердить фактическое поступление</strong><p className="mt-1 text-sm text-muted-foreground">После подтверждения будут опубликованы проводки: деньги на картах, долг мерчанту и комиссия.</p>{!missingRate && <p className="mt-2 text-sm">Применяемая ставка: {(selected.rate_bp / 100).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %.</p>}</div>{missingRate && <div className="md:col-span-2 rounded-lg border border-destructive/40 p-4 text-sm text-destructive">Для этого мерчанта не задан действующий тариф. Укажите ставку на странице мерчанта, затем обновите реестр.</div>}<label className="grid gap-2 text-sm font-medium">Подтвердите сумму пополнений<Input name="confirm_total" inputMode="decimal" defaultValue={selected.total} required /></label><label className="grid gap-2 text-sm font-medium">Подтвердите комиссию<Input name="confirm_commission" inputMode="decimal" defaultValue={missingRate ? '' : selected.commission} disabled={missingRate} required /></label><div className="md:col-span-2"><Message error={error} /><Button className="mt-3" type="submit" disabled={busy || invalid.length > 0 || missingRate}>{busy ? 'Подтверждение…' : 'Подтвердить поступление'}</Button></div></form>}</CardContent></Card>}</>;
 }
 

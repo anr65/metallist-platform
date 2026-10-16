@@ -336,27 +336,72 @@ func (a *App) currentRate(tx *sql.Tx, merchant, paymentDate string) (int, error)
 	e := tx.QueryRow("SELECT rate_bp FROM tariffs WHERE merchant_id=$1 AND active AND valid_from<=$2::date ORDER BY valid_from DESC,created_at DESC LIMIT 1", merchant, paymentDate).Scan(&bp)
 	return bp, e
 }
+
+// registryListQuery keeps visibility restrictions on both filtered lists and details.
+func registryListQuery(r *http.Request, u User) (string, []any, int, error) {
+	values := r.URL.Query()
+	query := ""
+	filters := []string{"r.status<>'deleted'"}
+	args := []any{}
+	add := func(expression string, value any) {
+		args = append(args, value)
+		filters = append(filters, fmt.Sprintf(expression, len(args)))
+	}
+	if u.Role == "operator" {
+		query += " JOIN source_documents s ON s.id=r.source_id"
+		add("s.uploader_id=$%d", u.ID)
+	}
+	if id := strings.TrimSpace(values.Get("id")); id != "" {
+		add("r.id::text=$%d", id)
+		return query + " WHERE " + strings.Join(filters, " AND "), args, 0, nil
+	}
+	if q := strings.TrimSpace(values.Get("q")); q != "" {
+		// POSITION treats %, _ and backslashes as literal search characters.
+		add("POSITION(lower($%d) IN lower(r.number::text || ' ' || r.external_ref))>0", q)
+	}
+	if merchant := values.Get("merchant_id"); merchant != "" {
+		add("r.merchant_id::text=$%d", merchant)
+	}
+	if status := values.Get("status"); status != "" {
+		if status != "preview" && status != "posted" && status != "reversed" {
+			return "", nil, 0, errors.New("неверный статус реестра")
+		}
+		add("r.status=$%d", status)
+	}
+	for _, field := range []struct{ name, op string }{{"date_from", ">="}, {"date_to", "<="}} {
+		if raw := values.Get(field.name); raw != "" {
+			if _, err := time.Parse("2006-01-02", raw); err != nil {
+				return "", nil, 0, errors.New("неверная дата фильтра")
+			}
+			add("r.payment_date"+field.op+"$%d::date", raw)
+		}
+	}
+	if values.Get("date_from") != "" && values.Get("date_to") != "" && values.Get("date_from") > values.Get("date_to") {
+		return "", nil, 0, errors.New("дата начала позже даты окончания")
+	}
+	query += " WHERE " + strings.Join(filters, " AND ") + " ORDER BY r.created_at DESC,r.id DESC"
+	if raw := values.Get("page"); raw != "" {
+		page, err := strconv.Atoi(raw)
+		if err != nil || page < 1 || page > 10000 {
+			return "", nil, 0, errors.New("неверная страница")
+		}
+		args = append(args, (page-1)*15)
+		return query + fmt.Sprintf(" LIMIT 16 OFFSET $%d", len(args)), args, page, nil
+	}
+	return query + " LIMIT 100", args, 0, nil
+}
+
 func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 	if !a.require(w, u, "chief", "operator", "accountant", "auditor") {
 		return
 	}
 	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,''),r.number,COALESCE(r.payment_date::text,''),COALESCE(r.replaces_registry_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
-	var rows *sql.Rows
-	var e error
-	id := strings.TrimSpace(r.URL.Query().Get("id"))
-	if u.Role == "operator" {
-		if id != "" {
-			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.id::text=$2 AND r.status<>'deleted'", u.ID, id)
-		} else {
-			rows, e = a.db.Query(query+" JOIN source_documents s ON s.id=r.source_id WHERE s.uploader_id=$1 AND r.status<>'deleted' ORDER BY r.created_at DESC LIMIT 100", u.ID)
-		}
-	} else {
-		if id != "" {
-			rows, e = a.db.Query(query+" WHERE r.id::text=$1 AND r.status<>'deleted'", id)
-		} else {
-			rows, e = a.db.Query(query + " WHERE r.status<>'deleted' ORDER BY r.created_at DESC LIMIT 100")
-		}
+	suffix, args, page, e := registryListQuery(r, u)
+	if e != nil {
+		fail(w, 400, e)
+		return
 	}
+	rows, e := a.db.Query(query+suffix, args...)
 	if e != nil {
 		fail(w, 500, e)
 		return
@@ -412,6 +457,18 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 			x["confirmed_at"] = confirmed.Time
 		}
 		out = append(out, x)
+	}
+	if e = rows.Err(); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	if page > 0 {
+		hasMore := len(out) > 15
+		if hasMore {
+			out = out[:15]
+		}
+		respond(w, 200, M{"items": out, "page": page, "has_more": hasMore})
+		return
 	}
 	respond(w, 200, out)
 }
