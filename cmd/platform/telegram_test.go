@@ -820,7 +820,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		t.Fatal("group command menus have wrong scopes", call)
 	}
 	commands, ok := call["commands"].([]interface{})
-	if !ok || len(commands) != 7 {
+	if !ok || len(commands) != 9 {
 		t.Fatal("group command menu has wrong size", call)
 	}
 	names := make([]string, 0, len(commands))
@@ -831,7 +831,7 @@ func TestTelegramRegistersWebhookAndGroupMenu(t *testing.T) {
 		}
 		names = append(names, str(M(command), "command"))
 	}
-	if strings.Join(names, ",") != "start,cards_balance,my_balance,expense,withdraw,transfer,cancel" {
+	if strings.Join(names, ",") != "start,cards_balance,my_balance,expense,withdraw,transfer,card_status,block_card,cancel" {
 		t.Fatal("group command menu contains unexpected commands", names)
 	}
 }

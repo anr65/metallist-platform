@@ -312,6 +312,7 @@ func main() {
 		go app.telegramSetupCommands()
 		go app.telegramTransferNotificationWorker()
 	}
+	go app.cardLimitWorker()
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, secureHeaders(mux)))
 }

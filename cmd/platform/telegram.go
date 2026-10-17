@@ -224,9 +224,15 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+	}
+	if command == "card_status" || command == "block_card" {
+		if err := a.telegramCardStatus(u, words, command, updateID); err != nil {
+			return err
+		}
+		return a.telegramReply(message.Chat.ID, "Статус карты сохранён.", nil)
 	}
 	if command == "cards_balance" {
 		return a.telegramCardsBalance(u, message.Chat.ID, updateID)

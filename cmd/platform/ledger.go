@@ -189,7 +189,8 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	result := M{}
-	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id FROM users ORDER BY name"}
+	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.drop_handler_id,d.name AS drop_handler_name,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN drop_handlers d ON d.id=c.drop_handler_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id FROM users ORDER BY name"}
+	specs["drop_handlers"] = "SELECT id,name,active FROM drop_handlers ORDER BY name,id"
 	specs["request_cards"] = `SELECT c.id,c.mask,b.name AS bank,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone,c.pan_ciphertext IS NOT NULL AS pan_in_db
 		FROM cards c JOIN banks b ON b.id=c.bank_id
 		LEFT JOIN LATERAL (SELECT r.contact_name,r.contact_phone FROM payment_request_rows r JOIN payment_requests p ON p.id=r.request_id
@@ -216,9 +217,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		if name == "users" && u.Role != "sysadmin" && u.Role != "chief" {
 			continue
 		}
-		if name == "cards" && (u.Role == "operator" || u.Role == "collector") {
-			q = "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id WHERE c.status='active' ORDER BY b.name,c.mask"
-		}
+
 		rows, e := a.db.Query(q)
 		if e != nil {
 			fail(w, 500, e)
@@ -326,6 +325,28 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 		_, e = a.db.Exec("INSERT INTO banks(id,code,name) VALUES($1,$2,$3)", newID, str(m, "code"), str(m, "name"))
 	case "custodian":
 		_, e = a.db.Exec("INSERT INTO custodians(id,name,kind) VALUES($1,$2,$3)", newID, str(m, "name"), str(m, "custodian_kind"))
+	case "drop_handler":
+		name := strings.TrimSpace(str(m, "name"))
+		if len([]rune(name)) < 1 || len([]rune(name)) > 200 {
+			e = errors.New("укажите имя до 200 символов")
+			break
+		}
+		tx, err := a.tx()
+		if err != nil {
+			e = err
+			break
+		}
+		defer tx.Rollback()
+		if _, e = tx.Exec("INSERT INTO drop_handlers(id,name) VALUES($1,$2)", newID, name); e == nil {
+			e = txAudit(tx, u.ID, "web", "catalog_create", kind, newID, "success", "", M{})
+		}
+		if e == nil {
+			e = tx.Commit()
+		}
+		if e == nil {
+			respond(w, 201, M{"id": newID})
+			return
+		}
 	case "card":
 		pan := str(m, "pan")
 		bankID := str(m, "bank_id")
@@ -348,13 +369,33 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 			e = errors.New("маска не соответствует полному номеру")
 			break
 		}
+		tx, err := a.tx()
+		if err != nil {
+			e = err
+			break
+		}
+		defer tx.Rollback()
+		handlerID := str(m, "drop_handler_id")
+		if e = validateDropHandler(tx, handlerID); e != nil {
+			break
+		}
 		if e = savePAN(newID, pan); e != nil {
 			break
 		}
-		_, e = a.db.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4) VALUES($1,$2,$3,$4,$5)", newID, bankID, ownerLabel, mask, mask[len(mask)-4:])
+		_, e = tx.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4,drop_handler_id) VALUES($1,$2,$3,$4,$5,$6)", newID, bankID, ownerLabel, mask, mask[len(mask)-4:], handlerID)
+		if e == nil {
+			e = txAudit(tx, u.ID, "web", "catalog_create", kind, newID, "success", "", M{"drop_handler_id": handlerID})
+		}
+		if e == nil {
+			e = tx.Commit()
+		}
 		if e != nil {
 			path, _ := vaultPath(newID)
 			_ = os.Remove(path)
+		}
+		if e == nil {
+			respond(w, 201, M{"id": newID})
+			return
 		}
 	case "payment_contact":
 		fullName := strings.TrimSpace(str(m, "full_name"))

@@ -126,7 +126,7 @@ func TestCollectorTransferDraftAndReversal(t *testing.T) {
 }
 func reset(t *testing.T, a *App) {
 	t.Helper()
-	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,custodians,banks,tariffs,merchants,sessions,users CASCADE")
+	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,drop_handlers,custodians,banks,tariffs,merchants,sessions,users CASCADE")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -162,6 +162,9 @@ func fixtures(t *testing.T, a *App) (User, string, string, string) {
 		if _, e := a.db.Exec(q.sql, q.args...); e != nil {
 			t.Fatal(e)
 		}
+	}
+	if _, err := a.db.Exec("INSERT INTO drop_handlers(id,name) SELECT id,name FROM custodians WHERE kind='collector'"); err != nil {
+		t.Fatal(err)
 	}
 	if e := savePAN(card, "0000000000061234"); e != nil {
 		t.Fatal(e)
@@ -391,7 +394,11 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,$2,$3,'operator','x')", operator.ID, operator.Login, operator.Name); e != nil {
 		t.Fatal(e)
 	}
-	body := M{"kind": "card", "bank_id": bank, "owner_label": "Тестовый владелец", "pan": "4111111111111111"}
+	var dropHandler string
+	if err := a.db.QueryRow("SELECT id FROM drop_handlers LIMIT 1").Scan(&dropHandler); err != nil {
+		t.Fatal(err)
+	}
+	body := M{"drop_handler_id": dropHandler, "kind": "card", "bank_id": bank, "owner_label": "Тестовый владелец", "pan": "4111111111111111"}
 	if status, _ := req(t, a.catalogCreate, User{Role: "accountant"}, body); status != 403 {
 		t.Fatal("accountant added card", status)
 	}
@@ -430,7 +437,7 @@ func TestCardPANCreationAndAccess(t *testing.T) {
 	if e := a.db.QueryRow("SELECT count(*) FROM audit_events WHERE actor_id=$1 AND action='catalog_create' AND object_type='card' AND outcome='success'", operator.ID).Scan(&operatorAudit); e != nil || operatorAudit != 1 {
 		t.Fatal("operator card creation not audited", operatorAudit, e)
 	}
-	if status, _ := req(t, a.catalogCreate, chief, M{"kind": "card", "bank_id": bank, "owner_label": "Карта администратора", "pan": "4242424242424242"}); status != 201 {
+	if status, _ := req(t, a.catalogCreate, chief, M{"drop_handler_id": dropHandler, "kind": "card", "bank_id": bank, "owner_label": "Карта администратора", "pan": "4242424242424242"}); status != 201 {
 		t.Fatal("chief could not add card", status)
 	}
 	var auditText string
@@ -1968,8 +1975,8 @@ func TestAllActiveCardsAndReadPermissions(t *testing.T) {
 	a.catalog(w, httptest.NewRequest("GET", "/api/catalog", nil), operator)
 	var c M
 	_ = json.Unmarshal(w.Body.Bytes(), &c)
-	if len(c["cards"].([]interface{})) != 1 {
-		t.Fatal("active card hidden from operator")
+	if len(c["cards"].([]interface{})) != 2 {
+		t.Fatal("card directory must include inactive cards for management")
 	}
 	code, _ := req(t, a.observation, operator, M{"card_id": card, "amount": "0.00"})
 	if code != 403 {

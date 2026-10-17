@@ -106,7 +106,7 @@ func (a *App) createManualRegistry(w http.ResponseWriter, r *http.Request, u Use
 		}
 		var item preparedManualRow
 		item.cardID, item.amount = row.CardID, v
-		err = tx.QueryRow("SELECT c.mask,p.full_name,p.phone FROM cards c CROSS JOIN payment_contacts p WHERE c.id=$1 AND c.status='active' AND p.id=$2 AND p.active", row.CardID, row.ContactID).Scan(&item.mask, &item.name, &item.phone)
+		err = tx.QueryRow("SELECT c.mask,p.full_name,p.phone FROM cards c CROSS JOIN payment_contacts p WHERE c.id=$1 AND c.status='active' AND p.id=$2 AND p.active FOR SHARE OF c", row.CardID, row.ContactID).Scan(&item.mask, &item.name, &item.phone)
 		if err != nil {
 			fail(w, 400, fmt.Errorf("строка %d: карта или контакт недоступны", i+1))
 			return

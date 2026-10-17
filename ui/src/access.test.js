@@ -50,3 +50,10 @@ test('query credentials are removed while keeping the current page', () => {
   assert.deepEqual(calls, [[null, '', '/#registries']]);
   assert.equal(stripQueryFromLocation({ ...location, search: '' }, { replaceState: () => assert.fail('already clean') }), false);
 });
+
+test('drop-handler directory is reachable for directory readers and hidden from collectors', () => {
+  for (const role of ['chief', 'operator', 'accountant', 'auditor', 'sysadmin']) {
+    assert.equal(pageForRole(role, '#catalog/drop_handlers'), 'catalog/drop_handlers');
+  }
+  assert.equal(pageForRole('collector', '#catalog/drop_handlers'), 'catalog');
+});

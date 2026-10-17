@@ -1,9 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // catalogUpdate edits descriptive directory fields only. Card numbers and
@@ -51,7 +53,44 @@ func (a *App) catalogUpdate(w http.ResponseWriter, r *http.Request, u User) {
 		if len([]rune(owner)) < 1 || len([]rune(owner)) > 200 {
 			err = errors.New("укажите ФИО владельца до 200 символов")
 		} else {
-			result, err = tx.Exec("UPDATE cards SET owner_label=$2 WHERE id=$1 AND status='active'", recordID, owner)
+			var previous sql.NullString
+			err = tx.QueryRow("SELECT drop_handler_id FROM cards WHERE id=$1 FOR UPDATE", recordID).Scan(&previous)
+			handlerID := previous.String
+			if _, present := m["drop_handler_id"]; present {
+				handlerID = str(m, "drop_handler_id")
+				if handlerID != "" && handlerID != previous.String && err == nil {
+					err = validateDropHandler(tx, handlerID)
+				}
+			}
+			if err == nil && str(m, "status") != "" {
+				err = changeCardStatus(tx, u.ID, "web", recordID, str(m, "status"), time.Now())
+			}
+			if err == nil {
+				result, err = tx.Exec("UPDATE cards SET owner_label=$2,drop_handler_id=$3 WHERE id=$1", recordID, owner, nilID(handlerID))
+			}
+			if err == nil && handlerID != previous.String {
+				err = txAudit(tx, u.ID, "web", "card_drop_handler_change", "card", recordID, "success", "", M{"before": nilID(previous.String), "after": nilID(handlerID)})
+			}
+		}
+	case "drop_handler":
+		name := strings.TrimSpace(str(m, "name"))
+		if len([]rune(name)) < 1 || len([]rune(name)) > 200 {
+			err = errors.New("укажите имя до 200 символов")
+		} else {
+			var active interface{}
+			if value, present := m["active"]; present {
+				switch value {
+				case true, "true":
+					active = true
+				case false, "false":
+					active = false
+				default:
+					err = errors.New("неверная активность дроповода")
+				}
+			}
+			if err == nil {
+				result, err = tx.Exec("UPDATE drop_handlers SET name=$2,active=COALESCE($3,active) WHERE id=$1", recordID, name, active)
+			}
 		}
 	case "payment_contact":
 		name := strings.TrimSpace(str(m, "full_name"))
