@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -157,6 +158,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	var u telegramActor
 	e = a.db.QueryRow("SELECT id,login,name,role,COALESCE(custodian_id::text,'') FROM users WHERE telegram_id=$1 AND active", sender).Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.CustodianID)
 	if e != nil || (!telegramFieldRole(u.Role) && u.Role != "chief") || u.CustodianID == "" {
+		a.logAudit(u.ID, "telegram", "access_denied", "command", "", "rejected", "telegram_link_or_role", M{"update_id": x.UpdateID})
 		_ = a.telegramReply(chat, "Доступ не настроен. Попросите системного администратора связать ваш Telegram ID и ответственного за наличные.", nil)
 		w.WriteHeader(http.StatusOK)
 		return
@@ -184,6 +186,15 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if inserted == 0 {
+		handled, retryErr := a.retryCardStatusReply(u, x.Message, x.UpdateID)
+		if handled {
+			if retryErr != nil {
+				http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
 		if e = a.telegramRetryPreview(x.UpdateID, chat); e != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return
@@ -234,11 +245,8 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		}
 		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
-	if command == "card_status" || command == "block_card" {
-		if err := a.telegramCardStatus(u, words, command, updateID); err != nil {
-			return err
-		}
-		return a.telegramReply(message.Chat.ID, "Статус карты сохранён.", nil)
+	if strings.HasPrefix(words[0], "/") && (command == "card_status" || command == "block_card") {
+		return a.telegramCardStatusInput(u, message, updateID, command)
 	}
 	if command == "cards_balance" {
 		return a.telegramCardsBalance(u, message.Chat.ID, updateID)
@@ -258,6 +266,11 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			args = strings.TrimSpace(text[len(words[0]):])
 		}
 	} else {
+		if _, err := a.cardStatusDialog(u, message.Chat.ID); err == nil {
+			return a.telegramCardStatusInput(u, message, updateID, "")
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		e := a.db.QueryRow("SELECT command FROM telegram_dialogs WHERE user_id=$1 AND expires_at>now()", u.ID).Scan(&command)
 		if e != nil {
 			return errors.New("Сначала выберите команду /withdraw, /expense или /transfer в меню")

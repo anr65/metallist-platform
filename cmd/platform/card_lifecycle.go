@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -79,7 +80,7 @@ func (a *App) cardLimitWorker() {
 	}
 }
 
-func (a *App) telegramCardStatus(u telegramActor, words []string, command string, updateID int64) error {
+func (a *App) telegramCardStatus(u telegramActor, words []string, command string, updateID int64, expected ...telegramCardStatusDialog) error {
 	if u.Role != "chief" && u.Role != "collector" && u.Role != "operator" {
 		return errors.New("смена статуса недоступна")
 	}
@@ -88,12 +89,7 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 		if len(words) != 3 {
 			return errors.New("Формат: /card_status последние4 active|limit|blocked|retired (Активна|Лимит|Блок|Архив). Вместо последних4 можно указать ID карты")
 		}
-		status = strings.ToLower(words[2])
-		for key, label := range cardStatusLabels {
-			if strings.EqualFold(status, label) {
-				status = key
-			}
-		}
+		status = normalizeCardStatus(words[2])
 	} else if len(words) != 2 {
 		return errors.New("Формат: /block_card последние4 или ID карты")
 	}
@@ -101,7 +97,7 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 		return errors.New("неверный статус карты")
 	}
 	selector := words[1]
-	if !validID(selector) && (len(selector) != 4 || strings.Trim(selector, "0123456789") != "") {
+	if !cardStatusSelectorValid(selector) {
 		return errors.New("укажите последние четыре цифры или ID карты")
 	}
 	tx, err := a.tx()
@@ -109,6 +105,22 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 		return err
 	}
 	defer tx.Rollback()
+	if len(expected) > 0 {
+		d := expected[0]
+		res, e := tx.Exec(`DELETE FROM telegram_dialogs WHERE user_id=$1 AND command=$2 AND expires_at>now()
+         AND context->>'token'=$3 AND context->>'chat_id'=$4 AND (context->>'last_update_id')::bigint<$5`, u.ID, d.Command, d.Token, fmt.Sprint(d.ChatID), updateID)
+		if e != nil {
+			return e
+		}
+		n, _ := res.RowsAffected()
+		if n != 1 {
+			return errors.New("Ввод уже изменился. Повторите команду")
+		}
+	} else {
+		if _, e := tx.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1 AND command IN ('card_status','block_card')", u.ID); e != nil {
+			return e
+		}
+	}
 	query := "SELECT id FROM cards WHERE last4=$1 ORDER BY id FOR UPDATE"
 	if validID(selector) {
 		query = "SELECT id FROM cards WHERE id=$1 FOR UPDATE"
