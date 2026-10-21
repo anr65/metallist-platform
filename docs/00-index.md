@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Личный возврат Тони мерчанту — подготовка выпуска](operations/telegram-private-repayment-release.md)
+
 - [Telegram: передача Тони главному администратору — выпуск](operations/telegram-tony-handover-release.md)
 
 - [Карты, дроповоды и статусы: выпуск](operations/card-lifecycle-release.md)

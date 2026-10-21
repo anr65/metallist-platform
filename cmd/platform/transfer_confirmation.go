@@ -210,10 +210,13 @@ func (a *App) telegramPrivateUpdate(w http.ResponseWriter, x telegramUpdate, sen
 	if err != nil || u.CustodianID == "" {
 		if x.CallbackQuery != nil {
 			_ = a.telegramAnswer(x.CallbackQuery.ID, "Нет доступа к переводу")
-		} else if x.Message != nil && telegramMessageCommand(x.Message.Text) == "start" {
+		} else if x.Message != nil && (telegramMessageCommand(x.Message.Text) == "start" || telegramMessageCommand(x.Message.Text) == "repay") {
 			_ = a.telegramReply(chat, "Ваш Telegram ID не связан с активным сборщиком. Обратитесь к системному администратору.", nil)
 		}
 		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if a.telegramRepaymentPrivateUpdate(w, x, u, sender, chat) {
 		return
 	}
 	if x.CallbackQuery != nil {
@@ -266,7 +269,11 @@ func (a *App) telegramPrivateUpdate(w http.ResponseWriter, x telegramUpdate, sen
 		http.Error(w, "database unavailable", 500)
 		return
 	}
-	if err = a.telegramReply(chat, "Личный чат подключён. Здесь будут запросы на подтверждение переводов. Ожидающие запросы отправлены в очередь; повторный просмотр — /pending.", nil); err != nil {
+	text := "Личный чат подключён. Здесь будут запросы на подтверждение переводов. Ожидающие запросы отправлены в очередь; повторный просмотр — /pending."
+	if u.CustodianID == telegramTonyCustodianID {
+		text += " Для выдачи мерчанту из своих наличных: /repay. Для отмены ввода: /cancel."
+	}
+	if err = a.telegramReply(chat, text, nil); err != nil {
 		http.Error(w, "telegram delivery failed", 500)
 		return
 	}

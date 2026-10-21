@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,9 +51,18 @@ func (a *App) telegramCall(method string, payload M) error {
 	}
 	defer response.Body.Close()
 	var result struct {
-		OK bool `json:"ok"`
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
 	}
-	if response.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&result) != nil || !result.OK {
+	if json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&result) != nil {
+		return errors.New("Telegram отклонил запрос")
+	}
+	// Retried pagination/selection edits may already be visible after the prior
+	// webhook response was lost. Telegram reports this harmless case as 400.
+	if method == "editMessageText" && response.StatusCode == http.StatusBadRequest && strings.HasPrefix(result.Description, "Bad Request: message is not modified") {
+		return nil
+	}
+	if response.StatusCode != http.StatusOK || !result.OK {
 		return errors.New("Telegram отклонил запрос")
 	}
 	return nil
@@ -109,4 +119,23 @@ func (a *App) telegramSetupCommands() {
 	if e := a.telegramCall("setMyCommands", M{"scope": M{"type": "all_private_chats"}, "commands": []M{{"command": "start", "description": "Подключить личные подтверждения"}, {"command": "pending", "description": "Ожидающие переводы"}}}); e != nil {
 		log.Printf("Telegram private commands: %v", e)
 	}
+	if e := a.telegramSetRepaymentCommands(); e != nil {
+		log.Printf("Telegram Tony private commands: %v", e)
+	}
+}
+
+func (a *App) telegramSetRepaymentCommands() error {
+	var chat int64
+	err := a.db.QueryRow(`SELECT u.telegram_id FROM users u JOIN custodians c ON c.id=u.custodian_id
+ WHERE c.id=$1 AND c.active AND c.kind='collector' AND u.active AND u.role='collector' AND u.telegram_id>0`, telegramTonyCustodianID).Scan(&chat)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return a.telegramCall("setMyCommands", M{"scope": M{"type": "chat", "chat_id": chat}, "commands": []M{
+		{"command": "start", "description": "Начать работу"}, {"command": "pending", "description": "Ожидающие переводы"},
+		{"command": "repay", "description": "Выдача наличных мерчанту"}, {"command": "cancel", "description": "Отменить ввод возврата"},
+	}})
 }

@@ -12,6 +12,9 @@ func (a *App) telegramTransferNotificationWorker() {
 		if err := a.deliverTransferNotifications(10); err != nil {
 			log.Printf("Telegram transfer notifications: %v", err)
 		}
+		if err := a.deliverRepaymentNotifications(10); err != nil {
+			log.Printf("Telegram repayment notifications: %v", err)
+		}
 		time.Sleep(3 * time.Second)
 	}
 }

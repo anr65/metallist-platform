@@ -277,6 +277,10 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
+	if kind == "repayment" && p["telegram_private_repayment"] == true {
+		fail(w, 409, errors.New("этот возврат подтверждает лично Тони в личном чате с ботом"))
+		return
+	}
 	if p["telegram_confirmation_required"] == true && p["telegram_sender_confirmed"] != true {
 		fail(w, 409, errors.New("сначала требуется подтверждение отправителя в Telegram"))
 		return
