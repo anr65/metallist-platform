@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Telegram: передача Тони главному администратору — выпуск](operations/telegram-tony-handover-release.md)
+
 - [Карты, дроповоды и статусы: выпуск](operations/card-lifecycle-release.md)
 
 - [Telegram: последние 4 или 6 цифр карты](operations/telegram-card-suffix-release.md)

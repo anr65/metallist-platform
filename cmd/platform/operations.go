@@ -250,10 +250,10 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	defer tx.Rollback()
-	var kind, status, key string
+	var kind, status, key, creator string
 	var raw []byte
 	var version int
-	e = tx.QueryRow("SELECT kind,payload,status,version,idempotency_key FROM drafts WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&kind, &raw, &status, &version, &key)
+	e = tx.QueryRow("SELECT kind,payload,status,version,idempotency_key,created_by FROM drafts WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&kind, &raw, &status, &version, &key, &creator)
 	if e != nil {
 		fail(w, 404, e)
 		return
@@ -280,6 +280,12 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 	if p["telegram_confirmation_required"] == true && p["telegram_sender_confirmed"] != true {
 		fail(w, 409, errors.New("сначала требуется подтверждение отправителя в Telegram"))
 		return
+	}
+	if kind == "handover" && p["telegram_handover"] == true {
+		if e = telegramValidateHandover(tx, creator, p); e != nil {
+			fail(w, 409, e)
+			return
+		}
 	}
 	number, ok := p["amount_cents"].(json.Number)
 	if !ok {

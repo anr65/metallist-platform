@@ -210,6 +210,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	words := strings.Fields(text)
 	command := telegramCommand(words[0])
+	if command == "handover" && strings.HasPrefix(words[0], "/") {
+		return a.telegramHandover(u, message, updateID, strings.TrimSpace(text[len(words[0]):]))
+	}
 	if command == "cancel" {
 		res, e := a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
 		if e != nil {
@@ -223,6 +226,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return a.telegramReply(message.Chat.ID, "Ввод отменён. Обычные сообщения больше не обрабатываются.", nil)
 	}
 	if command == "start" {
+		if u.Role == "collector" && u.CustodianID == telegramTonyCustodianID {
+			return a.telegramReply(message.Chat.ID, "Передача главному администратору: /handover 100000. После вашего подтверждения главный администратор подтверждает получение в кабинете. Также доступны /cards_balance, /my_balance, /withdraw, /expense, /transfer, /card_status, /block_card и /cancel. Для зарплаты: зп 50000 комментарий.", nil)
+		}
 		if telegramFieldRole(u.Role) {
 			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
@@ -246,7 +252,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		args = strings.TrimSpace(text[len(words[0]):])
 	} else if strings.HasPrefix(words[0], "/") {
 		if command != "withdraw" && command != "expense" && command != "transfer" {
-			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw, /transfer и /cancel")
+			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw, /transfer, /handover и /cancel")
 		}
 		if len(words) > 1 {
 			args = strings.TrimSpace(text[len(words[0]):])
@@ -448,7 +454,10 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	actor := str(p, "telegram_actor_name")
 	var heading, details string
 	items, itemsErr := telegramExpenseItems(p)
-	if str(p, "to_custodian_id") != "" {
+	if p["telegram_handover"] == true {
+		heading = "Подтвердите передачу главному администратору"
+		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения главный администратор должен лично подтвердить фактически принятую сумму в кабинете. До этого наличные остаются за вами; резерв не создаётся."
+	} else if str(p, "to_custodian_id") != "" {
 		heading = "Подтвердите перевод наличных"
 		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения сумма будет зарезервирована до подтверждения получателем или главным администратором."
 	} else if itemsErr == nil && len(items) == 1 && str(items[0], "source_kind") == "cash" {

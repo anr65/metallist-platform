@@ -33,7 +33,7 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 		return "Операция не найдена", false
 	}
 	p, e := decodeMap(raw)
-	if e != nil || creator != u.ID || p["telegram_confirmation_required"] != true || (kind != "withdrawal" && kind != "expense" && kind != "transfer") {
+	if e != nil || creator != u.ID || p["telegram_confirmation_required"] != true || (kind != "withdrawal" && kind != "expense" && kind != "transfer" && kind != "handover") {
 		return "Нет доступа к этой операции", false
 	}
 	storedChat, e := telegramInt(p["telegram_chat_id"])
@@ -51,6 +51,9 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	}
 	if p["telegram_preview_sent"] != true {
 		return "Предпросмотр ещё не доставлен. Повторите команду после получения сообщения.", false
+	}
+	if kind == "handover" {
+		return a.telegramConfirmHandover(tx, u, draftID, p, action, chat)
 	}
 	if action == "reject" {
 		if _, e = tx.Exec("UPDATE drafts SET status='rejected',payload=jsonb_set(payload,'{telegram_sender_confirmed}','false'::jsonb) WHERE id=$1", draftID); e != nil {
