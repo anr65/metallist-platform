@@ -1,6 +1,6 @@
 # Компактный Telegram-диалог — 25.10.2026
 
-Статус: подготовка выпуска по прямому поручению владельца.
+Статус: выпущено в production по прямому поручению владельца 25.10.2026 в 12:06 МСК.
 
 ## Объём
 
@@ -35,3 +35,14 @@
 **GO** для проверенного дерева. Полный `go test -race ./... -count=1` прошёл (15,7 с), `go vet ./...`, `go build -trimpath`, `git diff --check` успешны. Девять новых `TestTelegramComfort*` покрывают UI и ошибки, прежние денежные/авторизационные регрессии сохранены. В отдельной локальной `metallist_chat_migration_test` на том же доказанно disposable кластере выполнено 028→029 с синтетическими бизнес-данными: полные counts/digests 13 таблиц до/после совпали (включая 2 entries/4 postings), дисбаланс 0. Под application role проверены INSERT/SELECT/UPDATE карточек и INSERT/SELECT/UPDATE/DELETE ошибок в откатываемой транзакции; UPDATE custodians не появился. Повтор 029 отклонён version guard. Production допускается после свежего backup, его полного восстановления и повторной проверки той же миграции в копии.
 
 Остаточные ограничения: Telegram не гарантирует exactly-once первоначальной отправки; исходящие карточки без ID из старого релиза связываются только при авторизованном callback. UI нового финансового документа полностью проверен на fake Telegram API; реальные финансовые smoke-команды в production не выполняются.
+
+
+## Production-результат
+
+Развёрнут точный commit main `38968a01f4458526a21956a1fd9df842ed4450a8` штатным `scripts/deploy-production.sh`; current указывает на этот release. Сервис `active/running`, `ExecMainStatus=0`, запуск 25.10.2026 в 12:06:16 МСК. Local/public `/health` возвращают `{"status":"ok"}`, журнал запуска без ошибок. Схема 29; новые таблицы на момент smoke пусты, дисбаланс ledger 0.
+
+Свежий закрытый backup `/var/backups/metallist-platform-protected/20261025T090554Z`: SHA256SUMS проверены, БД полностью восстановлена в отдельную временную БД, файлы распакованы в закрытую директорию. На восстановленной копии выполнены 028→029 и реальные INSERT/SELECT/UPDATE карточек, INSERT/SELECT/UPDATE/DELETE ошибок под `metallist_demo_app` в откатываемой транзакции. Затем тот же SQL SHA-256 `971c670c287e3845b5f83b07a6b743e44e23c9dfc6a737c59d45efd7d986f496` применён к production одной транзакцией при остановленном сервисе.
+
+Контрольные counts/digests всех 13 бизнес-таблиц до/после совпали. Сохранены 1 125 journal entries (MD5 `ba09e2d81e3c59558a1c26d6ccd52453`), 6 279 postings (MD5 `432fddb1f3ae7a99cb2e693f484a7ba3`), 1 014 drafts и 1 819 observations; дисбаланс 0. Полные evidence, SQL, fingerprints и результаты проверки app role — в защищённом `/var/backups/metallist-platform-protected/chat-comfort-release-5sGzZmq9`. Временная восстановленная БД и распакованные файлы удалены; backup сохранён.
+
+Read-only Telegram smoke проверяет прежний рабочий webhook, отсутствие ожидающих updates и команды группы, включая handover/transfer. Реальные финансовые команды и сообщения от имени участников не отправлялись. Предыдущий application release для отката: `3dea6f0233271b6ff143b8b0704dce90f0c8cf69`; схему/очереди оставить, активный handover-ввод отменить перед возвращением к старому поведению. Итог gate: **GO**, миграция и выпуск завершены.
