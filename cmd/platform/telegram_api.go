@@ -29,7 +29,16 @@ func telegramToken() string {
 	return strings.TrimSpace(string(b))
 }
 
+type telegramAPIError struct{ Description string }
+
+func (e *telegramAPIError) Error() string { return "Telegram отклонил запрос" }
+
 func (a *App) telegramCall(method string, payload M) error {
+	err := a.telegramCallResult(method, payload, nil)
+	return err
+}
+
+func (a *App) telegramCallResult(method string, payload M, resultTarget interface{}) error {
 	token := telegramToken()
 	if token == "" {
 		return errors.New("Telegram не подключён")
@@ -51,8 +60,9 @@ func (a *App) telegramCall(method string, payload M) error {
 	}
 	defer response.Body.Close()
 	var result struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
+		OK          bool            `json:"ok"`
+		Description string          `json:"description"`
+		Result      json.RawMessage `json:"result"`
 	}
 	if json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&result) != nil {
 		return errors.New("Telegram отклонил запрос")
@@ -63,7 +73,12 @@ func (a *App) telegramCall(method string, payload M) error {
 		return nil
 	}
 	if response.StatusCode != http.StatusOK || !result.OK {
-		return errors.New("Telegram отклонил запрос")
+		return &telegramAPIError{Description: result.Description}
+	}
+	if resultTarget != nil {
+		if err := json.Unmarshal(result.Result, resultTarget); err != nil {
+			return errTelegramDelivery
+		}
 	}
 	return nil
 }
@@ -138,4 +153,19 @@ func (a *App) telegramSetRepaymentCommands() error {
 		{"command": "start", "description": "Начать работу"}, {"command": "pending", "description": "Ожидающие переводы"},
 		{"command": "repay", "description": "Выдача наличных мерчанту"}, {"command": "cancel", "description": "Отменить ввод возврата"},
 	}})
+}
+
+// Keep the actual Telegram ID for future edits and deletion, including retries.
+func (a *App) telegramSendMessage(chat int64, text string, markup interface{}) (int64, error) {
+	body := M{"chat_id": chat, "text": text}
+	if markup != nil {
+		body["reply_markup"] = markup
+	}
+	var sent struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := a.telegramCallResult("sendMessage", body, &sent); err != nil || sent.MessageID <= 0 {
+		return 0, errTelegramDelivery
+	}
+	return sent.MessageID, nil
 }

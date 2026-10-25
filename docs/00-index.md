@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Компактный Telegram-диалог: выпуск 25.10.2026](operations/telegram-chat-comfort-release.md)
+
 - [Исправление команд статуса карты из меню](operations/card-status-dialog-fix-release.md)
 
 - [Личный возврат Тони мерчанту — выпуск](operations/telegram-private-repayment-release.md)

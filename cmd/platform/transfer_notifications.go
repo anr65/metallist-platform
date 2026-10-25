@@ -15,6 +15,15 @@ func (a *App) telegramTransferNotificationWorker() {
 		if err := a.deliverRepaymentNotifications(10); err != nil {
 			log.Printf("Telegram repayment notifications: %v", err)
 		}
+		if err := a.telegramSyncCards(10); err != nil {
+			log.Printf("Telegram card updates: %v", err)
+		}
+		if err := a.telegramDeliverInputErrors(10); err != nil {
+			log.Printf("Telegram input errors: %v", err)
+		}
+		if err := a.telegramCleanupInputErrors(10); err != nil {
+			log.Printf("Telegram input cleanup: %v", err)
+		}
 		time.Sleep(3 * time.Second)
 	}
 }
@@ -116,7 +125,15 @@ func (a *App) deliverTransferNotification(notificationID, draftID, purpose strin
 		}
 	}
 	if deliveryErr == nil {
-		deliveryErr = a.telegramReply(chat, text, markup)
+		if purpose != "recipient_request" {
+			var confirmed int64
+			if err = tx.QueryRow("SELECT COALESCE(confirmed_amount_cents,0) FROM drafts WHERE id=$1", draftID).Scan(&confirmed); err != nil {
+				return err
+			}
+			p["presentation_draft_id"] = draftID
+			text, markup = telegramOperationSummary("transfer", status, p, confirmed, chat > 0)
+		}
+		deliveryErr = a.telegramPublishCard(tx, draftID, chat, text, markup)
 	}
 	if deliveryErr != nil {
 		if _, err = tx.Exec("UPDATE transfer_notifications SET last_error=$1,next_attempt_at=now()+interval '1 minute' WHERE id=$2", deliveryErr.Error(), notificationID); err != nil {

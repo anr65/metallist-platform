@@ -14,11 +14,13 @@ type telegramTransferRecipient struct {
 }
 
 type telegramTransferDialog struct {
-	Token      string
-	Recipients []telegramTransferRecipient
-	Recipient  telegramTransferRecipient
-	Balance    int64
-	Available  int64
+	PromptMessageID int64 `json:"prompt_message_id"`
+	ChatID          int64 `json:"chat_id"`
+	Token           string
+	Recipients      []telegramTransferRecipient
+	Recipient       telegramTransferRecipient
+	Balance         int64
+	Available       int64
 }
 
 func (a *App) telegramTransferRecipients(u telegramActor) ([]telegramTransferRecipient, error) {
@@ -75,7 +77,7 @@ func (a *App) telegramTransferOptions(u telegramActor, chat int64) error {
 	for i, recipient := range recipients {
 		buttons = append(buttons, []interface{}{M{"text": recipient.Name, "callback_data": fmt.Sprintf("tr:%s:%d", dialog.Token, i)}})
 	}
-	return a.telegramReply(chat, "Выберите получателя перевода кнопкой. /cancel — отмена ввода.", M{"inline_keyboard": buttons})
+	return a.telegramSendInputPrompt(u, chat, "transfer", "Выберите получателя перевода кнопкой. /cancel — отмена ввода.", M{"inline_keyboard": buttons})
 }
 
 func (a *App) telegramTransferDialog(u telegramActor) (telegramTransferDialog, error) {
@@ -183,5 +185,9 @@ func (a *App) telegramTransferInputCallback(u telegramActor, chat, messageID, up
 	if err = a.telegramHandleMessage(u, message, updateID, dialog.Token); err != nil {
 		return err.Error(), false
 	}
+	if err = a.telegramResolveInputErrors(u, chat, "transfer"); err != nil {
+		return errTelegramDelivery.Error(), false
+	}
+	_ = a.telegramCleanupInputErrors(10)
 	return "Проверьте и подтвердите перевод", true
 }

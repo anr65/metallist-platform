@@ -173,13 +173,17 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			message, remove = a.telegramCallback(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
+			message, _ = a.telegramCallback(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
+			if message == errTelegramDelivery.Error() {
+				http.Error(w, "telegram delivery failed", 500)
+				return
+			}
 		}
 		if e := a.telegramAnswer(x.CallbackQuery.ID, message); e != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return
 		}
-		if remove {
+		if remove && !a.telegramMessageIsOperationCard(chat, x.CallbackQuery.Message.MessageID) {
 			a.telegramRemoveButtons(chat, x.CallbackQuery.Message.MessageID)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -191,25 +195,50 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 			if retryErr != nil {
 				http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			} else {
+				if a.telegramInputAccepted(u, x.Message, x.UpdateID) {
+					operation := a.telegramAcceptedOperation(u, x.UpdateID)
+					_ = a.telegramResolveInputErrors(u, chat, operation)
+					_ = a.telegramCleanupInputErrors(10)
+				}
 				w.WriteHeader(http.StatusOK)
 			}
+			return
+		}
+		if handled, retryErr := a.telegramRetryInputPrompt(u, x.Message, x.UpdateID); handled {
+			if retryErr != nil {
+				http.Error(w, "telegram delivery failed", 500)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
 			return
 		}
 		if e = a.telegramRetryPreview(x.UpdateID, chat); e != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return
 		}
+		if a.telegramInputAccepted(u, x.Message, x.UpdateID) {
+			operation := a.telegramAcceptedOperation(u, x.UpdateID)
+			_ = a.telegramResolveInputErrors(u, chat, operation)
+			_ = a.telegramCleanupInputErrors(10)
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	operation := a.telegramInputOperation(u, x.Message)
 	if e = a.telegramHandleMessage(u, x.Message, x.UpdateID); e != nil {
 		if !errors.Is(e, errTelegramDelivery) {
 			a.logAudit(u.ID, "telegram", "message", "command", "", "rejected", e.Error(), M{"update_id": x.UpdateID})
 		}
-		if errors.Is(e, errTelegramDelivery) || a.telegramReply(chat, e.Error(), nil) != nil {
+		if errors.Is(e, errTelegramDelivery) || a.telegramReportInputError(u, chat, x.UpdateID, operation, e) != nil {
 			http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
 			return
 		}
+	} else if a.telegramInputAccepted(u, x.Message, x.UpdateID) {
+		if e = a.telegramResolveInputErrors(u, chat, operation); e != nil {
+			http.Error(w, "database error", 500)
+			return
+		}
+		_ = a.telegramCleanupInputErrors(10)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -277,6 +306,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		}
 		args = text
 	}
+	if command == "handover" {
+		return a.telegramHandover(u, message, updateID, args)
+	}
 	if command == "transfer" && u.Role != "collector" {
 		return errors.New("Перевод доступен только сборщику")
 	}
@@ -292,19 +324,19 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return a.telegramTransferOptions(u, message.Chat.ID)
 		}
 		if command == "withdraw" {
-			return a.telegramReply(message.Chat.ID, "Введите снятия по одному в строке: последние 4 или 6 цифр карты, сумма снятия и остаток.\n\nНапример:\n7898 100к/200\n3338 100к/143500 комса 2400\n4567 50к/100\n\nЧтобы выйти: /cancel", nil)
+			return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите снятия по одному в строке (последние 4 или 6 цифр карты).\nБез комиссии: 7898 100к/200\nС комиссией: 7898 100к/200 комса 2400\n/cancel — отмена", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Введите последние 4 или 6 цифр карты, тип расхода и сумму. Несколько расходов укажите по одному в строке или через ;\n\nНапример:\n7898 прогрев 230\n7898 комса 25,50\n\nЧтобы выйти: /cancel", nil)
+		return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите расходы по одному в строке (последние 4 или 6 цифр карты):\n7898 прогрев 230\n7898 комса 25,50\n/cancel — отмена", nil)
 	}
 	transferToken := ""
-	payload := M{"telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
+	payload := M{"telegram_prompt_message_id": a.telegramPromptMessage(u, message.Chat.ID, command), "telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
 	if command == "transfer" {
 		var recipient telegramTransferRecipient
 		fields := strings.Fields(args)
 		amount := ""
 		if !strings.HasPrefix(words[0], "/") {
 			if len(fields) != 1 {
-				return errors.New("Отправьте только сумму перевода, например: 1000,00")
+				return telegramFieldError("transfer", "amount", "invalid_amount", "Отправьте только сумму перевода, например: 1000,00 или 1к")
 			}
 			dialog, err := a.telegramTransferDialog(u)
 			if err != nil || dialog.Recipient.ID == "" {
@@ -337,7 +369,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		}
 		cents, err := telegramAmount(amount)
 		if err != nil || cents <= 0 {
-			return errors.New("Укажите положительную сумму перевода")
+			return telegramFieldError("transfer", "amount", "invalid_amount", "Укажите положительную сумму перевода: 1000,00 или 1к")
 		}
 		var recipientUser string
 		var recipientTelegram int64
@@ -463,6 +495,28 @@ func (a *App) telegramRetryPreview(updateID, chat int64) error {
 }
 
 func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
+	tx, err := a.tx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	var status string
+	if err = tx.QueryRow("SELECT payload,status FROM drafts WHERE id=$1 FOR UPDATE", draftID).Scan(&raw, &status); err != nil {
+		return err
+	}
+	p, err = decodeMap(raw)
+	if err != nil {
+		return err
+	}
+	if status != "draft" || p["telegram_sender_confirmed"] == true {
+		return nil
+	}
+	storedChat, _ := telegramInt(p["telegram_chat_id"])
+	if storedChat != chat {
+		return errors.New("Нет доступа к предпросмотру")
+	}
+
 	amountCents, _ := telegramInt(p["amount_cents"])
 	actor := str(p, "telegram_actor_name")
 	var heading, details string
@@ -512,11 +566,18 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 		}
 	}
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить", "callback_data": "confirm:" + draftID}, M{"text": "Отклонить", "callback_data": "reject:" + draftID}}}}
-	if e := a.telegramReply(chat, heading+"\n\n"+details, keyboard); e != nil {
+	prompt, _ := telegramInt(p["telegram_prompt_message_id"])
+	if err = telegramBindCard(tx, draftID, chat, prompt); err != nil {
+		return err
+	}
+	if e := a.telegramPublishCard(tx, draftID, chat, heading+"\n\n"+details, keyboard); e != nil {
 		return e
 	}
-	_, e := a.db.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
-	return e
+	_, e := tx.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
+	if e != nil {
+		return e
+	}
+	return tx.Commit()
 }
 
 func telegramInt(v interface{}) (int64, error) {

@@ -156,7 +156,7 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 	if err = changeCardStatus(tx, u.ID, "telegram", ids[0], status, time.Now()); err != nil {
 		return err
 	}
-	if err = txAudit(tx, u.ID, "telegram", "card_status_command", "card", ids[0], "success", "", M{"update_id": updateID, "status": status}); err != nil {
+	if err = txAudit(tx, u.ID, "telegram", "card_status_command", "card", ids[0], "success", "", M{"update_id": updateID, "status": status, "command": command}); err != nil {
 		return err
 	}
 	return tx.Commit()

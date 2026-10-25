@@ -61,6 +61,9 @@ func validateTransferParties(tx *sql.Tx, p M) error {
 
 func (a *App) telegramSenderTransfer(tx *sql.Tx, u telegramActor, draftID, status string, p M, action string) (string, bool) {
 	if status != "draft" {
+		if err := tx.Commit(); err != nil {
+			return "Не удалось открыть итог", false
+		}
 		return "Операция уже обработана", true
 	}
 	if p["telegram_preview_sent"] != true {

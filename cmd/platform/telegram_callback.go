@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data string) (string, bool) {
+func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data string) (message string, remove bool) {
 	if page, ok := telegramCardsBalancePageNumber(data); ok {
 		if err := a.telegramCardsBalancePage(u, chat, messageID, page, 0); err != nil {
 			return err.Error(), false
@@ -40,10 +40,24 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	if e != nil || storedChat != chat {
 		return "Нет доступа к этой операции", false
 	}
+	if e = telegramBindCard(tx, draftID, chat, messageID); e != nil {
+		return "Не удалось сохранить карточку", false
+	}
+	defer func() {
+		if remove {
+			tx.Rollback()
+			if err := a.telegramSyncCard(draftID, chat); err != nil {
+				message = errTelegramDelivery.Error()
+			}
+		}
+	}()
 	if kind == "transfer" {
 		return a.telegramSenderTransfer(tx, u, draftID, status, p, action)
 	}
-	if status == "posted" || status == "rejected" {
+	if status == "posted" || status == "rejected" || status == "reversed" {
+		if e = tx.Commit(); e != nil {
+			return "Не удалось открыть итог", false
+		}
 		return "Операция уже обработана", true
 	}
 	if status != "draft" {
@@ -62,7 +76,6 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 		if e = txAudit(tx, u.ID, "telegram", "draft_reject", kind, draftID, "success", "", M{}); e != nil || tx.Commit() != nil {
 			return "Не удалось отклонить", false
 		}
-		_ = a.telegramReply(chat, "Операция отклонена. Балансы не изменились.", nil)
 		return "Отклонено", true
 	}
 	amountCents, e := telegramInt(p["amount_cents"])
@@ -120,37 +133,6 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 	if e = tx.Commit(); e != nil {
 		return "Не удалось провести операцию", false
 	}
-	if kind == "transfer" {
-		_ = a.telegramReply(chat, "Перевод подтверждён: "+telegramMoney(amountCents)+" → "+str(p, "to_custodian_name")+". Остатки сборщиков обновлены.", nil)
-		return "Подтверждено", true
-	}
-	label := "Снятие"
-	if kind == "expense" {
-		items, _ := telegramExpenseItems(p)
-		if len(items) == 1 {
-			_ = a.telegramReply(chat, "Расход подтверждён: "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
-			return "Подтверждено", true
-		}
-		_ = a.telegramReply(chat, "Расходы подтверждены: "+telegramExpenseCount(len(items))+" на "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
-		return "Подтверждено", true
-	}
-	items, _ := telegramWithdrawalItems(p)
-	var feeMessages []string
-	for _, item := range items {
-		fee, _ := telegramWithdrawalFee(item)
-		if fee > 0 {
-			feeMessages = append(feeMessages, "Банк. Комиссия: "+str(item, "telegram_mask")+" · "+telegramMoney(fee))
-		}
-	}
-	if len(feeMessages) > 0 {
-		_ = a.telegramReply(chat, "Снятия подтверждены на "+telegramMoney(amountCents)+". Созданы расходы:\n"+strings.Join(feeMessages, "\n")+"\nБалансы и остатки обновлены.", nil)
-		return "Подтверждено", true
-	}
-	if len(items) > 1 {
-		_ = a.telegramReply(chat, "Снятия подтверждены: "+telegramWithdrawalCount(len(items))+" на "+telegramMoney(amountCents)+". Балансы и остатки обновлены.", nil)
-		return "Подтверждено", true
-	}
-	_ = a.telegramReply(chat, label+" подтверждён: "+telegramMoney(amountCents)+". Балансы обновлены.", nil)
 	return "Подтверждено", true
 }
 

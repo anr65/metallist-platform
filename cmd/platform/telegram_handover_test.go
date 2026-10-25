@@ -151,7 +151,7 @@ func TestTelegramHandoverAccessAndInvalidAmounts(t *testing.T) {
 		telegramRequest(t, a, telegramMessageUpdate(int64(7210+i), 555, "/handover "+amount))
 	}
 	telegramRequest(t, a, telegramMessageUpdate(7220, 555, "/handover"))
-	if !fake.contains("/handover 100000") {
+	if !fake.contains("100000 или 100к") {
 		t.Fatal("amount hint missing")
 	}
 	var count int
@@ -217,6 +217,8 @@ func TestTelegramHandoverWithProductionStylePrivileges(t *testing.T) {
 	const role = "metallist_handover_limited_test"
 	if _, err := a.db.Exec(`CREATE ROLE metallist_handover_limited_test;
  GRANT USAGE ON SCHEMA public TO metallist_handover_limited_test;
+ GRANT SELECT,INSERT,UPDATE ON telegram_operation_messages TO metallist_handover_limited_test;
+ GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_input_errors TO metallist_handover_limited_test;
  GRANT SELECT ON ALL TABLES IN SCHEMA public TO metallist_handover_limited_test;
  GRANT INSERT ON drafts,journal_entries,postings,audit_events TO metallist_handover_limited_test;
  GRANT UPDATE(telegram_id,custodian_id) ON users TO metallist_handover_limited_test;

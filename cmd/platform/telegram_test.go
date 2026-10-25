@@ -65,9 +65,10 @@ func telegramFixture(t *testing.T, a *App, card string) (User, User, string, *fa
 		body["method"] = strings.TrimPrefix(r.URL.Path, "/botsynthetic:token/")
 		fake.mu.Lock()
 		fake.calls = append(fake.calls, body)
+		sentID := len(fake.calls) + 1000
 		fake.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"ok":true,"result":{"message_id":%d}}`, sentID)))
 	}))
 	t.Cleanup(server.Close)
 	file := t.TempDir() + "/telegram-token"
@@ -423,7 +424,7 @@ func TestTelegramCollectorWithdrawalBatchIsAtomicIdempotentAndReversible(t *test
 	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN account='1200' AND custodian_id=$1 AND side='debit' THEN amount_cents WHEN account='1200' AND custodian_id=$1 AND side='credit' THEN -amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN account='1100' AND card_id=$2 AND side='debit' THEN amount_cents WHEN account='1100' AND card_id=$2 AND side='credit' THEN -amount_cents ELSE 0 END),0) FROM postings", custodian, card).Scan(&cash, &cardBalance); e != nil || cash != 15_000_000 || cardBalance != 5_000_000 {
 		t.Fatal("withdrawal batch balances are wrong", cash, cardBalance, e)
 	}
-	if !fake.contains("Снятия подтверждены: 2 снятия на 150 000 ₽") {
+	if !fake.contains("снято 150 000 ₽ · 2 снятия") {
 		t.Fatal("withdrawal batch completion message missing")
 	}
 
@@ -519,7 +520,7 @@ func TestTelegramCollectorExpensePermissionsAndRejection(t *testing.T) {
 	if count != 0 {
 		t.Fatal("rejected expense posted")
 	}
-	if code := telegramRequest(t, a, telegramMessageUpdate(2004, 555, "/expense")); code != 200 || !fake.contains("Введите последние 4 или 6 цифр карты") {
+	if code := telegramRequest(t, a, telegramMessageUpdate(2004, 555, "/expense")); code != 200 || !fake.contains("Введите расходы по одному в строке") {
 		t.Fatal("command menu follow-up missing")
 	}
 	if code := telegramRequest(t, a, telegramMessageUpdate(2005, 555, "1234 комса 25,50")); code != 200 {
@@ -576,7 +577,7 @@ func TestTelegramCollectorExpenseBatchIsAtomicAndIdempotent(t *testing.T) {
 	if e := a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN p.account='5100' AND p.category='warmup' AND p.side='debit' THEN p.amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN p.account='5300' AND p.category='bank_fee' AND p.side='debit' THEN p.amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN p.account='1100' AND p.card_id=$2 AND p.side='credit' THEN p.amount_cents ELSE 0 END),0) FROM postings p JOIN journal_entries j ON p.entry_id=j.id WHERE j.event_id=$1", draftID, card).Scan(&warmup, &bankFee, &cardCredit); e != nil || warmup != 23_000 || bankFee != 2_550 || cardCredit != 25_550 {
 		t.Fatal("batch amounts are wrong", warmup, bankFee, cardCredit, e)
 	}
-	if !fake.contains("Расходы подтверждены: 2 расхода на 255,50 ₽") {
+	if !fake.contains("расходы: 2 · 255,50 ₽") {
 		t.Fatal("batch completion message missing")
 	}
 	if code, out := req(t, a.reverseDraft, chief, M{"id": draftID, "reason": "исправление пакетного расхода"}); code != 200 {

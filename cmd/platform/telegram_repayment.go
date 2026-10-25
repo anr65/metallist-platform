@@ -228,7 +228,7 @@ func (a *App) telegramRepaymentMessage(u telegramActor, message *telegramMessage
 	}
 	cents, err := telegramAmount(strings.TrimSpace(message.Text))
 	if err != nil || cents <= 0 {
-		return errors.New("Укажите положительную сумму, например 100000 или 100к")
+		return telegramFieldError("repay", "amount", "invalid_amount", "Укажите положительную сумму, например 100000 или 100к")
 	}
 	var name string
 	if err = tx.QueryRow("SELECT name FROM merchants WHERE id=$1 AND active", d.Selected.ID).Scan(&name); err != nil || name != d.Selected.Name {
@@ -266,33 +266,53 @@ func (a *App) telegramRepaymentPreview(draftID string, chat int64) error {
 	cents, _ := telegramInt(p["amount_cents"])
 	text := "Подтвердите выдачу мерчанту\n\nМерчант: " + str(p, "merchant_name") + "\nСумма: " + telegramMoney(cents) + "\n\nДеньги будут списаны с ваших наличных. Подтверждайте только фактически выданную сумму."
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить выдачу", "callback_data": "rc:" + draftID}, M{"text": "Отменить", "callback_data": "rr:" + draftID}}}}
-	if err = a.telegramReply(chat, text, keyboard); err != nil {
+	tx, err := a.tx()
+	if err != nil {
 		return err
 	}
-	_, err = a.db.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
-	return err
+	defer tx.Rollback()
+	if err = tx.QueryRow("SELECT status FROM drafts WHERE id=$1 FOR UPDATE", draftID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "draft" {
+		return nil
+	}
+	if err = a.telegramPublishCard(tx, draftID, chat, text, keyboard); err != nil {
+		return err
+	}
+	_, err = tx.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) telegramRepaymentResult(u telegramActor, chat, messageID int64, data string) error {
 	_, draftID, _ := strings.Cut(data, ":")
+	tx, err := a.tx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var raw []byte
-	var status string
-	if err := a.db.QueryRow("SELECT payload,status FROM drafts WHERE id=$1 AND kind='repayment' AND created_by=$2", draftID, u.ID).Scan(&raw, &status); err != nil {
+	if err = tx.QueryRow("SELECT payload FROM drafts WHERE id=$1 AND kind='repayment' AND created_by=$2 FOR UPDATE", draftID, u.ID).Scan(&raw); err != nil {
 		return errTelegramDelivery
 	}
 	p, err := decodeMap(raw)
 	if err != nil {
 		return errTelegramDelivery
 	}
-	text := "Выдача отменена. Списания нет."
-	if status == "posted" || status == "reversed" {
-		cents, _ := telegramInt(p["amount_cents"])
-		text = "Выдача подтверждена\n\nМерчант: " + str(p, "merchant_name") + "\nСумма: " + telegramMoney(cents) + "\nДеньги списаны с наличных Тони."
-		if status == "reversed" {
-			text = "Выдача сторнирована\n\nМерчант: " + str(p, "merchant_name") + "\nСумма: " + telegramMoney(cents)
-		}
+	storedChat, _ := telegramInt(p["telegram_chat_id"])
+	if storedChat != chat || p["telegram_private_repayment"] != true {
+		return errTelegramDelivery
 	}
-	return a.telegramEditMessageText(chat, messageID, text, M{"inline_keyboard": []interface{}{}})
+	if err = telegramBindCard(tx, draftID, chat, messageID); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	return a.telegramSyncCard(draftID, chat)
 }
 
 func (a *App) telegramRepaymentSelection(u telegramActor, sender, chat, messageID, updateID int64, data string) error {
@@ -507,10 +527,16 @@ func (a *App) telegramRepaymentPrivateUpdate(w http.ResponseWriter, x telegramUp
 		if !errors.Is(err, errTelegramDelivery) {
 			a.logAudit(u.ID, "telegram", "repayment_input", "command", "", "rejected", err.Error(), M{"update_id": x.UpdateID})
 		}
-		if errors.Is(err, errTelegramDelivery) || a.telegramReply(chat, err.Error(), nil) != nil {
+		if errors.Is(err, errTelegramDelivery) || a.telegramReportInputError(u, chat, x.UpdateID, "repay", err) != nil {
 			http.Error(w, "telegram delivery failed", 500)
 			return true
 		}
+	} else if telegramMessageCommand(x.Message.Text) != "repay" {
+		if err := a.telegramResolveInputErrors(u, chat, "repay"); err != nil {
+			http.Error(w, "database unavailable", 500)
+			return true
+		}
+		_ = a.telegramCleanupInputErrors(10)
 	}
 	w.WriteHeader(http.StatusOK)
 	return true

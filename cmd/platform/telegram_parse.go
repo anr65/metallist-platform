@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+var telegramCompactFee = regexp.MustCompile(`(?i)комса([0-9])`)
+
 var telegramCardSuffix = regexp.MustCompile(`^(?:[0-9]{4}|[0-9]{6})$`)
 
 const telegramBatchLimit = 20
@@ -68,49 +70,54 @@ func (a *App) telegramCard(_ telegramActor, suffix string) (string, string, erro
 }
 
 func (a *App) telegramParse(u telegramActor, command, args string) (telegramIntent, error) {
-	words := strings.Fields(args)
+	words := strings.Fields(telegramCompactFee.ReplaceAllString(args, "комса $1"))
 	var out telegramIntent
 	if command == "withdraw" {
+		if len(words) == 2 && telegramCardSuffix.MatchString(words[0]) {
+			if _, ok := cardStatusLabels[normalizeCardStatus(words[1])]; ok {
+				return out, telegramFieldError(command, "operation", "wrong_operation", "В строке указан статус карты. Уберите её из снятий и отправьте /card_status "+words[0]+" "+words[1]+". Весь пакет не принят")
+			}
+		}
 		if len(words) != 2 && len(words) != 4 {
-			return out, errors.New("Формат: /withdraw 7898 100к/200 [комса 2400]")
+			return out, telegramFieldError(command, "format", "invalid_format", "Без комиссии: 7898 100к/200. С комиссией: 7898 100к/200 комса 2400")
 		}
 		parts := strings.Split(words[1], "/")
 		if len(parts) != 2 {
-			return out, errors.New("После карты укажите сумму снятия и остаток через /, например 100к/200")
+			return out, telegramFieldError(command, "format", "invalid_format", "После карты укажите сумму снятия и остаток через /: 7898 100к/200 или 7898 100к/200 комса 2400")
 		}
 		amount, e := telegramAmount(parts[0])
 		if e != nil {
-			return out, e
+			return out, telegramFieldError(command, "amount", "invalid_amount", "Некорректная сумма: укажите положительную сумму, например 100000, 100к или 25,50")
 		}
 		observed, e := telegramObservedAmount(parts[1])
 		if e != nil {
-			return out, errors.New("Некорректный остаток карты")
+			return out, telegramFieldError(command, "balance", "invalid_balance", "Некорректный остаток карты: укажите ноль или положительную сумму после /, например 7898 100к/200")
 		}
 		out.Amount, out.Observed = amount, observed
 		if len(words) == 4 {
 			if !strings.EqualFold(words[2], "комса") {
-				return out, errors.New("После остатка укажите комса и сумму комиссии")
+				return out, telegramFieldError(command, "fee", "invalid_fee", "После остатка укажите комиссию: 7898 100к/200 комса 2400")
 			}
 			fee, err := telegramAmount(words[3])
 			if err != nil || fee <= 0 || fee > math.MaxInt64-amount {
-				return out, errors.New("Некорректная сумма банковской комиссии")
+				return out, telegramFieldError(command, "fee", "invalid_fee", "Некорректная сумма банковской комиссии. Пример: 7898 100к/200 комса 2400")
 			}
 			out.BankFee = fee
 		}
 	} else if command == "expense" {
 		if len(words) < 3 {
-			return out, errors.New("Формат: /expense 7898 прогрев 230")
+			return out, telegramFieldError(command, "format", "invalid_format", "Введите карту, категорию и сумму: 7898 прогрев 230 или 7898 комса 25,50")
 		}
 		category, e := telegramCategory(strings.Join(words[1:len(words)-1], " "))
 		if e != nil {
-			return out, e
+			return out, telegramFieldError(command, "category", "invalid_category", e.Error())
 		}
 		if telegramFieldRole(u.Role) && category != "warmup" && category != "bank_fee" {
 			return out, errors.New("Доступны только расходы «Прогрев» и «Комса»")
 		}
 		amount, e := telegramAmount(words[len(words)-1])
 		if e != nil {
-			return out, e
+			return out, telegramFieldError(command, "amount", "invalid_amount", "Некорректная сумма расхода: укажите положительную сумму, например 230 или 25,50")
 		}
 		out.Amount, out.Category = amount, category
 	} else {
@@ -118,7 +125,7 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 	}
 	card, mask, e := a.telegramCard(u, words[0])
 	if e != nil {
-		return out, e
+		return out, telegramFieldError(command, "card", "invalid_card", e.Error())
 	}
 	out.CardID, out.Mask = card, mask
 	return out, nil
@@ -136,7 +143,7 @@ func (a *App) telegramParseExpenses(u telegramActor, args string) ([]telegramInt
 	for i, part := range parts {
 		intent, err := a.telegramParse(u, "expense", strings.TrimSpace(part))
 		if err != nil {
-			return nil, fmt.Errorf("Строка %d: %w", i+1, err)
+			return nil, telegramRowInputError("expense", i+1, err)
 		}
 		intents = append(intents, intent)
 	}
@@ -155,7 +162,7 @@ func (a *App) telegramParseWithdrawals(u telegramActor, args string) ([]telegram
 	for i, part := range parts {
 		intent, err := a.telegramParse(u, "withdraw", strings.TrimSpace(part))
 		if err != nil {
-			return nil, fmt.Errorf("Строка %d: %w", i+1, err)
+			return nil, telegramRowInputError("withdraw", i+1, err)
 		}
 		intents = append(intents, intent)
 	}
@@ -264,11 +271,11 @@ func telegramMoney(cents int64) string {
 func telegramSalary(args, custodian string) (M, error) {
 	words := strings.Fields(args)
 	if len(words) < 2 {
-		return nil, errors.New("Формат: зп 50000 комментарий")
+		return nil, telegramFieldError("salary", "comment", "required_comment", "Введите зарплату и обязательный комментарий: зп 50000 за октябрь")
 	}
 	cents, err := telegramAmount(words[0])
 	if err != nil || cents <= 0 {
-		return nil, errors.New("Укажите положительную сумму зарплаты")
+		return nil, telegramFieldError("salary", "amount", "invalid_amount", "Укажите положительную сумму зарплаты: зп 50000 за октябрь")
 	}
 	comment := strings.TrimSpace(strings.TrimSpace(args)[len(words[0]):])
 	return M{"source_kind": "cash", "source_id": custodian, "category": "salary", "amount": rub(cents), "amount_cents": cents, "comment": comment}, nil
