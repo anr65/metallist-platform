@@ -267,7 +267,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if u.Role == "collector" && u.CustodianID == telegramTonyCustodianID {
-			return a.telegramReply(message.Chat.ID, "Передача главному администратору: /handover 100000. После вашего подтверждения главный администратор подтверждает получение в кабинете. Также доступны /cards_balance, /my_balance, /withdraw, /expense, /transfer, /card_status, /block_card и /cancel. Для зарплаты: зп 50000 комментарий.", nil)
+			return a.telegramReply(message.Chat.ID, "Передача главному администратору: /handover 100000. После вашего подтверждения вся сумма сразу поступит главному администратору. Также доступны /cards_balance, /my_balance, /withdraw, /expense, /transfer, /card_status, /block_card и /cancel. Для зарплаты: зп 50000 комментарий.", nil)
 		}
 		if telegramFieldRole(u.Role) {
 			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
@@ -523,7 +523,7 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 	items, itemsErr := telegramExpenseItems(p)
 	if p["telegram_handover"] == true {
 		heading = "Подтвердите передачу главному администратору"
-		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения главный администратор должен лично подтвердить фактически принятую сумму в кабинете. До этого наличные остаются за вами; резерв не создаётся."
+		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения вся сумма сразу спишется с ваших наличных и поступит главному администратору. Дополнительное подтверждение не требуется."
 	} else if str(p, "to_custodian_id") != "" {
 		heading = "Подтвердите перевод наличных"
 		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения сумма будет зарезервирована до подтверждения получателем или главным администратором."

@@ -75,7 +75,7 @@ func assertHandoverState(t *testing.T, a *App, draftID, status string, reserved,
 	}
 }
 
-func TestTelegramHandoverChiefConfirmationAndReversal(t *testing.T) {
+func TestTelegramHandoverSenderConfirmationAndReversal(t *testing.T) {
 	a, chief, sender, other, recipient, fake := handoverFixture(t)
 	draftID := newHandover(t, a, 7101, "0,05к")
 	if !fake.contains("Подтвердите передачу главному администратору") {
@@ -93,10 +93,11 @@ func TestTelegramHandoverChiefConfirmationAndReversal(t *testing.T) {
 	if message, remove := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); !remove {
 		t.Fatal("sender confirmation failed", message)
 	}
-	assertHandoverState(t, a, draftID, "draft", 0, 0)
-	if message, _ := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); !strings.Contains(message, "уже ожидает") {
-		t.Fatal("sender retry not idempotent", message)
+	assertHandoverState(t, a, draftID, "posted", 0, 1)
+	if message, done := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); !done || !strings.Contains(message, "уже обработана") {
+		t.Fatal("sender retry", message)
 	}
+
 	if code := telegramRequest(t, a, telegramMessageUpdate(7101, 555, "/handover 0,05к")); code != 200 {
 		t.Fatal(code)
 	}
@@ -107,21 +108,15 @@ func TestTelegramHandoverChiefConfirmationAndReversal(t *testing.T) {
 	if code, _ := req(t, a.confirmDraft, other.User, M{"id": draftID, "version": "1", "confirm_amount": "50"}); code != 403 {
 		t.Fatal("collector posted handover", code)
 	}
-	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "51"}); code != 409 {
-		t.Fatal("chief accepted more than declared", code)
-	}
-	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "49.99"}); code != 200 {
-		t.Fatal("partial receipt failed", code, out)
-	}
-	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "49.99"}); code != 200 || out["status"] != "already_posted" {
-		t.Fatal("chief retry failed", code, out)
+	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "50"}); code != 200 || out["status"] != "already_posted" {
+		t.Fatal("chief retry", code, out)
 	}
 	assertHandoverState(t, a, draftID, "posted", 0, 1)
 	tx, _ := a.tx()
 	left, err1 := balance(tx, "1200", "custodian", sender.CustodianID)
 	received, err2 := balance(tx, "1210", "custodian", recipient)
 	tx.Rollback()
-	if err1 != nil || err2 != nil || left != 5001 || received != 4999 {
+	if err1 != nil || err2 != nil || left != 5000 || received != 5000 {
 		t.Fatal("incorrect custody balances", left, received, err1, err2)
 	}
 	if code, out := req(t, a.reverseDraft, chief, M{"id": draftID, "reason": "Тестовое исправление"}); code != 200 {
@@ -177,9 +172,6 @@ func TestTelegramHandoverRevalidatesParticipants(t *testing.T) {
 		t.Run(mutation, func(t *testing.T) {
 			a, chief, sender, _, _, _ := handoverFixture(t)
 			draftID := newHandover(t, a, 7301, "50")
-			if _, remove := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); !remove {
-				t.Fatal("sender confirmation failed")
-			}
 			if _, err := a.db.Exec(mutation); err != nil {
 				t.Fatal(err)
 			}
@@ -199,16 +191,18 @@ func TestTelegramHandoverProtectsTransferReservations(t *testing.T) {
 	transfer := newTransfer(t, a, 7401, "60")
 	confirmTransferSender(t, a, sender, transfer)
 	draftID := newHandover(t, a, 7402, "50")
-	if _, remove := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); !remove {
-		t.Fatal("handover confirmation failed")
-	}
-	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "50"}); code != 409 {
-		t.Fatal("handover spent reserved cash", code)
+	if _, done := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draftID); done {
+		t.Fatal("handover spent reserved cash")
 	}
 	assertHandoverState(t, a, draftID, "draft", 0, 0)
-	if code, out := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "40"}); code != 200 {
-		t.Fatal("available cash could not be received", code, out)
+	if code, _ := req(t, a.confirmDraft, chief, M{"id": draftID, "version": "1", "confirm_amount": "40"}); code != 409 {
+		t.Fatal("chief bypassed sender", code)
 	}
+	available := newHandover(t, a, 7403, "40")
+	if message, done := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+available); !done {
+		t.Fatal(message)
+	}
+	assertHandoverState(t, a, available, "posted", 0, 1)
 	assertTransferState(t, a, transfer, "draft", 1, 0)
 }
 
@@ -263,4 +257,37 @@ func TestTelegramHandoverWithProductionStylePrivileges(t *testing.T) {
 		t.Fatal("receipt with limited privileges", code, out)
 	}
 	assertHandoverState(t, a, draftID, "posted", 0, 1)
+}
+
+func TestTelegramHandoverLegacyPreviewRequiresNewConsent(t *testing.T) {
+	a, chief, sender, _, _, _ := handoverFixture(t)
+	draft := newHandover(t, a, 7601, "50")
+	if _, err := a.db.Exec("UPDATE drafts SET payload=(payload-'telegram_handover_single_confirmation') || '{\"telegram_sender_confirmed\":true}'::jsonb WHERE id=$1", draft); err != nil {
+		t.Fatal(err)
+	}
+	if message, done := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draft); done || !strings.Contains(message, "Условия передачи изменились") {
+		t.Fatal(message, done)
+	}
+	assertHandoverState(t, a, draft, "draft", 0, 0)
+	// Preserve the old, explicitly consented web receipt, including partial amount.
+	if code, out := req(t, a.confirmDraft, chief, M{"id": draft, "version": "1", "confirm_amount": "49.99"}); code != 200 {
+		t.Fatal(code, out)
+	}
+	assertHandoverState(t, a, draft, "posted", 0, 1)
+}
+
+func TestTelegramHandoverAuditFailureRollsBackImmediatePosting(t *testing.T) {
+	a, _, sender, _, _, _ := handoverFixture(t)
+	draft := newHandover(t, a, 7701, "50")
+	if _, err := a.db.Exec(`CREATE FUNCTION reject_handover_audit_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='draft_confirm' AND NEW.object_type='handover' THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$;
+ CREATE TRIGGER reject_handover_audit_test BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_handover_audit_test();`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		a.db.Exec("DROP TRIGGER reject_handover_audit_test ON audit_events; DROP FUNCTION reject_handover_audit_test();")
+	})
+	if _, done := a.telegramCallback(sender, telegramTestGroup, 500, "confirm:"+draft); done {
+		t.Fatal("posted without audit")
+	}
+	assertHandoverState(t, a, draft, "draft", 0, 0)
 }

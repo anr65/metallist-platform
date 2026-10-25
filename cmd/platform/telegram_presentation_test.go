@@ -138,7 +138,7 @@ func TestTelegramComfortTypedRowAndOtherOperations(t *testing.T) {
 	}
 }
 
-func TestTelegramComfortHandoverSeparateAmountAndWebFinal(t *testing.T) {
+func TestTelegramComfortHandoverSeparateAmountAndImmediateFinal(t *testing.T) {
 	a, chief, sender, _, _, fake := handoverFixture(t)
 	if telegramRequest(t, a, telegramMessageUpdate(83001, 555, "/handover")) != 200 {
 		t.Fatal("menu")
@@ -155,19 +155,20 @@ func TestTelegramComfortHandoverSeparateAmountAndWebFinal(t *testing.T) {
 	if _, done := a.telegramCallback(sender, telegramTestGroup, msg, "confirm:"+draft); !done {
 		t.Fatal("confirm")
 	}
-	if !fake.contains("Ожидает главного администратора") {
-		t.Fatal("pending status")
+	if !fake.contains("принято 50 ₽") {
+		t.Fatal("handover did not immediately post")
 	}
-	if code, out := req(t, a.confirmDraft, chief, M{"id": draft, "version": "1", "confirm_amount": "49.99"}); code != 200 {
+	if code, out := req(t, a.confirmDraft, chief, M{"id": draft, "version": "1", "confirm_amount": "50"}); code != 200 || out["status"] != "already_posted" {
 		t.Fatal(code, out)
 	}
 	restarted := &App{db: a.db, storage: a.storage, location: a.location}
 	if err := restarted.telegramSyncCards(10); err != nil {
 		t.Fatal(err)
 	}
-	if !fake.contains("принято 49,99 ₽ из 50 ₽") || uiCard(t, a, draft, telegramTestGroup) != msg {
-		t.Fatal("partial amount or card lost")
+	if uiCard(t, a, draft, telegramTestGroup) != msg {
+		t.Fatal("card changed")
 	}
+
 	if fake.countMethod("sendMessage") != 2 {
 		t.Fatal("appended lifecycle message")
 	} // prompt + corrected error, later deleted

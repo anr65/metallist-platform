@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Stable custodian identity documented in the owner's reconciliations.
@@ -41,7 +42,7 @@ func (a *App) telegramHandover(u telegramActor, message *telegramMessage, update
 		if _, err := a.db.Exec("INSERT INTO telegram_dialogs(user_id,command,context,expires_at) VALUES($1,'handover',$2,now()+interval '10 minutes') ON CONFLICT(user_id) DO UPDATE SET command=EXCLUDED.command,context=EXCLUDED.context,expires_at=EXCLUDED.expires_at,updated_at=now()", u.ID, encode(M{"chat_id": message.Chat.ID})); err != nil {
 			return errors.New("Не удалось завершить предыдущий ввод")
 		}
-		return a.telegramSendInputPrompt(u, message.Chat.ID, "handover", "Введите сумму передачи отдельным сообщением: 100000 или 100к. После вашего подтверждения получение подтверждает главный администратор в кабинете. /cancel — отмена.", nil)
+		return a.telegramSendInputPrompt(u, message.Chat.ID, "handover", "Введите сумму передачи отдельным сообщением: 100000 или 100к. После вашего подтверждения вся сумма сразу поступит главному администратору. /cancel — отмена.", nil)
 	}
 	if len(strings.Fields(args)) != 1 {
 		return telegramFieldError("handover", "format", "invalid_format", "Введите только сумму: 100000 или 100к. Получатель выбран автоматически")
@@ -65,7 +66,7 @@ func (a *App) telegramHandover(u telegramActor, message *telegramMessage, update
 	if err = tx.QueryRow("SELECT id,name FROM custodians WHERE kind='chief' AND active").Scan(&recipient, &name); err != nil {
 		return errors.New("Главный администратор недоступен")
 	}
-	p := M{"telegram_prompt_message_id": a.telegramPromptMessage(u, message.Chat.ID, "handover"), "telegram_handover": true, "telegram_confirmation_required": true, "telegram_sender_confirmed": false,
+	p := M{"telegram_prompt_message_id": a.telegramPromptMessage(u, message.Chat.ID, "handover"), "telegram_handover": true, "telegram_handover_single_confirmation": true, "telegram_confirmation_required": true, "telegram_sender_confirmed": false,
 		"telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_sender_id": message.From.ID,
 		"telegram_actor_name": u.Name, "telegram_raw": message.Text, "amount": rub(cents), "amount_cents": cents,
 		"from_custodian_id": u.CustodianID, "to_custodian_id": recipient, "to_custodian_name": name}
@@ -102,17 +103,30 @@ func (a *App) telegramConfirmHandover(tx *sql.Tx, u telegramActor, draftID strin
 		a.logAudit(u.ID, "telegram", "handover_sender_confirm", "handover", draftID, "rejected", err.Error(), M{})
 		return err.Error(), false
 	}
-	if p["telegram_sender_confirmed"] == true {
-		if err := tx.Commit(); err != nil {
-			return "Не удалось открыть заявку", false
-		}
-		return "Заявка уже ожидает подтверждения главного администратора", true
+	if p["telegram_handover_single_confirmation"] != true {
+		return "Условия передачи изменились. Отклоните старую заявку и повторите /handover для подтверждения немедленной передачи", false
 	}
-	if _, err := tx.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_sender_confirmed}','true'::jsonb) WHERE id=$1", draftID); err != nil {
-		return "Не удалось подтвердить заявку", false
+	cents, err := telegramInt(p["amount_cents"])
+	if err != nil || cents <= 0 {
+		return "Некорректная сумма передачи", false
 	}
-	if err := txAudit(tx, u.ID, "telegram", "handover_sender_confirm", "handover", draftID, "success", "", M{}); err != nil || tx.Commit() != nil {
-		return "Не удалось подтвердить заявку", false
+	lines, err := a.eventLines(tx, "handover", p, cents)
+	if err != nil {
+		return "Передача не проведена: " + err.Error(), false
 	}
-	return "Заявка подтверждена", true
+	now := time.Now()
+	if _, err = put(tx, "handover", draftID, "draft:"+draftID, u.ID, now, now, lines, ""); err != nil {
+		return "Не удалось провести передачу", false
+	}
+	p["telegram_sender_confirmed"] = true
+	if _, err = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4 WHERE id=$5", encode(p), u.ID, now, cents, draftID); err != nil {
+		return "Не удалось сохранить передачу", false
+	}
+	if err = txAudit(tx, u.ID, "telegram", "draft_confirm", "handover", draftID, "success", "", M{"confirmed_cents": cents, "single_confirmation": true}); err != nil {
+		return "Не удалось записать аудит", false
+	}
+	if err = tx.Commit(); err != nil {
+		return "Не удалось провести передачу; повторите", false
+	}
+	return "Передача проведена", true
 }

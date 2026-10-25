@@ -46,3 +46,13 @@
 Контрольные counts/digests всех 13 бизнес-таблиц до/после совпали. Сохранены 1 125 journal entries (MD5 `ba09e2d81e3c59558a1c26d6ccd52453`), 6 279 postings (MD5 `432fddb1f3ae7a99cb2e693f484a7ba3`), 1 014 drafts и 1 819 observations; дисбаланс 0. Полные evidence, SQL, fingerprints и результаты проверки app role — в защищённом `/var/backups/metallist-platform-protected/chat-comfort-release-5sGzZmq9`. Временная восстановленная БД и распакованные файлы удалены; backup сохранён.
 
 Read-only Telegram smoke проверяет прежний рабочий webhook, отсутствие ожидающих updates и команды группы, включая handover/transfer. Реальные финансовые команды и сообщения от имени участников не отправлялись. Предыдущий application release для отката: `3dea6f0233271b6ff143b8b0704dce90f0c8cf69`; схему/очереди оставить, активный handover-ввод отменить перед возвращением к старому поведению. Итог gate: **GO**, миграция и выпуск завершены.
+
+## Уточнение /handover — 25.10.2026
+
+Владелец уточнил: `/handover` не требует подтверждения chief. Для новых заявок личное подтверждение Тони сразу атомарно проводит полную сумму с `1200` на `1210`; preview явно предупреждает об этом и хранит `telegram_handover_single_confirmation=true`. Сохраняются права Тони, валидация сторон, доступные наличные с учётом резервов, идемпотентность, аудит и сторно. Схема остаётся 29, data migration/backfill не нужны.
+
+Старые заявки не перепроводятся автоматически: их прежний preview требовал другого процесса. Callback предлагает отклонить старую заявку и начать `/handover` заново; старое явное подтверждение отправителя сохраняет возможность частичного web-приёма chief. Финансовая история не меняется при выпуске.
+
+Проверки: `TestTelegramHandoverSenderConfirmationAndReversal`, проверка изменившихся сторон, нехватки наличных с резервами, ограниченных production-style прав; `TestTelegramHandoverLegacyPreviewRequiresNewConsent` сохраняет прежний частичный web-приём; `TestTelegramHandoverAuditFailureRollsBackImmediatePosting` доказывает атомарный откат postings при ошибке аудита. Компактный итог проверяется `TestTelegramComfortHandoverSeparateAmountAndImmediateFinal`. Полный race suite, vet, build и diff-check обязательны перед выпуском. База — тот же повторно проверенный disposable кластер `127.0.0.1:55873`, отдельно от production.
+
+Выпуск после свежего закрытого backup с проверкой восстановления: точный commit main через штатный deployment script, затем current/service/health/log и read-only Telegram smoke. Предыдущий application release `38968a01f4458526a21956a1fd9df842ed4450a8`; откат приложения не отменяет состоявшиеся передачи, схема остаётся 29. Черновики нового режима при откате получат старый двухэтапный процесс, поэтому предпочтителен roll-forward.
