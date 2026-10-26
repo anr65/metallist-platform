@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Восстановление исторических связей реестров — 26.10.2026](operations/historical-registry-links-20261026.md)
+
 - [Ручной реестр оплат из карточного запроса — выпуск 26.10.2026](operations/manual-registry-link-release.md)
 
 - [Компактный Telegram-диалог: выпуск 25.10.2026](operations/telegram-chat-comfort-release.md)
