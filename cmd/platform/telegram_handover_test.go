@@ -212,6 +212,7 @@ func TestTelegramHandoverWithProductionStylePrivileges(t *testing.T) {
 	if _, err := a.db.Exec(`CREATE ROLE metallist_handover_limited_test;
  GRANT USAGE ON SCHEMA public TO metallist_handover_limited_test;
  GRANT SELECT,INSERT,UPDATE ON telegram_operation_messages TO metallist_handover_limited_test;
+ GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_prompt_deletions TO metallist_handover_limited_test;
  GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_input_errors TO metallist_handover_limited_test;
  GRANT SELECT ON ALL TABLES IN SCHEMA public TO metallist_handover_limited_test;
  GRANT INSERT ON drafts,journal_entries,postings,audit_events TO metallist_handover_limited_test;

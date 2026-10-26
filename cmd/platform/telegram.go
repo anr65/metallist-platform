@@ -126,7 +126,8 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	}
 	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && telegramMessageCommand(x.Message.Text) != "зп" && !telegramSensitiveNumber.MatchString(x.Message.Text) {
 		var waiting bool
-		e = a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM telegram_dialogs d JOIN users u ON u.id=d.user_id WHERE u.telegram_id=$1 AND u.active AND d.expires_at>now())", sender).Scan(&waiting)
+		e = a.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM telegram_dialogs d JOIN users u ON u.id=d.user_id WHERE u.telegram_id=$1 AND u.active AND d.expires_at>now())
+ OR EXISTS(SELECT 1 FROM telegram_updates WHERE update_id=$2 AND raw_update->>'from_id'=$3 AND raw_update->>'chat_id'=$4)`, sender, x.UpdateID, fmt.Sprint(sender), fmt.Sprint(chat)).Scan(&waiting)
 		if e != nil {
 			http.Error(w, "database error", http.StatusInternalServerError)
 			return
@@ -566,18 +567,22 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 		}
 	}
 	keyboard := M{"inline_keyboard": []interface{}{[]interface{}{M{"text": "Подтвердить", "callback_data": "confirm:" + draftID}, M{"text": "Отклонить", "callback_data": "reject:" + draftID}}}}
-	prompt, _ := telegramInt(p["telegram_prompt_message_id"])
-	if err = telegramBindCard(tx, draftID, chat, prompt); err != nil {
-		return err
-	}
 	if e := a.telegramPublishCard(tx, draftID, chat, heading+"\n\n"+details, keyboard); e != nil {
 		return e
+	}
+	prompt, _ := telegramInt(p["telegram_prompt_message_id"])
+	if err = queueTelegramPromptDeletion(tx, chat, prompt); err != nil {
+		return err
 	}
 	_, e := tx.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
 	if e != nil {
 		return e
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	_ = a.telegramCleanupPrompts(10)
+	return nil
 }
 
 func telegramInt(v interface{}) (int64, error) {

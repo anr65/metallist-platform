@@ -24,6 +24,9 @@ func (a *App) telegramTransferNotificationWorker() {
 		if err := a.telegramCleanupInputErrors(10); err != nil {
 			log.Printf("Telegram input cleanup: %v", err)
 		}
+		if err := a.telegramCleanupPrompts(10); err != nil {
+			log.Printf("Telegram prompt cleanup: %v", err)
+		}
 		time.Sleep(3 * time.Second)
 	}
 }

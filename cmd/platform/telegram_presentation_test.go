@@ -57,8 +57,8 @@ func TestTelegramComfortWithdrawalOneCardAndCommission(t *testing.T) {
 		t.Fatal("input")
 	}
 	draft := uiDraft(t, a, 81002)
-	if uiCard(t, a, draft, telegramTestGroup) != prompt || fake.countMethod("sendMessage") != 1 {
-		t.Fatal("preview did not reuse prompt")
+	if uiCard(t, a, draft, telegramTestGroup) == prompt || fake.countMethod("sendMessage") != 2 {
+		t.Fatal("preview reused old hint instead of appearing below input")
 	}
 	if !fake.contains("Банк. Комиссия с этой карты: 2 400 ₽") {
 		t.Fatal("preview fee")
@@ -68,7 +68,7 @@ func TestTelegramComfortWithdrawalOneCardAndCommission(t *testing.T) {
 			t.Fatal("confirmation")
 		}
 	}
-	if !fake.contains("✅ Сборщик · снято 100 000 ₽ · ****1234\nБанковская комиссия: 2 400 ₽") || fake.countMethod("sendMessage") != 1 {
+	if !fake.contains("✅ Сборщик · снято 100 000 ₽ · ****1234\nБанковская комиссия: 2 400 ₽") || fake.countMethod("sendMessage") != 2 {
 		t.Fatal("summary appended or lost fee")
 	}
 	var entries, observations, fees int
@@ -169,9 +169,9 @@ func TestTelegramComfortHandoverSeparateAmountAndImmediateFinal(t *testing.T) {
 		t.Fatal("card changed")
 	}
 
-	if fake.countMethod("sendMessage") != 2 {
+	if fake.countMethod("sendMessage") != 3 {
 		t.Fatal("appended lifecycle message")
-	} // prompt + corrected error, later deleted
+	} // hint + error (both deleted), then a distinct preview
 	assertHandoverState(t, a, draft, "posted", 0, 1)
 }
 

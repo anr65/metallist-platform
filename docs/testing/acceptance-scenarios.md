@@ -216,7 +216,7 @@
 
 ## Telegram: компактный диалог — 25.10.2026
 
-- `TestTelegramComfortWithdrawalOneCardAndCommission`: меню содержит два полных примера; подсказка → preview → итог сохраняют один Telegram ID, `комса2400` принимается, повторы не дублируют снятие, расход и наблюдение.
+- `TestTelegramComfortWithdrawalOneCardAndCommission`: меню содержит два полных примера; preview получает новый Telegram ID ниже ввода, подсказка удаляется, preview → итог сохраняют один ID, `комса2400` принимается, повторы не дублируют снятие, расход и наблюдение.
 - `TestTelegramComfortTypedErrorsCleanupIsScoped`: исправление снятия удаляет только сообщения бота этого автора/чата/операции; ошибки другого автора и карточного расхода сохраняются.
 - `TestTelegramComfortTypedRowAndOtherOperations`: поле, код и номер ошибочной строки; подсказка отдельной команды для статуса среди снятий; классификация передачи, перевода, зарплаты, статусов и личной выдачи.
 - `TestTelegramComfortHandoverSeparateAmountAndImmediateFinal`: отдельная сумма после `/handover`, ошибка и исправление, немедленное проведение всей суммы после подтверждения Тони, идемпотентный web-повтор и восстановление карточки новым App без нового сообщения.
@@ -237,3 +237,13 @@
 - После сохранения связь видна в счётчике ответных реестров; состав карточного запроса больше нельзя редактировать. Реестр имеет статус `preview`, до подтверждения нет проводок. Повтор команды не создаёт второй реестр. Самостоятельный ввод без запроса продолжает работать.
 
 Регрессионное покрытие: `TestManualRegistryLinkedRequest`, `TestManualRegistryCreationAndConfirmation`; запуск только на проверенной disposable test database.
+
+
+## Telegram: подтверждение после ввода — 26.10.2026
+
+- `TestTelegramPromptConfirmationFollowsInput`: снятие, расход, передача и перевод после меню создают новое подтверждение после ввода; старый hint удаляется, подтверждение → итог сохраняют ID, сама карточка не удаляется.
+- `TestTelegramPrivateRepaymentDeletesHintAfterFreshPreview`: личный выбор мерчанта/подсказка удаляется после нового preview под суммой.
+- `TestTelegramCardStatusDeletesPromptAfterSuccessfulInput`: промежуточная и окончательная подсказки удаляются только после доставки следующего шага/результата.
+- `TestTelegramPromptDeletionFailureRetriesWithoutPosting`: сбой deleteMessage не блокирует preview; новый App удаляет hint из долговременной очереди, не отправляет новое подтверждение и не создаёт postings.
+- `TestTelegramPromptCleanupNeverDeletesLegacyCanonicalCard`: очередь и worker не удаляют ID, уже связанный с финансовым preview/итогом старого релиза.
+- `TestTelegramPromptRemainsUntilPreviewDelivered`: ошибка ввода и сбой sendMessage оставляют hint; повтор того же обычного ввода после завершения диалога восстанавливает preview и очистку без второго draft.

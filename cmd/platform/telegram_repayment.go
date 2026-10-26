@@ -19,15 +19,16 @@ type telegramRepaymentMerchant struct {
 }
 
 type telegramRepaymentDialog struct {
-	Token      string
-	Sender     int64
-	Custodian  string
-	Page       int
-	HasNext    bool
-	Merchants  []telegramRepaymentMerchant
-	Selected   telegramRepaymentMerchant
-	DraftID    string
-	LastUpdate int64
+	PromptMessageID int64
+	Token           string
+	Sender          int64
+	Custodian       string
+	Page            int
+	HasNext         bool
+	Merchants       []telegramRepaymentMerchant
+	Selected        telegramRepaymentMerchant
+	DraftID         string
+	LastUpdate      int64
 }
 
 func telegramValidateRepaymentActor(tx *sql.Tx, u telegramActor, sender, chat int64) error {
@@ -103,7 +104,7 @@ func repaymentMerchantPage(tx *sql.Tx, d *telegramRepaymentDialog, page int) err
 	return nil
 }
 
-func (a *App) telegramRepaymentPrompt(chat, messageID int64, d telegramRepaymentDialog) error {
+func (a *App) telegramRepaymentPrompt(u telegramActor, chat, messageID int64, d telegramRepaymentDialog) error {
 	text := "Выберите мерчанта"
 	var markup interface{}
 	if d.DraftID != "" {
@@ -138,7 +139,22 @@ func (a *App) telegramRepaymentPrompt(chat, messageID int64, d telegramRepayment
 		}
 		return a.telegramEditMessageText(chat, messageID, text, markup)
 	}
-	return a.telegramReply(chat, text, markup)
+	if d.PromptMessageID > 0 {
+		return a.telegramEditMessageText(chat, d.PromptMessageID, text, markup)
+	}
+	sent, err := a.telegramSendMessage(chat, text, markup)
+	if err != nil {
+		return err
+	}
+	result, err := a.db.Exec("UPDATE telegram_repayment_dialogs SET context=jsonb_set(context,'{PromptMessageID}',to_jsonb($2::bigint)) WHERE user_id=$1 AND context->>'Token'=$3 AND expires_at>now()", u.ID, sent, d.Token)
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return errors.New("Ввод уже изменился. Повторите /repay")
+	}
+	return nil
 }
 
 func rejectPreviousRepayment(tx *sql.Tx, u telegramActor) error {
@@ -192,7 +208,7 @@ func (a *App) telegramRepaymentMessage(u telegramActor, message *telegramMessage
 		d, loadErr := loadRepaymentDialog(tx, u.ID)
 		tx.Rollback()
 		if loadErr == nil && d.LastUpdate == updateID && repaymentDialogMatches(d, u, sender) {
-			return a.telegramRepaymentPrompt(chat, 0, d)
+			return a.telegramRepaymentPrompt(u, chat, 0, d)
 		}
 		return nil
 	}
@@ -217,7 +233,7 @@ func (a *App) telegramRepaymentMessage(u telegramActor, message *telegramMessage
 		if err = saveRepaymentDialog(tx, u.ID, d); err != nil || tx.Commit() != nil {
 			return errors.New("Не удалось начать ввод")
 		}
-		return a.telegramRepaymentPrompt(chat, 0, d)
+		return a.telegramRepaymentPrompt(u, chat, 0, d)
 	}
 	d, err := loadRepaymentDialog(tx, u.ID)
 	if err != nil || !repaymentDialogMatches(d, u, sender) || d.Selected.ID == "" {
@@ -235,7 +251,7 @@ func (a *App) telegramRepaymentMessage(u telegramActor, message *telegramMessage
 		return errors.New("Мерчант недоступен или его название изменилось. Начните заново: /repay")
 	}
 	draftID := id()
-	p := M{"telegram_private_repayment": true, "telegram_confirmation_required": true, "telegram_sender_confirmed": false,
+	p := M{"telegram_prompt_message_id": d.PromptMessageID, "telegram_private_repayment": true, "telegram_confirmation_required": true, "telegram_sender_confirmed": false,
 		"telegram_preview_sent": false, "telegram_chat_id": chat, "telegram_sender_id": sender, "telegram_actor_name": u.Name,
 		"telegram_notification_chat_id": group, "source_kind": "cash", "source_id": u.CustodianID,
 		"merchant_id": d.Selected.ID, "merchant_name": name, "amount_cents": cents, "amount": rub(cents), "currency": "RUB"}
@@ -280,11 +296,19 @@ func (a *App) telegramRepaymentPreview(draftID string, chat int64) error {
 	if err = a.telegramPublishCard(tx, draftID, chat, text, keyboard); err != nil {
 		return err
 	}
+	prompt, _ := telegramInt(p["telegram_prompt_message_id"])
+	if err = queueTelegramPromptDeletion(tx, chat, prompt); err != nil {
+		return err
+	}
 	_, err = tx.Exec("UPDATE drafts SET payload=jsonb_set(payload,'{telegram_preview_sent}','true'::jsonb) WHERE id=$1 AND status='draft'", draftID)
 	if err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	_ = a.telegramCleanupPrompts(10)
+	return nil
 }
 
 func (a *App) telegramRepaymentResult(u telegramActor, chat, messageID int64, data string) error {
@@ -339,7 +363,7 @@ func (a *App) telegramRepaymentSelection(u telegramActor, sender, chat, messageI
 	if d.Token != parts[1] {
 		if d.LastUpdate == updateID {
 			tx.Rollback()
-			return a.telegramRepaymentPrompt(chat, messageID, d)
+			return a.telegramRepaymentPrompt(u, chat, messageID, d)
 		}
 		return errors.New("Кнопка устарела. Используйте последнее сообщение или /repay")
 	}
@@ -366,11 +390,14 @@ func (a *App) telegramRepaymentSelection(u telegramActor, sender, chat, messageI
 	} else {
 		return errors.New("Кнопка недоступна")
 	}
+	if d.PromptMessageID == 0 {
+		d.PromptMessageID = messageID
+	}
 	d.LastUpdate = updateID
 	if err = saveRepaymentDialog(tx, u.ID, d); err != nil || tx.Commit() != nil {
 		return errors.New("Не удалось сохранить выбор")
 	}
-	return a.telegramRepaymentPrompt(chat, messageID, d)
+	return a.telegramRepaymentPrompt(u, chat, messageID, d)
 }
 
 func (a *App) telegramRepaymentConfirm(u telegramActor, sender, chat int64, data string) (string, bool) {

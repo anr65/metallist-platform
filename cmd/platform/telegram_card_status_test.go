@@ -181,7 +181,7 @@ func TestCardStatusPromptAndSuccessDeliveryRetry(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok":true,"result":true}`))
+		w.Write([]byte(`{"ok":true,"result":{"message_id":12345}}`))
 	}))
 	defer server.Close()
 	t.Setenv("TELEGRAM_API_BASE", server.URL)

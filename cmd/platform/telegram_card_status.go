@@ -9,11 +9,13 @@ import (
 )
 
 type telegramCardStatusDialog struct {
-	Token        string `json:"token"`
-	ChatID       int64  `json:"chat_id"`
-	LastUpdateID int64  `json:"last_update_id"`
-	Selector     string `json:"selector"`
-	Command      string `json:"-"`
+	PromptMessageID         int64  `json:"prompt_message_id"`
+	PreviousPromptMessageID int64  `json:"previous_prompt_message_id"`
+	Token                   string `json:"token"`
+	ChatID                  int64  `json:"chat_id"`
+	LastUpdateID            int64  `json:"last_update_id"`
+	Selector                string `json:"selector"`
+	Command                 string `json:"-"`
 }
 
 func cardStatusSelectorValid(selector string) bool {
@@ -50,6 +52,9 @@ func (a *App) beginCardStatusInput(u telegramActor, message *telegramMessage, co
 		return errors.New("укажите последние четыре цифры или ID карты")
 	}
 	d := telegramCardStatusDialog{Token: id(), ChatID: message.Chat.ID, LastUpdateID: updateID, Selector: selector, Command: command}
+	if len(expected) > 0 {
+		d.PreviousPromptMessageID = expected[0].PromptMessageID
+	}
 	tx, err := a.tx()
 	if err != nil {
 		return err
@@ -73,7 +78,7 @@ func (a *App) beginCardStatusInput(u telegramActor, message *telegramMessage, co
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	return a.telegramReply(message.Chat.ID, cardStatusInputPrompt(d), nil)
+	return a.telegramCardStatusPrompt(u, d)
 }
 
 func (a *App) cardStatusDialog(u telegramActor, chat int64) (telegramCardStatusDialog, error) {
@@ -135,12 +140,31 @@ func (a *App) telegramCardStatusInput(u telegramActor, message *telegramMessage,
 
 func (a *App) cardStatusReply(u telegramActor, chat, updateID int64) error {
 	var suffix, status string
-	err := a.db.QueryRow(`SELECT c.last4,a.detail->>'status' FROM audit_events a JOIN cards c ON c.id=a.object_id
- WHERE a.actor_id=$1 AND a.channel='telegram' AND a.action='card_status_command' AND a.outcome='success' AND a.detail->>'update_id'=$2 LIMIT 1`, u.ID, fmt.Sprint(updateID)).Scan(&suffix, &status)
+	var prompt, storedChat int64
+	err := a.db.QueryRow(`SELECT c.last4,a.detail->>'status',COALESCE((a.detail->>'prompt_message_id')::bigint,0),COALESCE((a.detail->>'prompt_chat_id')::bigint,0) FROM audit_events a JOIN cards c ON c.id=a.object_id
+ WHERE a.actor_id=$1 AND a.channel='telegram' AND a.action='card_status_command' AND a.outcome='success' AND a.detail->>'update_id'=$2 LIMIT 1`, u.ID, fmt.Sprint(updateID)).Scan(&suffix, &status, &prompt, &storedChat)
 	if err != nil {
 		return err
 	}
-	return a.telegramReply(chat, fmt.Sprintf("Карта ••••%s: %s.", suffix, cardStatusLabels[status]), nil)
+	if err = a.telegramReply(chat, fmt.Sprintf("Карта ••••%s: %s.", suffix, cardStatusLabels[status]), nil); err != nil {
+		return err
+	}
+	if prompt <= 0 || storedChat != chat {
+		return nil
+	}
+	tx, err := a.tx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = queueTelegramPromptDeletion(tx, chat, prompt); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	_ = a.telegramCleanupPrompts(10)
+	return nil
 }
 
 func (a *App) retryCardStatusReply(u telegramActor, message *telegramMessage, updateID int64) (bool, error) {
@@ -160,7 +184,38 @@ func (a *App) retryCardStatusReply(u telegramActor, message *telegramMessage, up
 		return true, err
 	}
 	if err == nil && d.LastUpdateID == updateID {
-		return true, a.telegramReply(message.Chat.ID, cardStatusInputPrompt(d), nil)
+		return true, a.telegramCardStatusPrompt(u, d)
 	}
 	return false, nil
+}
+
+func (a *App) telegramCardStatusPrompt(u telegramActor, d telegramCardStatusDialog) error {
+	if d.PromptMessageID > 0 {
+		return a.telegramEditMessageText(d.ChatID, d.PromptMessageID, cardStatusInputPrompt(d), telegramEmptyKeyboard())
+	}
+	sent, err := a.telegramSendMessage(d.ChatID, cardStatusInputPrompt(d), nil)
+	if err != nil {
+		return err
+	}
+	tx, err := a.tx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("UPDATE telegram_dialogs SET context=jsonb_set(context,'{prompt_message_id}',to_jsonb($2::bigint)) WHERE user_id=$1 AND context->>'token'=$3 AND expires_at>now()", u.ID, sent, d.Token)
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return errors.New("Ввод уже изменился. Повторите команду")
+	}
+	if err = queueTelegramPromptDeletion(tx, d.ChatID, d.PreviousPromptMessageID); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	_ = a.telegramCleanupPrompts(10)
+	return nil
 }

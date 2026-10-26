@@ -373,6 +373,7 @@ func TestTelegramPrivateRepaymentWithProductionStylePrivileges(t *testing.T) {
 	if _, err := a.db.Exec(`CREATE ROLE metallist_repayment_limited_test;
  GRANT USAGE ON SCHEMA public TO metallist_repayment_limited_test;
  GRANT SELECT,INSERT,UPDATE ON telegram_operation_messages TO metallist_repayment_limited_test;
+ GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_prompt_deletions TO metallist_repayment_limited_test;
  GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_input_errors TO metallist_repayment_limited_test;
  GRANT SELECT ON ALL TABLES IN SCHEMA public TO metallist_repayment_limited_test;
  GRANT INSERT ON telegram_updates,drafts,journal_entries,postings,audit_events,telegram_repayment_dialogs,telegram_repayment_notifications TO metallist_repayment_limited_test;

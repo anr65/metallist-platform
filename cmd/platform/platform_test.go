@@ -126,7 +126,7 @@ func TestCollectorTransferDraftAndReversal(t *testing.T) {
 }
 func reset(t *testing.T, a *App) {
 	t.Helper()
-	_, e := a.db.Exec("TRUNCATE telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,drop_handlers,custodians,banks,tariffs,merchants,sessions,users CASCADE")
+	_, e := a.db.Exec("TRUNCATE telegram_prompt_deletions,telegram_dialogs,telegram_updates,report_approvals,audit_events,postings,journal_entries,drafts,observations,manual_rate_confirmations,tariff_confirmations,tariff_adjustments,registry_rows,registries,source_documents,payment_contacts,cards,drop_handlers,custodians,banks,tariffs,merchants,sessions,users CASCADE")
 	if e != nil {
 		t.Fatal(e)
 	}

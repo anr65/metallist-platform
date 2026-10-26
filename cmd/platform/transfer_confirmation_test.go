@@ -365,6 +365,7 @@ func TestTransferConfirmationWithProductionStylePrivileges(t *testing.T) {
 	if _, err := a.db.Exec(`CREATE ROLE metallist_transfer_limited_test;
  GRANT USAGE ON SCHEMA public TO metallist_transfer_limited_test;
  GRANT SELECT,INSERT,UPDATE ON telegram_operation_messages TO metallist_transfer_limited_test;
+ GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_prompt_deletions TO metallist_transfer_limited_test;
  GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_input_errors TO metallist_transfer_limited_test;
  GRANT SELECT ON users,custodians TO metallist_transfer_limited_test;
  GRANT UPDATE(telegram_id,custodian_id) ON users TO metallist_transfer_limited_test;

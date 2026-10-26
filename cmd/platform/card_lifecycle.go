@@ -105,6 +105,15 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 		return err
 	}
 	defer tx.Rollback()
+	var prompt, promptChat int64
+	if len(expected) > 0 {
+		prompt, promptChat = expected[0].PromptMessageID, expected[0].ChatID
+	} else {
+		err = tx.QueryRow("SELECT COALESCE((context->>'prompt_message_id')::bigint,0),COALESCE((context->>'chat_id')::bigint,0) FROM telegram_dialogs WHERE user_id=$1 AND command IN ('card_status','block_card')", u.ID).Scan(&prompt, &promptChat)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	if len(expected) > 0 {
 		d := expected[0]
 		res, e := tx.Exec(`DELETE FROM telegram_dialogs WHERE user_id=$1 AND command=$2 AND expires_at>now()
@@ -156,7 +165,7 @@ func (a *App) telegramCardStatus(u telegramActor, words []string, command string
 	if err = changeCardStatus(tx, u.ID, "telegram", ids[0], status, time.Now()); err != nil {
 		return err
 	}
-	if err = txAudit(tx, u.ID, "telegram", "card_status_command", "card", ids[0], "success", "", M{"update_id": updateID, "status": status, "command": command}); err != nil {
+	if err = txAudit(tx, u.ID, "telegram", "card_status_command", "card", ids[0], "success", "", M{"update_id": updateID, "status": status, "command": command, "prompt_message_id": prompt, "prompt_chat_id": promptChat}); err != nil {
 		return err
 	}
 	return tx.Commit()
