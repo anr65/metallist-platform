@@ -63,7 +63,7 @@ function ManualRegistryContactSelect({ contacts, value, onValueChange, field, la
 export const expenseCategories = [
   ['agent_fee', 'Агентские'], ['bank_fee', 'Банк. Комиссия'], ['dividends', 'Дивиденды'], ['salary', 'Зарплата'],
   ['warmup', 'Прогрев'], ['it_infrastructure', 'ИТ Инфраструктура'], ['taxes', 'Налоги'],
-  ['communication', 'Связь'], ['delivery', 'Доставка'], ['other', 'Прочие расходы'],
+  ['taxi', 'Такси'], ['material', 'Материал'], ['communication', 'Связь'], ['delivery', 'Доставка'], ['other', 'Прочие расходы'],
 ];
 
 export function MoneyForm({ role, onCreated }) {

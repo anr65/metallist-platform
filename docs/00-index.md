@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Расход из наличных Telegram: выпуск 27.10.2026](operations/telegram-cash-expense-release.md)
+
 - [Баланс в Telegram-итоге: выпуск 27.10.2026](operations/telegram-balance-release.md)
 
 - [Порядок сообщений Telegram: исправление 26.10.2026](operations/telegram-prompt-order-release.md)

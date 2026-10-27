@@ -63,7 +63,7 @@ func (a *App) telegramInputOperation(u telegramActor, message *telegramMessage) 
 }
 
 var telegramOperationLabels = map[string]string{
-	"withdraw": "Снятие", "expense": "Расход", "salary": "Зарплата", "handover": "Передача", "transfer": "Перевод",
+	"withdraw": "Снятие", "expense": "Расход", "cashexpense": "Расход из наличных", "salary": "Зарплата", "handover": "Передача", "transfer": "Перевод",
 	"card_status": "Статус карты", "block_card": "Блокировка карты", "repay": "Выдача мерчанту",
 	"cards_balance": "Остатки карт", "my_balance": "Остаток наличных", "input": "Ввод",
 }
@@ -118,6 +118,9 @@ func (a *App) telegramAcceptedOperation(u telegramActor, updateID int64) string 
 		}
 		if kind == "expense" {
 			p, _ := decodeMap(raw)
+			if p["telegram_cash_expense"] == true {
+				return "cashexpense"
+			}
 			items, _ := telegramExpenseItems(p)
 			if len(items) == 1 && str(items[0], "category") == "salary" {
 				return "salary"

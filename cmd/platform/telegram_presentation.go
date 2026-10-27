@@ -366,7 +366,7 @@ func (a *App) telegramRetryInputPrompt(u telegramActor, message *telegramMessage
 	}
 	command := telegramMessageCommand(message.Text)
 	switch command {
-	case "withdraw", "expense", "handover", "transfer":
+	case "withdraw", "expense", "handover", "transfer", "cashexpense":
 	default:
 		return false, nil
 	}

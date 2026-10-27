@@ -217,6 +217,10 @@ func telegramCategory(raw string) (string, error) {
 		return "it_infrastructure", nil
 	case "налоги", "taxes":
 		return "taxes", nil
+	case "такси", "taxi":
+		return "taxi", nil
+	case "материал", "material":
+		return "material", nil
 	case "связь", "communication":
 		return "communication", nil
 	case "доставка", "delivery":
@@ -242,12 +246,16 @@ func telegramCategoryName(code string) string {
 		return "ИТ Инфраструктура"
 	case "taxes":
 		return "Налоги"
+	case "taxi":
+		return "Такси"
+	case "material":
+		return "Материал"
 	case "communication":
 		return "Связь"
 	case "delivery":
 		return "Доставка"
 	case "other":
-		return "Прочие РАСХОДЫ"
+		return "Прочие расходы"
 	default:
 		return "Расход"
 	}

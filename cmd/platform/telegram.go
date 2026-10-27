@@ -167,7 +167,13 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	if x.CallbackQuery != nil {
 		var message string
 		var remove bool
-		if strings.HasPrefix(x.CallbackQuery.Data, "tr:") || strings.HasPrefix(x.CallbackQuery.Data, "ta:") {
+		if strings.HasPrefix(x.CallbackQuery.Data, "ce:") {
+			message, remove = a.telegramCashExpenseSelection(u, chat, x.CallbackQuery.Message.MessageID, x.CallbackQuery.Data)
+			if message == errTelegramDelivery.Error() {
+				http.Error(w, "telegram delivery failed", 500)
+				return
+			}
+		} else if strings.HasPrefix(x.CallbackQuery.Data, "tr:") || strings.HasPrefix(x.CallbackQuery.Data, "ta:") {
 			message, remove = a.telegramTransferInputCallback(u, chat, x.CallbackQuery.Message.MessageID, x.UpdateID, x.CallbackQuery.Data)
 			if message == errTelegramDelivery.Error() {
 				http.Error(w, "telegram delivery failed", http.StatusInternalServerError)
@@ -254,6 +260,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	if command == "handover" && strings.HasPrefix(words[0], "/") {
 		return a.telegramHandover(u, message, updateID, strings.TrimSpace(text[len(words[0]):]))
 	}
+	if command == "cashexpense" && strings.HasPrefix(words[0], "/") {
+		return a.telegramCashExpenseStart(u, message.Chat.ID)
+	}
 	if command == "cancel" {
 		res, e := a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
 		if e != nil {
@@ -268,12 +277,12 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 	}
 	if command == "start" {
 		if u.Role == "collector" && u.CustodianID == telegramTonyCustodianID {
-			return a.telegramReply(message.Chat.ID, "Передача главному администратору: /handover 100000. После вашего подтверждения вся сумма сразу поступит главному администратору. Также доступны /cards_balance, /my_balance, /withdraw, /expense, /transfer, /card_status, /block_card и /cancel. Для зарплаты: зп 50000 комментарий.", nil)
+			return a.telegramReply(message.Chat.ID, "Передача главному администратору: /handover 100000. После вашего подтверждения вся сумма сразу поступит главному администратору. Также доступны /cards_balance, /my_balance, /withdraw, /expense, /cashexpense, /transfer, /card_status, /block_card и /cancel. Для зарплаты: зп 50000 комментарий.", nil)
 		}
 		if telegramFieldRole(u.Role) {
-			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw, /expense и /cashexpense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw и /expense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw, /expense и /cashexpense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
 	if strings.HasPrefix(words[0], "/") && (command == "card_status" || command == "block_card") {
 		return a.telegramCardStatusInput(u, message, updateID, command)
@@ -290,7 +299,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		args = strings.TrimSpace(text[len(words[0]):])
 	} else if strings.HasPrefix(words[0], "/") {
 		if command != "withdraw" && command != "expense" && command != "transfer" {
-			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /withdraw, /transfer, /handover и /cancel")
+			return errors.New("Доступны команды /start, /cards_balance, /my_balance, /expense, /cashexpense, /withdraw, /transfer, /handover и /cancel")
 		}
 		if len(words) > 1 {
 			args = strings.TrimSpace(text[len(words[0]):])
@@ -303,9 +312,12 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		}
 		e := a.db.QueryRow("SELECT command FROM telegram_dialogs WHERE user_id=$1 AND expires_at>now()", u.ID).Scan(&command)
 		if e != nil {
-			return errors.New("Сначала выберите команду /withdraw, /expense или /transfer в меню")
+			return errors.New("Сначала выберите команду /withdraw, /expense, /cashexpense или /transfer в меню")
 		}
 		args = text
+	}
+	if command == "cashexpense" {
+		return a.telegramCashExpenseInput(u, message, updateID, args)
 	}
 	if command == "handover" {
 		return a.telegramHandover(u, message, updateID, args)
@@ -529,7 +541,7 @@ func (a *App) telegramSendPreview(draftID string, chat int64, p M) error {
 		heading = "Подтвердите перевод наличных"
 		details = "Отправитель: " + actor + "\nПолучатель: " + str(p, "to_custodian_name") + "\nСумма: " + telegramMoney(amountCents) + "\nПосле вашего подтверждения сумма будет зарезервирована до подтверждения получателем или главным администратором."
 	} else if itemsErr == nil && len(items) == 1 && str(items[0], "source_kind") == "cash" {
-		heading = "Подтвердите расход «Зарплата»"
+		heading = "Подтвердите расход «" + telegramCategoryName(str(items[0], "category")) + "»"
 		details = "Автор: " + actor + "\nИсточник: наличные автора\nСумма: " + telegramMoney(amountCents) + "\nКомментарий: " + str(items[0], "comment")
 	} else if itemsErr == nil && len(items) == 1 {
 		itemAmount, _ := telegramInt(items[0]["amount_cents"])

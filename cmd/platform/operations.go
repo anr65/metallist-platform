@@ -29,7 +29,7 @@ func expenseAccount(category string) (string, error) {
 		return "5300", nil
 	case "other":
 		return "5900", nil
-	case "salary", "warmup", "it_infrastructure", "taxes", "communication", "delivery", "operating", "transport":
+	case "salary", "warmup", "it_infrastructure", "taxes", "communication", "delivery", "operating", "transport", "taxi", "material":
 		return "5100", nil
 	default:
 		return "", errors.New("для этого типа расхода нет утверждённого способа учёта")
