@@ -55,3 +55,39 @@ func (a *App) telegramCleanupPrompts(limit int) error {
 	}
 	return nil
 }
+
+// Capture the bot hint before consuming the dialog. Cancellation and durable
+// cleanup must commit together, so a Telegram outage cannot orphan the picker.
+func (a *App) telegramCancelDialog(userID string) (bool, error) {
+	tx, err := a.tx()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var command string
+	var raw []byte
+	err = tx.QueryRow("DELETE FROM telegram_dialogs WHERE user_id=$1 RETURNING command,context", userID).Scan(&command, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if command == "cashexpense" {
+		context, err := decodeMap(raw)
+		if err != nil {
+			return false, err
+		}
+		chat, _ := telegramInt(context["chat_id"])
+		prompt, _ := telegramInt(context["prompt_message_id"])
+		if chat != 0 {
+			if err = queueTelegramPromptDeletion(tx, chat, prompt); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}

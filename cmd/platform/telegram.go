@@ -264,13 +264,13 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		return a.telegramCashExpenseStart(u, message.Chat.ID)
 	}
 	if command == "cancel" {
-		res, e := a.db.Exec("DELETE FROM telegram_dialogs WHERE user_id=$1", u.ID)
+		cancelled, e := a.telegramCancelDialog(u.ID)
 		if e != nil {
 			return errors.New("Не удалось отменить ввод")
 		}
-		cancelled, _ := res.RowsAffected()
-		a.logAudit(u.ID, "telegram", "input_cancel", "command", "", "success", "", M{"update_id": updateID, "active": cancelled == 1})
-		if cancelled == 0 {
+		_ = a.telegramCleanupPrompts(10)
+		a.logAudit(u.ID, "telegram", "input_cancel", "command", "", "success", "", M{"update_id": updateID, "active": cancelled})
+		if !cancelled {
 			return a.telegramReply(message.Chat.ID, "Активного ввода нет.", nil)
 		}
 		return a.telegramReply(message.Chat.ID, "Ввод отменён. Обычные сообщения больше не обрабатываются.", nil)
