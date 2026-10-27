@@ -35,3 +35,5 @@ Gate **GO**, выпуск завершён. При откате сохранят
 Свежий backup `/var/backups/metallist-platform-protected/20261027T162214Z` проверен контрольными суммами, полным восстановлением и распаковкой файлов. В копии схема 32, 1 215 entries, 6 722 postings, дисбаланс 0. Временная копия удалена; evidence `/var/backups/metallist-platform-protected/telegram-cancel-fYkSNkjd`. Откат исправления — прежний application release eb633fe с сохранением схемы 32 и очереди; финансовые данные не восстанавливать.
 
 Gate исправления **GO**: повторный полный `go test -race ./... -count=1` успешен (20,887 с), `go vet`, Go build, `git diff --check` и ссылки документации проверены.
+
+Исправление выпущено 27.10.2026 в 19:23:39 МСК: `4182368ba1f6a52a309c53ca2b2383da00049cf7`. Current соответствует release, systemd active/running, ExecMainStatus=0, local/public health успешны. Схема 32 сохранена. Финансовых smoke-команд или сообщений за участников не отправляли; удаление проверено на локальном Telegram API double. Локальный тестовый PostgreSQL остановлен.
