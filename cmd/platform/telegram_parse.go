@@ -254,17 +254,23 @@ func telegramCategoryName(code string) string {
 }
 
 func telegramMoney(cents int64) string {
-	whole := fmt.Sprintf("%d", cents/100)
+	sign := ""
+	magnitude := uint64(cents)
+	if cents < 0 {
+		sign = "-"
+		magnitude = uint64(-(cents + 1)) + 1
+	}
+	whole := fmt.Sprintf("%d", magnitude/100)
 	var groups []string
 	for len(whole) > 3 {
 		groups = append([]string{whole[len(whole)-3:]}, groups...)
 		whole = whole[:len(whole)-3]
 	}
 	groups = append([]string{whole}, groups...)
-	if cents%100 == 0 {
-		return strings.Join(groups, " ") + " ₽"
+	if magnitude%100 == 0 {
+		return sign + strings.Join(groups, " ") + " ₽"
 	}
-	return fmt.Sprintf("%s,%02d ₽", strings.Join(groups, " "), cents%100)
+	return fmt.Sprintf("%s%s,%02d ₽", sign, strings.Join(groups, " "), magnitude%100)
 }
 
 // Salary uses the author's cash, never a card or a caller-supplied custodian.

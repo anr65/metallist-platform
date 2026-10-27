@@ -118,6 +118,9 @@ func (a *App) telegramConfirmHandover(tx *sql.Tx, u telegramActor, draftID strin
 	if _, err = put(tx, "handover", draftID, "draft:"+draftID, u.ID, now, now, lines, ""); err != nil {
 		return "Не удалось провести передачу", false
 	}
+	if err := telegramCaptureBalance(tx, "handover", p, u.ID); err != nil {
+		return "Не удалось сохранить баланс", false
+	}
 	p["telegram_sender_confirmed"] = true
 	if _, err = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4 WHERE id=$5", encode(p), u.ID, now, cents, draftID); err != nil {
 		return "Не удалось сохранить передачу", false

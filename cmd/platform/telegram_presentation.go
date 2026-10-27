@@ -36,7 +36,68 @@ func (a *App) telegramPublishCard(tx *sql.Tx, draftID string, chat int64, text s
 	return err
 }
 
+// Snapshot in the posting transaction, never at delivery time. A retry must
+// describe the same operation even after the custodian's next transaction.
+func telegramCaptureBalance(tx *sql.Tx, kind string, p M, creator string) error {
+	if p["telegram_confirmation_required"] != true && p["telegram_private_repayment"] != true {
+		return nil
+	}
+	custodian := ""
+	switch kind {
+	case "withdrawal":
+		custodian = str(p, "custodian_id")
+	case "handover", "transfer":
+		custodian = str(p, "from_custodian_id")
+	case "repayment":
+		custodian = str(p, "source_id")
+	case "expense":
+		if err := tx.QueryRow("SELECT custodian_id::text FROM users WHERE id=$1", creator).Scan(&custodian); err != nil {
+			return err
+		}
+	default:
+		return nil
+	}
+	read := func(holder string) (int64, error) {
+		if holder == "" {
+			return 0, errors.New("Не указан хранитель наличных")
+		}
+		var cents int64
+		err := tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0)
+ FROM postings WHERE account IN ('1200','1210') AND custodian_id=$1`, holder).Scan(&cents)
+		return cents, err
+	}
+	cents, err := read(custodian)
+	if err != nil {
+		return err
+	}
+	p["telegram_balance_after_cents"] = cents
+	if kind == "transfer" {
+		cents, err = read(str(p, "to_custodian_id"))
+		if err != nil {
+			return err
+		}
+		p["telegram_recipient_balance_after_cents"] = cents
+	}
+	return nil
+}
+
 func telegramOperationSummary(kind, status string, p M, confirmed int64, private bool) (string, interface{}) {
+	text, markup := telegramOperationSummaryText(kind, status, p, confirmed, private)
+	if status == "posted" && text != "" {
+		key := "telegram_balance_after_cents"
+		if kind == "transfer" && private {
+			key = "telegram_recipient_balance_after_cents"
+		}
+		if value, exists := p[key]; exists {
+			if cents, err := telegramInt(value); err == nil {
+				text += "\nБаланс: " + telegramMoney(cents)
+			}
+		}
+	}
+	return text, markup
+}
+
+func telegramOperationSummaryText(kind, status string, p M, confirmed int64, private bool) (string, interface{}) {
 	amount, _ := telegramInt(p["amount_cents"])
 	actor := str(p, "telegram_actor_name")
 	prefix := "✅ "

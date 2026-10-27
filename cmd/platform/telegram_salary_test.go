@@ -84,6 +84,9 @@ func TestTelegramSalaryCash(t *testing.T) {
 			cash(1000000)
 			send(telegramButtonUpdate(7104, 555, "confirm", draftID))
 			cash(1000000)
+			if !fake.contains("Баланс: 10 000 ₽") {
+				t.Fatal("salary final omitted remaining cash")
+			}
 			var debit, credit int64
 			if err = a.db.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' AND account='5100' AND category='salary' THEN amount_cents ELSE 0 END),0),COALESCE(SUM(CASE WHEN side='credit' THEN amount_cents ELSE 0 END),0) FROM postings WHERE entry_id IN (SELECT id FROM journal_entries WHERE event_id=$1)", draftID).Scan(&debit, &credit); err != nil || debit != 5000000 || credit != debit {
 				t.Fatal(debit, credit, err)

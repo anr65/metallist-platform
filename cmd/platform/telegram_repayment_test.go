@@ -129,6 +129,9 @@ func TestTelegramPrivateRepaymentPostsAndNotifies(t *testing.T) {
 	if err := a.deliverRepaymentNotifications(10); err != nil {
 		t.Fatal(err)
 	}
+	if !fake.contains("Баланс: 49,99 ₽") {
+		t.Fatal("repayment omitted remaining cash")
+	}
 	call := lastTelegramCall(t, fake, "sendMessage")
 	if call["chat_id"] != float64(telegramTestGroup) || !strings.Contains(str(call, "text"), "Мерчант 00") || !strings.Contains(str(call, "text"), "50,01") || !strings.Contains(str(call, "text"), "Тони Сопрано") {
 		t.Fatal("wrong group notification", call)

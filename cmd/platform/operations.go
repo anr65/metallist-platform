@@ -348,7 +348,11 @@ func (a *App) confirmDraft(w http.ResponseWriter, r *http.Request, u User) {
 			return
 		}
 	}
-	_, e = tx.Exec("UPDATE drafts SET status='posted',confirmed_by=$1,confirmed_at=now(),confirmed_amount_cents=$2 WHERE id=$3", u.ID, cents, str(m, "id"))
+	if e = telegramCaptureBalance(tx, kind, p, creator); e != nil {
+		fail(w, 500, e)
+		return
+	}
+	_, e = tx.Exec("UPDATE drafts SET status='posted',payload=$4,confirmed_by=$1,confirmed_at=now(),confirmed_amount_cents=$2 WHERE id=$3", u.ID, cents, str(m, "id"), encode(p))
 	if e != nil {
 		fail(w, 500, e)
 		return

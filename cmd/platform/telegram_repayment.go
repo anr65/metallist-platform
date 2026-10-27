@@ -468,11 +468,15 @@ func (a *App) telegramRepaymentConfirm(u telegramActor, sender, chat int64, data
 	if _, err = put(tx, "repayment", draftID, "draft:"+draftID, u.ID, now, now, lines, ""); err != nil {
 		return "Не удалось провести возврат. Повторите подтверждение", false
 	}
+	if err := telegramCaptureBalance(tx, "repayment", p, u.ID); err != nil {
+		return "Не удалось сохранить баланс", false
+	}
 	p["telegram_sender_confirmed"] = true
 	if _, err = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4 WHERE id=$5", encode(p), u.ID, now, cents, draftID); err != nil {
 		return "Не удалось сохранить возврат", false
 	}
 	notification := "Выдача мерчанту\nМерчант: " + name + "\nСумма: " + telegramMoney(cents) + "\nВыдал: Тони Сопрано"
+	notification += "\nБаланс: " + telegramMoney(p["telegram_balance_after_cents"].(int64))
 	if _, err = tx.Exec("INSERT INTO telegram_repayment_notifications(draft_id,chat_id,message) VALUES($1,$2,$3)", draftID, group, notification); err != nil {
 		return "Не удалось сохранить уведомление. Возврат не проведён", false
 	}

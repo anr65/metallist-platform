@@ -62,6 +62,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Баланс в Telegram-итоге: выпуск 27.10.2026](operations/telegram-balance-release.md)
+
 - [Порядок сообщений Telegram: исправление 26.10.2026](operations/telegram-prompt-order-release.md)
 
 - [Разрешение исключений реестров № 5 и № 129 — 26.10.2026](operations/registry-5-129-resolution-20261026.md)

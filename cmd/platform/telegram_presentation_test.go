@@ -68,7 +68,7 @@ func TestTelegramComfortWithdrawalOneCardAndCommission(t *testing.T) {
 			t.Fatal("confirmation")
 		}
 	}
-	if !fake.contains("✅ Сборщик · снято 100 000 ₽ · ****1234\nБанковская комиссия: 2 400 ₽") || fake.countMethod("sendMessage") != 2 {
+	if !fake.contains("✅ Сборщик · снято 100 000 ₽ · ****1234\nБанковская комиссия: 2 400 ₽\nБаланс: 100 000 ₽") || fake.countMethod("sendMessage") != 2 {
 		t.Fatal("summary appended or lost fee")
 	}
 	var entries, observations, fees int
@@ -155,7 +155,7 @@ func TestTelegramComfortHandoverSeparateAmountAndImmediateFinal(t *testing.T) {
 	if _, done := a.telegramCallback(sender, telegramTestGroup, msg, "confirm:"+draft); !done {
 		t.Fatal("confirm")
 	}
-	if !fake.contains("принято 50 ₽") {
+	if !fake.contains("принято 50 ₽\nБаланс: 50 ₽") {
 		t.Fatal("handover did not immediately post")
 	}
 	if code, out := req(t, a.confirmDraft, chief, M{"id": draft, "version": "1", "confirm_amount": "50"}); code != 200 || out["status"] != "already_posted" {

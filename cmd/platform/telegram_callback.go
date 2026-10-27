@@ -115,6 +115,9 @@ func (a *App) telegramCallback(u telegramActor, chat, messageID int64, data stri
 			}
 		}
 	}
+	if err := telegramCaptureBalance(tx, kind, p, u.ID); err != nil {
+		return "Не удалось сохранить баланс", false
+	}
 	p["telegram_sender_confirmed"] = true
 	if _, e = tx.Exec("UPDATE drafts SET status='posted',payload=$1,confirmed_by=$2,confirmed_at=$3,confirmed_amount_cents=$4 WHERE id=$5", encode(p), u.ID, now, amountCents, draftID); e != nil {
 		return "Не удалось завершить операцию", false

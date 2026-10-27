@@ -157,6 +157,9 @@ func (a *App) postConfirmedTransfer(tx *sql.Tx, draftID string, p M, actor User,
 	if _, err = put(tx, "transfer", draftID, "draft:"+draftID, actor.ID, now, now, lines, ""); err != nil {
 		return err
 	}
+	if err := telegramCaptureBalance(tx, "transfer", p, ""); err != nil {
+		return err
+	}
 	p["telegram_transfer_accepted_by"] = acceptedBy
 	p["telegram_transfer_confirmed_by_name"] = actor.Name
 	if acceptedBy == "recipient" {
