@@ -46,7 +46,7 @@ func TestTelegramComfortWithdrawalOneCardAndCommission(t *testing.T) {
 	if telegramRequest(t, a, telegramMessageUpdate(81001, 555, "/withdraw")) != 200 {
 		t.Fatal("menu")
 	}
-	if !fake.contains("Без комиссии: 7898 100к/200") || !fake.contains("С комиссией: 7898 100к/200 комса 2400") {
+	if !fake.contains("Без комиссии: 0000 100к/200") || !fake.contains("С комиссией: 0000 100к/200 комса 2400") {
 		t.Fatal("examples")
 	}
 	var prompt int64

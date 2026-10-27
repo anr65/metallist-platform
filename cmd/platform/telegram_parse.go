@@ -79,11 +79,11 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 			}
 		}
 		if len(words) != 2 && len(words) != 4 {
-			return out, telegramFieldError(command, "format", "invalid_format", "Без комиссии: 7898 100к/200. С комиссией: 7898 100к/200 комса 2400")
+			return out, telegramFieldError(command, "format", "invalid_format", "Без комиссии: 0000 100к/200. С комиссией: 0000 100к/200 комса 2400")
 		}
 		parts := strings.Split(words[1], "/")
 		if len(parts) != 2 {
-			return out, telegramFieldError(command, "format", "invalid_format", "После карты укажите сумму снятия и остаток через /: 7898 100к/200 или 7898 100к/200 комса 2400")
+			return out, telegramFieldError(command, "format", "invalid_format", "После карты укажите сумму снятия и остаток через /: 0000 100к/200 или 0000 100к/200 комса 2400")
 		}
 		amount, e := telegramAmount(parts[0])
 		if e != nil {
@@ -91,22 +91,22 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 		}
 		observed, e := telegramObservedAmount(parts[1])
 		if e != nil {
-			return out, telegramFieldError(command, "balance", "invalid_balance", "Некорректный остаток карты: укажите ноль или положительную сумму после /, например 7898 100к/200")
+			return out, telegramFieldError(command, "balance", "invalid_balance", "Некорректный остаток карты: укажите ноль или положительную сумму после /, например 0000 100к/200")
 		}
 		out.Amount, out.Observed = amount, observed
 		if len(words) == 4 {
 			if !strings.EqualFold(words[2], "комса") {
-				return out, telegramFieldError(command, "fee", "invalid_fee", "После остатка укажите комиссию: 7898 100к/200 комса 2400")
+				return out, telegramFieldError(command, "fee", "invalid_fee", "После остатка укажите комиссию: 0000 100к/200 комса 2400")
 			}
 			fee, err := telegramAmount(words[3])
 			if err != nil || fee <= 0 || fee > math.MaxInt64-amount {
-				return out, telegramFieldError(command, "fee", "invalid_fee", "Некорректная сумма банковской комиссии. Пример: 7898 100к/200 комса 2400")
+				return out, telegramFieldError(command, "fee", "invalid_fee", "Некорректная сумма банковской комиссии. Пример: 0000 100к/200 комса 2400")
 			}
 			out.BankFee = fee
 		}
 	} else if command == "expense" {
 		if len(words) < 3 {
-			return out, telegramFieldError(command, "format", "invalid_format", "Введите карту, категорию и сумму: 7898 прогрев 230 или 7898 комса 25,50")
+			return out, telegramFieldError(command, "format", "invalid_format", "Введите карту, категорию и сумму: 0000 прогрев 230 или 0000 комса 25,50")
 		}
 		category, e := telegramCategory(strings.Join(words[1:len(words)-1], " "))
 		if e != nil {

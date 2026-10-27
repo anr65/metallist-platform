@@ -282,7 +282,7 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 		if telegramFieldRole(u.Role) {
 			return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw, /expense и /cashexpense. Сборщику также доступен /transfer для перевода наличных другому сборщику. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 		}
-		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw, /expense и /cashexpense. Для снятия: 7898 100к/200. Для расходов: по одной строке вида 7898 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
+		return a.telegramReply(message.Chat.ID, "Статусы: /card_status последние4 Активна|Лимит|Блок|Архив, /block_card последние4. Доступны /cards_balance, /my_balance, /withdraw, /expense и /cashexpense. Для снятия: 0000 100к/200. Для расходов: по одной строке вида 0000 прогрев 230 или несколько строк сразу. Для зарплаты: зп 50000 комментарий. Чтобы выйти из ввода, отправьте /cancel.", nil)
 	}
 	if strings.HasPrefix(words[0], "/") && (command == "card_status" || command == "block_card") {
 		return a.telegramCardStatusInput(u, message, updateID, command)
@@ -337,9 +337,9 @@ func (a *App) telegramHandleMessage(u telegramActor, message *telegramMessage, u
 			return a.telegramTransferOptions(u, message.Chat.ID)
 		}
 		if command == "withdraw" {
-			return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите снятия по одному в строке (последние 4 или 6 цифр карты).\nБез комиссии: 7898 100к/200\nС комиссией: 7898 100к/200 комса 2400\n/cancel — отмена", nil)
+			return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите снятия по одному в строке (последние 4 или 6 цифр карты).\nБез комиссии: 0000 100к/200\nС комиссией: 0000 100к/200 комса 2400\n/cancel — отмена", nil)
 		}
-		return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите расходы по одному в строке (последние 4 или 6 цифр карты):\n7898 прогрев 230\n7898 комса 25,50\n/cancel — отмена", nil)
+		return a.telegramSendInputPrompt(u, message.Chat.ID, command, "Введите расходы по одному в строке (последние 4 или 6 цифр карты):\n0000 прогрев 230\n0000 комса 25,50\n/cancel — отмена", nil)
 	}
 	transferToken := ""
 	payload := M{"telegram_prompt_message_id": a.telegramPromptMessage(u, message.Chat.ID, command), "telegram_confirmation_required": true, "telegram_sender_confirmed": false, "telegram_preview_sent": false, "telegram_chat_id": message.Chat.ID, "telegram_raw": text, "telegram_actor_name": u.Name}
