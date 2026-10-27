@@ -93,7 +93,7 @@ func TestMerchantCatalogDebtMatchesLedger(t *testing.T) {
 	if total != 8100 {
 		t.Fatal("wrong total", total)
 	}
-	for _, role := range []string{"operator", "accountant", "auditor", "sysadmin"} {
+	for _, role := range []string{"operator", "accountant", "auditor"} {
 		for _, m := range read(role) {
 			for _, field := range []string{"payable", "receivable", "position"} {
 				if _, exists := m[field]; exists {

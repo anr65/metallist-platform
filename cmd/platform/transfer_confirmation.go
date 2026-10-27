@@ -211,6 +211,9 @@ func releaseTransfer(tx *sql.Tx, draftID, actor, channel, rejectedBy, reason str
 }
 
 func (a *App) telegramPrivateUpdate(w http.ResponseWriter, x telegramUpdate, sender, chat int64) {
+	if a.telegramAccountingPrivate(w, x, sender, chat) {
+		return
+	}
 	var u telegramActor
 	err := a.db.QueryRow("SELECT id,login,name,role,COALESCE(custodian_id::text,'') FROM users WHERE telegram_id=$1 AND active AND role='collector'", sender).Scan(&u.ID, &u.Login, &u.Name, &u.Role, &u.CustodianID)
 	if err != nil || u.CustodianID == "" {

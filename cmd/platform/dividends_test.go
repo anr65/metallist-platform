@@ -99,7 +99,7 @@ func TestDividendPayoutBalancesAndProfit(t *testing.T) {
 			if err := a.db.QueryRow("SELECT SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END) FROM postings").Scan(&net); err != nil || net != 0 {
 				t.Fatal("unbalanced ledger", net, err)
 			}
-			for _, role := range []string{"operator", "collector", "accountant", "sysadmin"} {
+			for _, role := range []string{"operator", "collector", "accountant"} {
 				if code, _ := req(t, a.draft, User{Role: role}, M{"kind": "expense", "category": "dividends", "amount": "1.00"}); code != 403 {
 					t.Fatal("unauthorized payout", role, code)
 				}

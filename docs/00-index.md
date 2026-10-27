@@ -30,6 +30,8 @@
 
 ### TO BE
 
+- [TG-ACCOUNTING-01: личные уведомления, подтверждение реестров и все балансы](to-be/telegram-accounting-control.md)
+
 - [Целевой процесс](to-be/target-process.md)
 - [Жизненные циклы операций](to-be/operation-lifecycle.md)
 - [Модель доступа](to-be/permissions.md)
@@ -61,6 +63,8 @@
 - [Ошибки API и интерфейса](api/errors.md)
 
 ### Эксплуатация и безопасность
+
+- [Личный учетный бот sysadmin: выпуск и откат](operations/telegram-accounting-release.md)
 
 - [Расход из наличных Telegram: выпуск 27.10.2026](operations/telegram-cash-expense-release.md)
 

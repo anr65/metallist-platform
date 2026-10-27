@@ -26,7 +26,7 @@ test('other roles land on a permitted page', () => {
   assert.equal(pageForRole('chief', '#expenses'), 'money');
   assert.ok(!allowedPages('chief').includes('expenses'));
   assert.equal(pageForRole('accountant', '#money/new'), 'overview');
-  for (const role of ['accountant', 'auditor', 'sysadmin', 'collector']) {
+  for (const role of ['accountant', 'auditor', 'collector']) {
     assert.ok(!allowedPages(role).includes('merchants'));
     for (const hash of ['#merchants', '#merchants/new', '#merchants/11111111-1111-4111-8111-111111111111']) {
       assert.notEqual(pageForRole(role, hash), hash.slice(1));
@@ -34,7 +34,7 @@ test('other roles land on a permitted page', () => {
   }
   assert.equal(pageForRole('accountant', '#balances'), 'balances');
   assert.equal(pageForRole('auditor', '#balances'), 'balances');
-  assert.equal(pageForRole('sysadmin', ''), 'catalog');
+  assert.equal(pageForRole('sysadmin', ''), 'overview');
   assert.equal(pageForRole('sysadmin', '#catalog/access'), 'catalog/access');
   assert.equal(pageForRole('collector', '#catalog/cards'), 'catalog/cards');
   assert.notEqual(pageForRole('collector', '#catalog/banks'), 'catalog/banks');
@@ -56,4 +56,10 @@ test('drop-handler directory is reachable for directory readers and hidden from 
     assert.equal(pageForRole(role, '#catalog/drop_handlers'), 'catalog/drop_handlers');
   }
   assert.equal(pageForRole('collector', '#catalog/drop_handlers'), 'catalog');
+});
+
+test('sysadmin has full chief navigation and access management', () => {
+ for (const route of ['overview','merchants/new','registries/new','money/new','requests/new','balances','reports','catalog/access','catalog/contacts']) {
+  assert.equal(pageForRole('sysadmin','#'+route),route);
+ }
 });

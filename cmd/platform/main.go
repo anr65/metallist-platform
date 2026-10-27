@@ -311,6 +311,7 @@ func main() {
 	if telegramToken() != "" {
 		go app.telegramSetupCommands()
 		go app.telegramTransferNotificationWorker()
+		go app.accountingNotificationWorker()
 	}
 	go app.cardLimitWorker()
 	log.Printf("listening on %s", addr)
@@ -527,7 +528,7 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, u User) {
 }
 func (a *App) require(w http.ResponseWriter, u User, roles ...string) bool {
 	for _, r := range roles {
-		if u.Role == r {
+		if u.Role == r || u.Role == "sysadmin" {
 			return true
 		}
 	}

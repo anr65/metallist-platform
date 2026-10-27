@@ -3,7 +3,7 @@ export const navigationByRole = {
   operator: ['requests', 'registries', 'money', 'catalog'],
   accountant: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
   auditor: ['overview', 'requests', 'registries', 'balances', 'catalog', 'reports', 'audit'],
-  sysadmin: ['catalog', 'audit'],
+  sysadmin: ['overview', 'requests', 'registries', 'merchants', 'money', 'balances', 'catalog', 'reports', 'audit'],
   collector: ['catalog'],
 };
 
@@ -14,18 +14,18 @@ export function allowedPages(role) {
 export function pageForRole(role, hash) {
   const allowed = allowedPages(role);
   const requested = hash.replace(/^#/, '');
-  if (requested === 'expenses' && role === 'chief') return 'money';
+  if (requested === 'expenses' && ['chief', 'sysadmin'].includes(role)) return 'money';
   if (allowed.includes('requests') && /^requests\/[0-9a-f-]{36}$/i.test(requested)) return requested;
-  if (allowed.includes('requests') && ['chief', 'operator'].includes(role) && requested === 'requests/new') return requested;
+  if (allowed.includes('requests') && ['chief', 'sysadmin', 'operator'].includes(role) && requested === 'requests/new') return requested;
   if (allowed.includes('registries') && /^registries\/[0-9a-f-]{36}$/i.test(requested)) return requested;
-  if (allowed.includes('registries') && ['chief', 'operator'].includes(role) && requested === 'registries/new') return requested;
+  if (allowed.includes('registries') && ['chief', 'sysadmin', 'operator'].includes(role) && requested === 'registries/new') return requested;
   if (allowed.includes('merchants') && /^merchants\/[0-9a-f-]{36}$/i.test(requested)) return requested;
-  if (allowed.includes('merchants') && role === 'chief' && requested === 'merchants/new') return requested;
+  if (allowed.includes('merchants') && ['chief', 'sysadmin'].includes(role) && requested === 'merchants/new') return requested;
   if (allowed.includes('money') && /^money\/[0-9a-f-]{36}$/i.test(requested)) return requested;
-  if (allowed.includes('money') && ['chief', 'operator'].includes(role) && requested === 'money/new') return requested;
+  if (allowed.includes('money') && ['chief', 'sysadmin', 'operator'].includes(role) && requested === 'money/new') return requested;
   if (allowed.includes('catalog') && requested === 'catalog/cards') return requested;
   if (allowed.includes('catalog') && role !== 'collector' && /^catalog\/(banks|custodians|drop_handlers)$/.test(requested)) return requested;
-  if (allowed.includes('catalog') && ['chief', 'operator'].includes(role) && requested === 'catalog/contacts') return requested;
+  if (allowed.includes('catalog') && ['chief', 'sysadmin', 'operator'].includes(role) && requested === 'catalog/contacts') return requested;
   if (allowed.includes('catalog') && role === 'sysadmin' && requested === 'catalog/access') return requested;
   return allowed.includes(requested) ? requested : allowed[0] || 'account';
 }

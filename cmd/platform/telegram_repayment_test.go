@@ -375,6 +375,7 @@ func TestTelegramPrivateRepaymentWithProductionStylePrivileges(t *testing.T) {
 	const role = "metallist_repayment_limited_test"
 	if _, err := a.db.Exec(`CREATE ROLE metallist_repayment_limited_test;
  GRANT USAGE ON SCHEMA public TO metallist_repayment_limited_test;
+ GRANT INSERT ON accounting_notifications TO metallist_repayment_limited_test;
  GRANT SELECT,INSERT,UPDATE ON telegram_operation_messages TO metallist_repayment_limited_test;
  GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_prompt_deletions TO metallist_repayment_limited_test;
  GRANT SELECT,INSERT,UPDATE,DELETE ON telegram_input_errors TO metallist_repayment_limited_test;

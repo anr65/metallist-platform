@@ -51,9 +51,9 @@ function recipientName(item, catalog) {
 function MoneyMenu({ item, role, onNavigate, onChanged, showOpen = true }) {
   const [action, setAction] = useState(''), [reason, setReason] = useState(''), [confirmAmount, setConfirmAmount] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
   const recipientApproval = item.kind === 'transfer' && item.payload?.telegram_recipient_confirmation_required;
-  const canConfirm = role === 'chief' && item.status === 'draft' && (!item.payload?.telegram_confirmation_required || recipientApproval && item.payload?.telegram_sender_confirmed);
-  const canReject = role === 'chief' && item.status === 'draft';
-  const canReverse = role === 'chief' && item.status === 'posted';
+  const canConfirm = ['chief', 'sysadmin'].includes(role) && item.status === 'draft' && (!item.payload?.telegram_confirmation_required || recipientApproval && item.payload?.telegram_sender_confirmed);
+  const canReject = ['chief', 'sysadmin'].includes(role) && item.status === 'draft';
+  const canReverse = ['chief', 'sysadmin'].includes(role) && item.status === 'posted';
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError('');
     try {
@@ -122,7 +122,7 @@ export function MoneyPage({ role, route = 'money', onNavigate }) {
     return <PageState title={item ? typeName(item) : 'Операция'} subtitle="Сведения об операции и её текущем состоянии.">
       {error && <Alert variant="destructive" className="mb-4"><AlertDescription>{error}</AlertDescription></Alert>}
       {loading ? <p>Загрузка…</p> : !item ? <Alert variant="destructive"><AlertDescription>Операция не найдена или недоступна.</AlertDescription></Alert> : <Card className="max-w-3xl rounded-2xl">
-        <CardHeader className="flex flex-row items-center justify-between gap-3"><CardTitle>{typeName(item)}</CardTitle>{role === 'chief' && (item.status === 'draft' || item.status === 'posted') && <MoneyMenu item={item} role={role} onNavigate={onNavigate} onChanged={refresh} showOpen={false} />}</CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between gap-3"><CardTitle>{typeName(item)}</CardTitle>{['chief', 'sysadmin'].includes(role) && (item.status === 'draft' || item.status === 'posted') && <MoneyMenu item={item} role={role} onNavigate={onNavigate} onChanged={refresh} showOpen={false} />}</CardHeader>
         <CardContent className="grid gap-4 text-sm sm:grid-cols-2">
           <div>Сумма: <strong>{amountRub(item)}</strong></div><div>Статус: <Status value={item.status} />{item.status === 'draft' && item.payload?.telegram_recipient_confirmation_required && item.payload?.telegram_sender_confirmed && <span className="block text-xs text-muted-foreground">Ожидает получателя · сумма зарезервирована</span>}</div>
           <div>Дата операции: {operationDate(item)}</div><div>Создано: {date.format(new Date(item.created_at))}</div>

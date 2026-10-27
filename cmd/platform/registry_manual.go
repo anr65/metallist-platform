@@ -216,6 +216,10 @@ func (a *App) createManualRegistry(w http.ResponseWriter, r *http.Request, u Use
 		fail(w, 409, errors.New("не удалось сохранить ручной реестр"))
 		return
 	}
+	if e = queueAccountingNotification(tx, "registry", registryID); e != nil {
+		fail(w, 500, e)
+		return
+	}
 	if e = tx.Commit(); e != nil {
 		fail(w, 409, errors.New("не удалось сохранить ручной реестр"))
 		return

@@ -24,7 +24,7 @@ function MerchantMenu({ merchant, role, onNavigate, onChanged }) {
     catch (e) { setError(userError(e)); } finally { setBusy(false); }
   }
   return <>
-    <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label={`Действия с мерчантом ${merchant.name}`}><MoreHorizontal className="size-5" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => onNavigate(`merchants/${merchant.id}`)}>Открыть мерчанта</DropdownMenuItem>{role === 'chief' && merchant.active && <><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onSelect={() => setOpen(true)}>Удалить мерчанта</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu>
+    <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label={`Действия с мерчантом ${merchant.name}`}><MoreHorizontal className="size-5" /></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => onNavigate(`merchants/${merchant.id}`)}>Открыть мерчанта</DropdownMenuItem>{['chief', 'sysadmin'].includes(role) && merchant.active && <><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onSelect={() => setOpen(true)}>Удалить мерчанта</DropdownMenuItem></>}</DropdownMenuContent></DropdownMenu>
     <Dialog open={open} onOpenChange={value => !busy && setOpen(value)}><DialogContent><DialogHeader><DialogTitle>Удалить мерчанта?</DialogTitle><DialogDescription>{merchant.name} будет скрыт из активного списка и недоступен для новых операций. История, реестры и проводки сохранятся.</DialogDescription></DialogHeader>{error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}<DialogFooter><Button type="button" variant="secondary" onClick={() => setOpen(false)} disabled={busy}>Отмена</Button><Button type="button" variant="destructive-secondary" onClick={remove} disabled={busy}>{busy ? 'Удаление…' : 'Удалить'}</Button></DialogFooter></DialogContent></Dialog>
   </>;
 }
@@ -32,7 +32,7 @@ function MerchantMenu({ merchant, role, onNavigate, onChanged }) {
 export function Merchants({ role, route = 'merchants', onNavigate }) {
   const [items, setItems] = useState([]), [error, setError] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [showInactive, setShowInactive] = useState(false);
   const [code, setCode] = useState(''), [name, setName] = useState('');
-  const canEdit = role === 'chief';
+  const canEdit = ['chief', 'sysadmin'].includes(role);
   const id = route !== 'merchants' && route !== 'merchants/new' ? route.slice('merchants/'.length) : null;
   const selected = items.find(item => item.id === id);
   const shown = showInactive ? items : items.filter(item => item.active);

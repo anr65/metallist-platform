@@ -93,6 +93,11 @@ func put(tx *sql.Tx, eventType, eventID, key, actor string, occurred, recognized
 			return "", e
 		}
 	}
+	if eventType == "repayment" || eventType == "handover" {
+		if e := queueAccountingNotification(tx, eventType, eventID); e != nil {
+			return "", e
+		}
+	}
 	return entry, nil
 }
 func reverse(tx *sql.Tx, orig, actor, key string) error {
@@ -189,7 +194,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	result := M{}
-	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.drop_handler_id,d.name AS drop_handler_name,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN drop_handlers d ON d.id=c.drop_handler_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id FROM users ORDER BY name"}
+	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,b.name,c.owner_label,c.mask,c.status,c.drop_handler_id,d.name AS drop_handler_name,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN drop_handlers d ON d.id=c.drop_handler_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id, (SELECT count(*) FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending') AS pending_notifications, COALESCE((SELECT last_error FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending' AND n.last_error<>'' ORDER BY n.created_at DESC LIMIT 1),'') AS notification_error FROM users ORDER BY name"}
 	specs["drop_handlers"] = "SELECT id,name,active FROM drop_handlers ORDER BY name,id"
 	specs["request_cards"] = `SELECT c.id,c.mask,b.name AS bank,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone,c.pan_ciphertext IS NOT NULL AS pan_in_db
 		FROM cards c JOIN banks b ON b.id=c.bank_id
@@ -198,7 +203,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		WHERE c.status='active' ORDER BY b.name,c.mask,c.id`
 	// Only the chief can open the merchant directory. Keep debt out of catalogs
 	// used by operators and other roles; derive it from the same ledger as reports.
-	if u.Role == "chief" {
+	if u.Role == "chief" || u.Role == "sysadmin" {
 		specs["merchants"] = `SELECT m.*,COALESCE(d.payable,0)::bigint AS payable_cents,
             COALESCE(d.receivable,0)::bigint AS receivable_cents,
             (COALESCE(d.payable,0)-COALESCE(d.receivable,0))::bigint AS position_cents FROM (` + specs["merchants"] + `) m
@@ -211,7 +216,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		if u.Role == "collector" && name != "cards" {
 			continue
 		}
-		if (name == "payment_contacts" || name == "request_cards") && u.Role != "chief" && u.Role != "operator" {
+		if (name == "payment_contacts" || name == "request_cards") && u.Role != "chief" && u.Role != "sysadmin" && u.Role != "operator" {
 			continue
 		}
 		if name == "users" && u.Role != "sysadmin" && u.Role != "chief" {
@@ -246,7 +251,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 					m[c] = v
 				}
 			}
-			if name == "merchants" && u.Role == "chief" {
+			if name == "merchants" && (u.Role == "chief" || u.Role == "sysadmin") {
 				for _, field := range []string{"payable", "receivable", "position"} {
 					if cents, ok := m[field+"_cents"].(int64); ok {
 						m[field] = rub(cents)
@@ -261,7 +266,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 				path, pathErr := vaultPath(cardID)
 				_, statErr := os.Stat(path)
 				panSaved := panInDB || pathErr == nil && statErr == nil
-				if name == "cards" && u.Role == "chief" {
+				if name == "cards" && (u.Role == "chief" || u.Role == "sysadmin") {
 					m["pan_saved"] = panSaved
 				}
 				if name == "request_cards" && !panSaved {
@@ -515,11 +520,10 @@ func (a *App) linkTelegram(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	custodian := str(m, "custodian_id")
-	if custodian == "" {
-		fail(w, 400, errors.New("укажите ответственного за наличные"))
-		return
-	}
-	res, e := a.db.Exec("UPDATE users SET telegram_id=$1,custodian_id=$2 FROM custodians c WHERE users.id=$3 AND users.active AND c.id=$2 AND c.active AND ((users.role IN ('collector','operator') AND c.kind=users.role) OR (users.role='chief' AND c.kind='chief'))", tid, custodian, str(m, "user_id"))
+	res, e := a.db.Exec(`UPDATE users SET telegram_id=$1,custodian_id=$2 WHERE id=$3 AND active AND
+ (role='sysadmin' AND ($2::uuid IS NULL OR EXISTS(SELECT 1 FROM custodians WHERE id=$2 AND active))
+ OR EXISTS(SELECT 1 FROM custodians c WHERE c.id=$2 AND c.active AND
+ ((users.role IN ('collector','operator') AND c.kind=users.role) OR (users.role='chief' AND c.kind='chief'))))`, tid, nilID(custodian), str(m, "user_id"))
 	if e != nil {
 		fail(w, 409, e)
 		return

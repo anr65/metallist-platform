@@ -260,6 +260,10 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
+	if e = queueAccountingNotification(tx, "registry", regID); e != nil {
+		fail(w, 500, e)
+		return
+	}
 	if e = tx.Commit(); e != nil {
 		fail(w, 409, e)
 		return
@@ -513,7 +517,7 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 		}
 		var values []string
 		_ = json.Unmarshal(raw, &values)
-		if u.Role != "chief" && u.Role != "operator" {
+		if u.Role != "chief" && u.Role != "sysadmin" && u.Role != "operator" {
 			requestName = ""
 			requestPhone = ""
 		}
@@ -563,37 +567,45 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	defer tx.Rollback()
+	status, code, e := a.confirmRegistryCommand(tx, u, m, "web")
+	if e != nil {
+		fail(w, code, e)
+		return
+	}
+	if e = tx.Commit(); e != nil {
+		fail(w, 409, e)
+		return
+	}
+	respond(w, 200, M{"status": status})
+}
+
+// One posting boundary for the web and Telegram adapters. Caller owns the transaction.
+func (a *App) confirmRegistryCommand(tx *sql.Tx, u User, m M, channel string) (string, int, error) {
 	var merchant, status, paymentDate string
 	var total int64
 	var manual sql.NullInt64
 	var version int
-	e = tx.QueryRow("SELECT merchant_id,status,total_cents,manual_rate_bp,version,COALESCE(payment_date::text,'') FROM registries WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&merchant, &status, &total, &manual, &version, &paymentDate)
+	e := tx.QueryRow("SELECT merchant_id,status,total_cents,manual_rate_bp,version,COALESCE(payment_date::text,'') FROM registries WHERE id=$1 FOR UPDATE", str(m, "id")).Scan(&merchant, &status, &total, &manual, &version, &paymentDate)
 	if e != nil {
-		fail(w, 404, e)
-		return
+		return "", 404, e
 	}
 	if status == "posted" {
-		respond(w, 200, M{"status": "already_posted"})
-		return
+		return "already_posted", 200, nil
 	}
 	if status != "preview" || fmt.Sprint(version) != str(m, "version") {
-		fail(w, 409, errors.New("устаревший preview"))
-		return
+		return "", 409, errors.New("устаревший preview")
 	}
 	if paymentDate == "" {
-		fail(w, 409, errors.New("у старого черновика не указана дата оплат; создайте реестр заново с датой фактических оплат"))
-		return
+		return "", 409, errors.New("у старого черновика не указана дата оплат; создайте реестр заново с датой фактических оплат")
 	}
 	_, paymentAt, dateErr := a.registryPaymentDay(paymentDate)
 	if dateErr != nil {
-		fail(w, 409, dateErr)
-		return
+		return "", 409, dateErr
 	}
 	var bad int
 	_ = tx.QueryRow("SELECT count(*) FROM registry_rows WHERE registry_id=$1 AND (error_code IS NOT NULL OR card_id IS NULL)", str(m, "id")).Scan(&bad)
 	if bad > 0 {
-		fail(w, 409, fmt.Errorf("%d строк требуют исправления", bad))
-		return
+		return "", 409, fmt.Errorf("%d строк требуют исправления", bad)
 	}
 	var bp int
 	if manual.Valid {
@@ -601,40 +613,34 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	} else {
 		bp, e = a.currentRate(tx, merchant, paymentDate)
 		if errors.Is(e, sql.ErrNoRows) {
-			fail(w, 409, errors.New("для мерчанта не задан действующий тариф; утвердите общий тариф или разовую ставку реестра"))
-			return
+			return "", 409, errors.New("для мерчанта не задан действующий тариф; утвердите общий тариф или разовую ставку реестра")
 		}
 		if e != nil {
-			fail(w, 500, e)
-			return
+			return "", 500, e
 		}
 	}
 	commission := fee(total, bp)
 	if str(m, "confirm_total") != rub(total) || str(m, "confirm_commission") != rub(commission) || str(m, "confirm_rate_bp") != strconv.Itoa(bp) {
-		fail(w, 409, errors.New("подтвердите актуальные суммы"))
-		return
+		return "", 409, errors.New("подтвердите актуальные суммы")
 	}
 	lines := []Posting{}
 	rows, e := tx.Query("SELECT card_id,amount_cents FROM registry_rows WHERE registry_id=$1 ORDER BY row_no", str(m, "id"))
 	if e != nil {
-		fail(w, 500, e)
-		return
+		return "", 500, e
 	}
 	for rows.Next() {
 		var card string
 		var v int64
 		if e = rows.Scan(&card, &v); e != nil {
 			rows.Close()
-			fail(w, 500, e)
-			return
+			return "", 500, e
 		}
 		lines = append(lines, Posting{Account: "1100", Side: "debit", Amount: v, Card: card})
 	}
 	e = rows.Err()
 	rows.Close()
 	if e != nil {
-		fail(w, 500, e)
-		return
+		return "", 500, e
 	}
 	net := total - commission
 	if net > 0 {
@@ -646,28 +652,21 @@ func (a *App) confirmRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	now := time.Now()
 	_, e = put(tx, "registry", str(m, "id"), "registry:"+str(m, "id"), u.ID, paymentAt, paymentAt, lines, "")
 	if e != nil {
-		fail(w, 409, e)
-		return
+		return "", 409, e
 	}
 	_, e = tx.Exec("UPDATE registries SET status='posted',commission_cents=$1,rate_bp=$2,confirmed_at=$3 WHERE id=$4", commission, bp, now, str(m, "id"))
 	if e != nil {
-		fail(w, 500, e)
-		return
+		return "", 500, e
 	}
 	if e = normalizeMerchant(tx, merchant, u.ID, "registry:"+str(m, "id")); e != nil {
-		fail(w, 409, e)
-		return
+		return "", 409, e
 	}
-	if e = txAudit(tx, u.ID, "web", "registry_confirm", "registry", str(m, "id"), "success", "", M{"gross_cents": total, "commission_cents": commission}); e != nil {
-		fail(w, 500, e)
-		return
+	if e = txAudit(tx, u.ID, channel, "registry_confirm", "registry", str(m, "id"), "success", "", M{"gross_cents": total, "commission_cents": commission}); e != nil {
+		return "", 500, e
 	}
-	if e = tx.Commit(); e != nil {
-		fail(w, 409, e)
-		return
-	}
-	respond(w, 200, M{"status": "posted"})
+	return "posted", 200, nil
 }
+
 func (a *App) deleteRegistry(w http.ResponseWriter, r *http.Request, u User) {
 	if r.Method != http.MethodPost || !a.require(w, u, "chief", "operator") {
 		return

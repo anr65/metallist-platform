@@ -184,3 +184,7 @@
 ## Схема 031: Telegram-расход из наличных
 
 `031_telegram_cash_expense.sql` после 030 расширяет `telegram_dialogs_command_check` значением `cashexpense`, сохраняя прежние команды. В той же транзакции фиксируется версия 31; lock_timeout 5 секунд ограничивает ожидание ALTER TABLE. Таблицы, строки, денежная история и grants не изменяются. Контекст содержит token/chat_id/prompt_message_id/category; draft — обычный expense с `telegram_cash_expense=true`, точной суммой, cash source автора и expense_items. Проводки и идемпотентность используют прежний posting boundary. При откате приложения оставить расширенное ограничение; активный ввод новой команды завершить `/cancel`, не удаляя финансовые документы.
+
+## Схема 032 — личный учетный бот
+
+Аддитивная миграция после 031 создает `accounting_notifications`: получатель FK users, тип события, стабильный ID объекта, состояние pending/sent/cancelled, попытки, срок повтора и очищенная причина ошибки; уникальность (user_id,event_kind,object_id). Partial index обслуживает ожидающую очередь. `accounting_registry_previews` хранит неизменяемый token UUID, FK уведомления, исходный числовой Telegram ID, fingerprint подтверждаемых параметров и время. Финансовых backfill и изменений journal/postings нет. При наличии production-role `metallist_demo_app` миграция выдает SELECT/INSERT/UPDATE очереди и SELECT/INSERT previews; UPDATE/DELETE previews не нужны. Старое приложение работает со схемой 032; при откате эти таблицы сохраняются.

@@ -632,7 +632,7 @@ func (a *App) paymentRequestRows(w http.ResponseWriter, r *http.Request, u User)
 	}
 	defer rows.Close()
 	out := []M{}
-	canSeePhone := u.Role == "chief" || u.Role == "operator"
+	canSeePhone := (u.Role == "chief" || u.Role == "sysadmin") || u.Role == "operator"
 	for rows.Next() {
 		var n int
 		var cardID, contactID, mask, bank, name, phone string
