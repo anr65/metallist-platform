@@ -1,6 +1,6 @@
 # Личный учетный бот sysadmin — выпуск 27.10.2026
 
-Статус: подготовлен, production-результат будет дополнен после выкладки.
+Статус: выпущено 27.10.2026 в 13:15:22 МСК по прямому поручению владельца.
 
 ## Состав и gates
 
@@ -32,3 +32,13 @@ Gate **GO**: полный go test -race прошел за 19,676 с; go vet/buil
 Backup /var/backups/metallist-platform-protected/20261027T101140Z проверен SHA256SUMS, восстановлением БД и распаковкой files. На отдельной metallist_accounting_restore_20261027 применена 031→032; SELECT/INSERT/UPDATE очереди, SELECT/INSERT previews и блокировки users проверены под metallist_demo_app в откатываемой транзакции. Контрольные хеши семи исходных таблиц до/после совпали: 1196 entries, 6630 postings, 1070 drafts, 152 registries, дисбаланс 0. Копия БД/распакованные файлы удалены. Evidence: /var/backups/metallist-platform-protected/accounting-rehearsal-AhR8FdId. SHA-256 миграции: 2eea95547964906981ab7b3ee93467cacf4496ce51030be96719ab2d6760b9a7.
 
 Владелец выбрал учетную запись chief для своей привязки и разрешил установить ей sysadmin. Прежний custodian_id сохраняется; аудит фиксирует старую/новую роль и привязку. Telegram ID не хранится в исходном коде или миграции схемы.
+
+## Production-результат
+
+Выпущен 6dbf32f156e6ca340cf39c38f08cffa341234b45 через штатный deploy-production.sh; current соответствует этому release, systemd active/running, ExecMainStatus=0, запуск 27.10.2026 10:15:22 UTC / 13:15:22 МСК. Перерыв сервиса — около 9 секунд. Local/public health успешны, startup log без ошибок. Опубликованные ресурсы совпадают с локальной проверенной сборкой: JS SHA-256 d1f53090cf75cfe5059b88ee7ec701aa3f773570a15b636c938a9b4e3d03ae1d, CSS 8fe46dbc747d8480c47121513fbaeedb62714356a32671fb9f493b116526a1be.
+
+Финальный закрытый backup /var/backups/metallist-platform-protected/20261027T101514Z проверен checksum, новым полным восстановлением и распаковкой files при остановленном сервисе. На восстановленной metallist_accounting_restore_final_20261027 повторена 031→032; хеши семи исходных таблиц совпали между копией и production до/после миграции. На момент миграции: 1197 entries (MD5 0c2ef63e004bcb18d6fd541dd5d75ce2), 6632 postings (MD5 de1cd842307ea47dd706364af2889245), 1070 drafts, 152 registries, дисбаланс 0. Во время разработки продолжалась штатная работа пользователей, поэтому counts отличаются от первой репетиции. Финальные evidence: /var/backups/metallist-platform-protected/accounting-release-29tWxeN2; временная восстановленная БД и распакованные файлы удалены.
+
+После запуска явно выбранная владельцем запись chief переведена из chief в sysadmin и получила указанный им Telegram ID. Прежний custodian_id сохранен (NULL), пароль не менялся. Обе перемены и основание сохранены audit-событием telegram_accounting_access; финансовые таблицы этим действием не менялись.
+
+getMe подтвердил metallistcash_bot; getWebhookInfo: ожидаемый URL, pending updates 0. Исторический last_error_date 1793031789 предшествует выпуску. После запуска дисбаланс 0, очередь новых учетных уведомлений пуста. На момент проверки личный чат владельца еще не зарегистрирован: для включения доставки он должен сам отправить /start, затем доступны /balances и /pending. Финансовые smoke-операции и сообщения за пользователя не отправлялись. Gate **GO**, выкладка завершена.
