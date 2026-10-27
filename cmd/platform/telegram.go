@@ -53,6 +53,16 @@ var errTelegramDelivery = errors.New("Telegram временно недоступ
 // Reject full card numbers both as one string and in groups separated by spaces or hyphens.
 var telegramSensitiveNumber = regexp.MustCompile(`(^|[^0-9])(?:[0-9][ -]?){11,18}[0-9]([^0-9]|$)`)
 
+// A withdrawal starts with a short card suffix followed by amount/balance.
+// Keep that field boundary from looking like a space-grouped PAN. Scan the
+// remaining text as usual, including full numbers in amounts or later fields.
+var telegramWithdrawalNumberBoundary = regexp.MustCompile(`(?mi)(^|[\n;])([ \t]*(?:/withdraw(?:@[a-z0-9_]+)?[ \t]+)?(?:[0-9]{4}|[0-9]{6}))[ \t]+([0-9]+(?:[.,][0-9]+)?[кk]?/)`)
+
+func telegramHasSensitiveNumber(text string) bool {
+	text = telegramWithdrawalNumberBoundary.ReplaceAllString(text, "${1}${2}:${3}")
+	return telegramSensitiveNumber.MatchString(text)
+}
+
 func telegramAllowedGroup() (int64, bool) {
 	chatID, e := strconv.ParseInt(strings.TrimSpace(os.Getenv("TELEGRAM_ALLOWED_CHAT_ID")), 10, 64)
 	return chatID, e == nil && chatID < 0
@@ -124,7 +134,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && telegramMessageCommand(x.Message.Text) != "зп" && !telegramSensitiveNumber.MatchString(x.Message.Text) {
+	if x.Message != nil && !strings.HasPrefix(strings.TrimSpace(x.Message.Text), "/") && telegramMessageCommand(x.Message.Text) != "зп" && !telegramHasSensitiveNumber(x.Message.Text) {
 		var waiting bool
 		e = a.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM telegram_dialogs d JOIN users u ON u.id=d.user_id WHERE u.telegram_id=$1 AND u.active AND d.expires_at>now())
  OR EXISTS(SELECT 1 FROM telegram_updates WHERE update_id=$2 AND raw_update->>'from_id'=$3 AND raw_update->>'chat_id'=$4)`, sender, x.UpdateID, fmt.Sprint(sender), fmt.Sprint(chat)).Scan(&waiting)
@@ -140,7 +150,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 	// Persist update identity for deduplication and audit, never arbitrary chat text.
 	recorded := encode(M{"update_id": x.UpdateID, "from_id": sender, "chat_id": chat})
 	if x.Message != nil {
-		recorded = encode(M{"update_id": x.UpdateID, "from_id": sender, "chat_id": chat, "message_id": x.Message.MessageID, "type": "message", "redacted": telegramSensitiveNumber.MatchString(x.Message.Text)})
+		recorded = encode(M{"update_id": x.UpdateID, "from_id": sender, "chat_id": chat, "message_id": x.Message.MessageID, "type": "message", "redacted": telegramHasSensitiveNumber(x.Message.Text)})
 	} else if x.CallbackQuery != nil {
 		recorded = encode(M{"update_id": x.UpdateID, "from_id": sender, "chat_id": chat, "type": "callback_query"})
 	}
@@ -150,7 +160,7 @@ func (a *App) telegram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inserted, _ := res.RowsAffected()
-	if x.Message != nil && telegramSensitiveNumber.MatchString(x.Message.Text) {
+	if x.Message != nil && telegramHasSensitiveNumber(x.Message.Text) {
 		a.telegramDeleteMessage(chat, x.Message.MessageID)
 		_ = a.telegramReply(chat, "Не отправляйте полный номер карты или другие секреты. В команде нужны только последние 4 или 6 цифр.", nil)
 		w.WriteHeader(http.StatusOK)

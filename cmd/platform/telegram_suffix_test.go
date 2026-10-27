@@ -52,7 +52,7 @@ func TestTelegramSixDigitCardSelection(t *testing.T) {
 	if err = a.db.QueryRow("SELECT count(*) FROM drafts WHERE idempotency_key='telegram:9300'").Scan(&count); err != nil || count != 0 {
 		t.Fatal("partial package accepted", count, err)
 	}
-	telegramRequest(t, a, telegramMessageUpdate(9301, 555, "/withdraw 061234 1к/20\n221234 2к/30"))
+	telegramRequest(t, a, telegramMessageUpdate(9301, 555, "/withdraw 061234 244700/0 комса 4500\n221234 200000/30"))
 	if err = a.db.QueryRow("SELECT jsonb_array_length(payload->'withdrawal_items') FROM drafts WHERE idempotency_key='telegram:9301'").Scan(&count); err != nil || count != 2 {
 		t.Fatal("six digit withdrawal failed", count, err)
 	}
@@ -66,7 +66,7 @@ func TestTelegramSixDigitCardSelection(t *testing.T) {
 		t.Fatal("six digit posting duplicated or missing", count, err)
 	}
 	var firstDebit, secondDebit int64
-	if err = a.db.QueryRow("SELECT COALESCE(sum(amount_cents) FILTER (WHERE card_id=$2),0),COALESCE(sum(amount_cents) FILTER (WHERE card_id=$3),0) FROM postings WHERE entry_id=(SELECT id FROM journal_entries WHERE event_type='withdrawal' AND event_id=$1) AND account='1100' AND side='credit'", draftID, card, second).Scan(&firstDebit, &secondDebit); err != nil || firstDebit != 100000 || secondDebit != 200000 {
+	if err = a.db.QueryRow("SELECT COALESCE(sum(amount_cents) FILTER (WHERE card_id=$2),0),COALESCE(sum(amount_cents) FILTER (WHERE card_id=$3),0) FROM postings WHERE entry_id=(SELECT id FROM journal_entries WHERE event_type='withdrawal' AND event_id=$1) AND account='1100' AND side='credit'", draftID, card, second).Scan(&firstDebit, &secondDebit); err != nil || firstDebit != 24470000 || secondDebit != 20000000 {
 		t.Fatal("wrong cards debited", firstDebit, secondDebit, err)
 	}
 	telegramRequest(t, a, telegramMessageUpdate(9302, 555, "/expense 221234 комса 10"))
@@ -111,7 +111,7 @@ func TestTelegramMixedCardSuffixDialog(t *testing.T) {
 	_, _, _, card := fixtures(t, a)
 	telegramFixture(t, a, card)
 	telegramRequest(t, a, telegramMessageUpdate(9400, 555, "/withdraw"))
-	telegramRequest(t, a, telegramMessageUpdate(9401, 555, "1234 1к/0\n061234 2к/0"))
+	telegramRequest(t, a, telegramMessageUpdate(9401, 555, "1234 1к/0\n061234 244700/0 комса 4500"))
 	var count int
 	if err := a.db.QueryRow("SELECT jsonb_array_length(payload->'withdrawal_items') FROM drafts WHERE idempotency_key='telegram:9401'").Scan(&count); err != nil || count != 2 {
 		t.Fatal("mixed suffix dialog failed", count, err)
