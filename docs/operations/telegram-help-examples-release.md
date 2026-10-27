@@ -9,3 +9,5 @@ Gate GO: go build, go vet, проверка diff и выбранные unit-те
 Цель проверена: deploy@167.233.162.67, metallist-platform.service, /opt/metallist-platform/current; исходный release 6dbf32f156e6ca340cf39c38f08cffa341234b45. Свежий backup /var/backups/metallist-platform-protected/20261027T124045Z: каталог dump, файловый архив и SHA256SUMS проверены. Миграций нет. Выпуск — точная вершина origin/main через scripts/deploy-production.sh. После выпуска проверить current, systemd, local/public health и журнал запуска; финансовые smoke-команды не выполнять.
 
 Откат: атомарно вернуть current на исходный release и перезапустить сервис; схема и данные сохраняются. Уже отправленные Telegram-сообщения сохраняют прежний текст, новые подсказки используют `0000`.
+
+Выпущено 27.10.2026 в 15:41 МСК: `eb633fea9362c1638694c1eade265ccceb2ebd57`. Current указывает на этот release; systemd active/running, ExecMainStatus=0. Local/public health возвращают status=ok; журнал запуска без ошибок. В опубликованных исходниках подсказок проверена замена прежних номеров на `0000`. Финансовые smoke-команды не выполнялись.
