@@ -43,7 +43,7 @@ const createActions = {
 async function api(path, body) { return request(() => fetch(path, body ? { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF': '1' }, body: JSON.stringify(body) } : { credentials: 'same-origin', headers: { 'X-CSRF': '1' } })); }
 
 function BrandMark({ compact = false }) {
-  return <div className="flex items-center gap-3"><span className={`${compact ? 'size-9' : 'size-11'} brand-mark`} aria-hidden="true">М</span><span className="text-[13px] leading-[1.12] tracking-[-.015em] text-foreground/70">Металлист<br /><strong className="font-semibold text-foreground">Платформа</strong></span></div>;
+  return <div className="flex items-center gap-3"><img src="/assets/metallist-logo.png" alt="" width="256" height="256" className={`${compact ? 'size-9' : 'size-11'} brand-mark`} /><span className="text-[13px] leading-[1.12] tracking-[-.015em] text-foreground/70">Металлист<br /><strong className="font-semibold text-foreground">Платформа</strong></span></div>;
 }
 
 function Login({ onLogin }) {

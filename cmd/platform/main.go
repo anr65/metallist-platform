@@ -299,6 +299,9 @@ func main() {
 	mux.HandleFunc("/api/audit", app.auth(app.audit))
 	mux.HandleFunc("/telegram/webhook", app.telegram)
 	mux.HandleFunc("/assets/app.js", app.javascript)
+	mux.HandleFunc("/assets/metallist-logo.png", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, brandLogo, "image/png", false) })
+	mux.HandleFunc("/assets/favicon.png", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, favicon, "image/png", false) })
+	mux.HandleFunc("/assets/apple-touch-icon.png", func(w http.ResponseWriter, r *http.Request) { serveAsset(w, r, appleTouchIcon, "image/png", false) })
 	mux.HandleFunc("/assets/app.css", func(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r, []byte(appCSS), "text/css; charset=utf-8", false)
 	})
