@@ -64,6 +64,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Новая главная: статистика за всю историю — 28.10.2026](operations/overview-release-20261028.md)
+
 - [Личный учетный бот sysadmin: выпуск и откат](operations/telegram-accounting-release.md)
 
 - [Расход из наличных Telegram: выпуск 27.10.2026](operations/telegram-cash-expense-release.md)

@@ -99,3 +99,20 @@ Command handler валидирует права и состояние, сохр�
 ## Подтверждение реестра через web и Telegram — 27.10.2026
 
 `confirmRegistryCommand(tx, actor, input, channel)` — общая типизированная команда одного Go build. Поля `id`, `version`, `confirm_total`, `confirm_commission`, `confirm_rate_bp` имеют прежние точные строковые значения; результат `posted`/`already_posted` либо код и ошибка. Caller проверяет полномочия, Telegram дополнительно проверяет получателя и неизменяемый preview, затем владеет commit/rollback. Даты, ручной тариф, нормализация долга, audit actor/channel и ключ `registry:<id>` одинаковы для обоих adapters. Новый публичный HTTP endpoint не вводится.
+
+## Главная: управленческий обзор — 28.10.2026
+
+`GET /api/overview`, роли `chief`, `accountant`, `auditor`, `sysadmin`; остальные получают 403.
+Ответ из единого read-only repeatable-read snapshot, без миграций и финансовых команд:
+
+- `as_of`: ISO timestamp снимка; `first_day`, `last_day`: московские даты признания первой/последней проводки или `null`.
+- `totals`: денежные decimal strings с двумя знаками: `turnover`, `commission`, `other_revenue`, `expenses`, `profit`, `cards`, `cash`, `chief_cash`, `merchant_payable`, `merchant_receivable`, `other_receivable`. Итоги за всю историю, остатки на момент снимка.
+- `months`: все московские месяцы от первой проводки до текущего (или последнего месяца признания, если он позже), включая нулевые; каждый содержит `month` (`YYYY-MM`), `turnover`, `commission`, `other_revenue`, `expenses`, `profit` (decimal strings).
+- `activity`: целые `registries`, `merchants`, `cards` — количество действующих проведённых реестров и уникальных мерчантов/карт в них за всю историю. Не метрики посещений или удержания.
+- `pending`: целые `registries` (preview) и `operations` (draft), не проведённые в учёте.
+
+Оборот: чистый дебет 1100 по registry и связанным reversal. Комиссия: чистый кредит 4100; прочий доход: 4200; расходы: чистый дебет 5100/5200/5300/5400/5900. Прибыль = комиссия + прочий доход − расходы. Все месячные суммы используют `recognition_at`, включая ретроактивный тариф и сторно. Дивиденды 3300 не относятся к расходам. Долг мерчантам включает 2100 + 2110, дебиторка 1300 показывается отдельно, без взаимозачёта.
+
+На главной доля комиссии = комиссия / оборот; маржа = прибыль / (комиссия + прочий доход). При неположительном знаменателе — «Нет базы», без выдуманного нулевого процента. Неполные месяцы явно помечаются, автоматического сравнения роста нет. Нет быстрых переходов; мобильная версия использует компактные суммы с доступным точным значением, переключатель «Точные суммы» и вертикальную месячную историю. Ошибка загрузки не подменяется нулями.
+
+Методология: разделение агентского транзита и комиссионной выручки — [IFRS 15, B36](https://www.ifrs.org/content/dam/ifrs/publications/pdf-standards/english/2022/issued/part-a/ifrs-15-revenue-from-contracts-with-customers.pdf?bypass=on); разделение денежных остатков, потоков и прибыли — [IAS 7](https://www.ifrs.org/issued-standards/list-of-standards/ias-7-statement-of-cash-flows/). Явные события, периоды и уникальные участники — [Amplitude event segmentation](https://amplitude.com/docs/analytics/charts/event-segmentation/event-segmentation-build). Это управленческая аналитика по правилам проекта, не полная регламентированная отчётность по МСФО.

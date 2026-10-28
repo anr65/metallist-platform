@@ -3,7 +3,6 @@ import { request, userError } from './api-errors';
 import { createRoot } from 'react-dom/client';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ArrowUpRight, BookOpen, Building2, ChartNoAxesCombined, Check, CreditCard, Files, History, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck, Sparkles, WalletCards } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,6 +11,7 @@ import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbP
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Audit, Reports } from './pages';
+import { Overview } from './overview';
 import { CatalogPage } from './catalog';
 import { MoneyPage } from './money';
 import { Balances } from './balances';
@@ -20,7 +20,7 @@ import { Merchants } from './merchants';
 import { allowedPages, navigationByRole, pageForRole, stripQueryFromLocation } from './access';
 import './styles.css';
 
-gsap.registerPlugin(useGSAP, ScrollTrigger);
+gsap.registerPlugin(useGSAP);
 stripQueryFromLocation(window.location, window.history);
 
 const nav = [
@@ -40,7 +40,6 @@ const createActions = {
   merchants: { route: 'merchants/new', label: 'Добавить мерчанта', compactLabel: 'Добавить' },
   money: { route: 'money/new', label: 'Создать операцию', compactLabel: 'Создать' },
 };
-const rub = new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', minimumFractionDigits: 2 });
 async function api(path, body) { return request(() => fetch(path, body ? { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-CSRF': '1' }, body: JSON.stringify(body) } : { credentials: 'same-origin', headers: { 'X-CSRF': '1' } })); }
 
 function BrandMark({ compact = false }) {
@@ -57,30 +56,6 @@ function Login({ onLogin }) {
   </div></main>;
 }
 
-const metricMeta = [
-  ['Деньги на картах и в кассах', 'card_cash', 'Сопровождаемые деньги сейчас', 'metric-card--primary'],
-  ['К возврату мерчантам', 'merchant_payable', 'Подтверждённый долг по реестрам', 'metric-card--sage'],
-  ['Заработанная комиссия', 'commission_revenue', 'Выручка без транзитных сумм', ''],
-  ['Прибыль', 'profit', 'Доходы за вычетом расходов', 'metric-card--warm']
-];
-
-function MetricCard({ item, report, index }) {
-  const [label, key, detail, tone] = item;
-  return <Card data-metric className={`metric-card ${tone} ${index === 0 ? 'md:col-span-7' : index === 1 ? 'md:col-span-5' : 'md:col-span-4'}`}><CardContent className="flex h-full flex-col justify-between p-6 lg:p-7"><div className="flex items-start justify-between gap-5"><p className="max-w-[16rem] text-sm leading-5 text-current/60">{label}</p><span className="metric-index">0{index + 1}</span></div><strong className="mt-10 font-mono text-[clamp(1.55rem,3.2vw,3.1rem)] leading-none tracking-[-.07em] tabular-nums">{rub.format(Number(report.summary[key] || 0))}</strong><p className="mt-5 text-xs leading-5 text-current/48">{detail}</p></CardContent></Card>;
-}
-
-function Overview({ report, onNavigate }) {
-  const root = useRef(null);
-  useGSAP(() => { if (matchMedia('(prefers-reduced-motion: reduce)').matches) return; gsap.from('[data-metric]', { y: 42, opacity: 0, scale: .985, duration: .8, stagger: .09, ease: 'power3.out' }); const cards = gsap.utils.toArray('[data-stack-card]'); cards.forEach((card, index) => gsap.to(card, { y: index * -8, scale: 1 - index * .018, scrollTrigger: { trigger: card, start: 'top 78%', end: 'bottom 35%', scrub: .6 } })); }, { scope: root });
-  return <div ref={root} className="pb-10"><div className="metric-grid grid grid-flow-dense gap-3 md:grid-cols-12">{metricMeta.map((item, index) => <MetricCard key={item[1]} item={item} report={report} index={index} />)}<Card data-metric className="metric-card quick-cell md:col-span-4"><CardContent className="flex h-full flex-col justify-between p-6 lg:p-7"><div><p className="text-sm text-foreground/55">Быстрый маршрут</p><h2 className="mt-3 text-2xl font-semibold tracking-[-.045em]">От события<br />к учёту.</h2></div><Button className="mt-8 w-fit" onClick={() => onNavigate('requests')}>Начать работу<ArrowUpRight /></Button></CardContent></Card></div>
-    <section className="mt-6"><div className="action-accordion grid overflow-hidden rounded-[1.75rem] border border-border/70 lg:grid-cols-3">{[
-      ['Карты к оплате', 'Создать запрос и подготовить файл для мерчанта.', 'requests', '01'],
-      ['Реестры оплат', 'Проверить ответные реестры и подтвердить поступление.', 'registries', '02'],
-      ['Операции', 'Снятие, передача, расход или возврат.', 'money', '03']
-    ].map(([title, copy, target, number]) => <button data-stack-card className="action-panel group" key={target} onClick={() => onNavigate(target)}><span className="font-mono text-xs text-foreground/35">{number}</span><span className="mt-16 block text-left text-xl font-semibold tracking-[-.035em]">{title}</span><span className="mt-2 block max-w-[17rem] text-left text-sm leading-6 text-muted-foreground">{copy}</span><span className="mt-8 grid size-10 place-items-center rounded-full border border-border transition-all group-hover:border-primary group-hover:bg-primary group-hover:text-white"><ArrowUpRight className="size-4" /></span></button>)}</div></section>
-  </div>;
-}
-
 function AccountPage() { const [error, setError] = useState(''), [busy, setBusy] = useState(false), [done, setDone] = useState(false); async function submit(event) { event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError(''); try { await api('/api/password', Object.fromEntries(form)); setDone(true); } catch (e) { setError(userError(e)); } finally { setBusy(false); } } return <><div className="page-heading"><h1>Настройки входа</h1><p>После смены пароля все прежние сеансы будут завершены.</p></div><Card className="max-w-xl"><CardHeader><CardTitle>Сменить пароль</CardTitle><CardDescription>Новый пароль должен состоять минимум из 16 символов.</CardDescription></CardHeader><CardContent>{done ? <Alert><AlertDescription>Пароль изменён. Войдите заново, чтобы продолжить.</AlertDescription></Alert> : <form className="grid gap-5" onSubmit={submit}><label className="grid gap-2 text-sm font-medium">Текущий пароль<Input name="current" type="password" autoComplete="current-password" required /></label><label className="grid gap-2 text-sm font-medium">Новый пароль<Input name="new" type="password" autoComplete="new-password" minLength="16" required /></label>{error && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}<Button type="submit" disabled={busy}>{busy ? 'Сохранение…' : 'Сохранить новый пароль'}</Button></form>}</CardContent></Card></>; }
 
 function App() {
@@ -92,7 +67,7 @@ function App() {
     setPage(syncLocation(me.Role));
     setReport(null);
     if (navigationByRole[me.Role]?.includes('overview')) {
-      try { setReport(await api('/api/report')); } catch (err) { setError(userError(err)); }
+      try { setReport(await api('/api/overview')); } catch (err) { setError(userError(err)); }
     }
   }
   useEffect(() => { load(); }, []);
@@ -113,7 +88,7 @@ function App() {
   const createAction = createActions[page] || (catalogCreateAllowed ? { modal: true, label: page === 'catalog/access' ? 'Добавить пользователя' : 'Добавить запись', compactLabel: 'Добавить' } : null);
   const canCreate = createAction && (createAction.modal || pageForRole(user.Role, `#${createAction.route}`) === createAction.route);
   const pages = { requests: <PaymentRequests role={user.Role} route={page} onNavigate={go} />, registries: <RegistryUpload role={user.Role} route={page} onNavigate={go} />, merchants: <Merchants role={user.Role} route={page} onNavigate={go} />, money: <MoneyPage role={user.Role} route={page} onNavigate={go} />, balances: <Balances />, catalog: <CatalogPage role={user.Role} route={page} onNavigate={go} />, reports: <Reports role={user.Role} />, audit: <Audit />, account: <AccountPage /> };
-  return <div className="app-shell min-h-[100dvh] lg:grid lg:grid-cols-[268px_minmax(0,1fr)]"><aside className="sidebar hidden lg:flex lg:flex-col"><BrandMark compact /><div className="my-7 h-px bg-border/60" /><p className="mb-3 px-3 text-[10px] font-semibold tracking-[.18em] text-muted-foreground uppercase">Рабочее пространство</p><Nav /><div className="mt-auto rounded-2xl border border-white/60 bg-white/45 p-3 backdrop-blur-xl"><div className="mb-2 flex items-center gap-3 px-2 py-2"><span className="grid size-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{user.Name?.slice(0, 1) || 'М'}</span><div className="min-w-0"><p className="truncate text-sm font-semibold">{user.Name}</p><p className="truncate text-[11px] text-muted-foreground">{roleNames[user.Role] || 'Пользователь'}</p></div></div><Button variant="ghost" className="nav-button w-full justify-start" onClick={() => go('account')}><Settings className="size-4" />Настройки</Button><Button variant="ghost" className="nav-button w-full justify-start" onClick={logout}><LogOut className="size-4" />Выйти</Button></div></aside><main className="min-w-0"><header className="app-header flex h-[72px] items-center gap-2 px-3 sm:px-5 lg:px-10"><Sheet><SheetTrigger asChild><Button variant="outline" size="icon" className="lg:hidden"><Menu /></Button></SheetTrigger><SheetContent side="left" className="w-72 bg-[#f3f5f2]/95 backdrop-blur-xl"><SheetHeader><SheetTitle><BrandMark compact /></SheetTitle></SheetHeader><div className="mt-8"><Nav mobile /></div></SheetContent></Sheet><Breadcrumb className="min-w-0 flex-1"><BreadcrumbList className="flex-nowrap"><BreadcrumbItem className="min-w-0">{parentPage && page !== parentPage ? <BreadcrumbLink className="max-w-40 truncate" onClick={() => go(parentPage)}>{parentLabel}</BreadcrumbLink> : <BreadcrumbPage>{currentLabel}</BreadcrumbPage>}</BreadcrumbItem>{parentPage && page !== parentPage && <><BreadcrumbSeparator /><BreadcrumbItem className="min-w-0"><BreadcrumbPage>{currentLabel}</BreadcrumbPage></BreadcrumbItem></>}</BreadcrumbList></Breadcrumb>{canCreate && <Button variant="primary" className="ml-auto shrink-0" aria-label={createAction.label} onClick={() => createAction.modal ? window.dispatchEvent(new Event('catalog-create')) : go(createAction.route)}><span className="sm:hidden">{createAction.compactLabel}</span><span className="hidden sm:inline">{createAction.label}</span></Button>}</header><div ref={content} className={`mx-auto w-full py-7 lg:py-10 ${(['registries', 'money'].includes(page) || page?.startsWith('catalog/')) ? 'max-w-none px-0' : ['requests', 'merchants'].includes(page) ? 'max-w-none px-5 lg:px-6' : 'max-w-[1520px] px-5 lg:px-10'}`}>{error && <Alert variant="destructive" className="mb-5"><AlertDescription>{error}</AlertDescription></Alert>}{page?.startsWith('requests/') ? <PaymentRequests role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('registries/') ? <RegistryUpload role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('merchants/') ? <Merchants role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('money/') ? <MoneyPage role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('catalog/') ? <CatalogPage role={user.Role} route={page} onNavigate={go} /> : page === 'overview' ? report ? <Overview report={report} onNavigate={go} /> : !error && <p>Загрузка обзора…</p> : pages[page] || <AccountPage />}</div></main></div>;
+  return <div className="app-shell min-h-[100dvh] lg:grid lg:grid-cols-[268px_minmax(0,1fr)]"><aside className="sidebar hidden lg:flex lg:flex-col"><BrandMark compact /><div className="my-7 h-px bg-border/60" /><p className="mb-3 px-3 text-[10px] font-semibold tracking-[.18em] text-muted-foreground uppercase">Рабочее пространство</p><Nav /><div className="mt-auto rounded-2xl border border-white/60 bg-white/45 p-3 backdrop-blur-xl"><div className="mb-2 flex items-center gap-3 px-2 py-2"><span className="grid size-9 place-items-center rounded-full bg-primary/10 text-xs font-semibold text-primary">{user.Name?.slice(0, 1) || 'М'}</span><div className="min-w-0"><p className="truncate text-sm font-semibold">{user.Name}</p><p className="truncate text-[11px] text-muted-foreground">{roleNames[user.Role] || 'Пользователь'}</p></div></div><Button variant="ghost" className="nav-button w-full justify-start" onClick={() => go('account')}><Settings className="size-4" />Настройки</Button><Button variant="ghost" className="nav-button w-full justify-start" onClick={logout}><LogOut className="size-4" />Выйти</Button></div></aside><main className="min-w-0"><header className="app-header flex h-[72px] items-center gap-2 px-3 sm:px-5 lg:px-10"><Sheet><SheetTrigger asChild><Button variant="outline" size="icon" className="lg:hidden"><Menu /></Button></SheetTrigger><SheetContent side="left" className="w-72 bg-[#f3f5f2]/95 backdrop-blur-xl"><SheetHeader><SheetTitle><BrandMark compact /></SheetTitle></SheetHeader><div className="mt-8"><Nav mobile /></div></SheetContent></Sheet><Breadcrumb className="min-w-0 flex-1"><BreadcrumbList className="flex-nowrap"><BreadcrumbItem className="min-w-0">{parentPage && page !== parentPage ? <BreadcrumbLink className="max-w-40 truncate" onClick={() => go(parentPage)}>{parentLabel}</BreadcrumbLink> : <BreadcrumbPage>{currentLabel}</BreadcrumbPage>}</BreadcrumbItem>{parentPage && page !== parentPage && <><BreadcrumbSeparator /><BreadcrumbItem className="min-w-0"><BreadcrumbPage>{currentLabel}</BreadcrumbPage></BreadcrumbItem></>}</BreadcrumbList></Breadcrumb>{canCreate && <Button variant="primary" className="ml-auto shrink-0" aria-label={createAction.label} onClick={() => createAction.modal ? window.dispatchEvent(new Event('catalog-create')) : go(createAction.route)}><span className="sm:hidden">{createAction.compactLabel}</span><span className="hidden sm:inline">{createAction.label}</span></Button>}</header><div ref={content} className={`mx-auto w-full py-7 lg:py-10 ${(['registries', 'money'].includes(page) || page?.startsWith('catalog/')) ? 'max-w-none px-0' : ['requests', 'merchants'].includes(page) ? 'max-w-none px-5 lg:px-6' : 'max-w-[1520px] px-5 lg:px-10'}`}>{error && <Alert variant="destructive" className="mb-5"><AlertDescription>{error}</AlertDescription></Alert>}{page?.startsWith('requests/') ? <PaymentRequests role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('registries/') ? <RegistryUpload role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('merchants/') ? <Merchants role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('money/') ? <MoneyPage role={user.Role} route={page} onNavigate={go} /> : page?.startsWith('catalog/') ? <CatalogPage role={user.Role} route={page} onNavigate={go} /> : page === 'overview' ? report ? <Overview report={report} /> : !error && <p>Загрузка обзора…</p> : pages[page] || <AccountPage />}</div></main></div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
