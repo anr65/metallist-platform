@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // catalogUpdate edits descriptive directory fields only. Card numbers and
@@ -54,7 +56,21 @@ func (a *App) catalogUpdate(w http.ResponseWriter, r *http.Request, u User) {
 			err = errors.New("укажите ФИО владельца до 200 символов")
 		} else {
 			var previous sql.NullString
-			err = tx.QueryRow("SELECT drop_handler_id FROM cards WHERE id=$1 FOR UPDATE", recordID).Scan(&previous)
+			var previousBank string
+			err = tx.QueryRow("SELECT drop_handler_id,bank_id FROM cards WHERE id=$1 FOR UPDATE", recordID).Scan(&previous, &previousBank)
+			bankID := previousBank
+			if _, present := m["bank_id"]; present && err == nil {
+				bankID = str(m, "bank_id")
+				if !validID(bankID) {
+					err = errors.New("выберите банк из справочника")
+				} else if bankID != previousBank {
+					var selectable bool
+					err = tx.QueryRow("SELECT selectable FROM banks WHERE id=$1 FOR SHARE", bankID).Scan(&selectable)
+					if err == sql.ErrNoRows || err == nil && !selectable {
+						err = errors.New("выберите действующий банк из справочника")
+					}
+				}
+			}
 			handlerID := previous.String
 			if _, present := m["drop_handler_id"]; present {
 				handlerID = str(m, "drop_handler_id")
@@ -66,7 +82,10 @@ func (a *App) catalogUpdate(w http.ResponseWriter, r *http.Request, u User) {
 				err = changeCardStatus(tx, u.ID, "web", recordID, str(m, "status"), time.Now())
 			}
 			if err == nil {
-				result, err = tx.Exec("UPDATE cards SET owner_label=$2,drop_handler_id=$3 WHERE id=$1", recordID, owner, nilID(handlerID))
+				result, err = tx.Exec("UPDATE cards SET owner_label=$2,drop_handler_id=$3,bank_id=$4 WHERE id=$1", recordID, owner, nilID(handlerID), bankID)
+			}
+			if err == nil && bankID != previousBank {
+				err = txAudit(tx, u.ID, "web", "card_bank_change", "card", recordID, "success", "", M{"before": previousBank, "after": bankID})
 			}
 			if err == nil && handlerID != previous.String {
 				err = txAudit(tx, u.ID, "web", "card_drop_handler_change", "card", recordID, "success", "", M{"before": nilID(previous.String), "after": nilID(handlerID)})
@@ -113,6 +132,10 @@ func (a *App) catalogUpdate(w http.ResponseWriter, r *http.Request, u User) {
 		err = errors.New("редактирование этого справочника недоступно")
 	}
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if kind == "card" && errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			err = errors.New("карта с такой маской уже существует в выбранном банке")
+		}
 		a.logAudit(u.ID, "web", "catalog_update", kind, recordID, "rejected", err.Error(), M{})
 		fail(w, http.StatusBadRequest, err)
 		return
