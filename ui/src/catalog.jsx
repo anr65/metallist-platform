@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowUpRight, ListFilter, MoreHorizontal } from 'lucide-react';
+import { ArrowUpRight, Filter, MoreHorizontal } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -58,18 +58,40 @@ function AccessPage({ catalog, onChanged }) {
 }
 
 function CardFilters({ rows, filters, onChange, open, onOpenChange, total }) {
-  const update = (key, value) => onChange(current => ({ ...current, [key]: value === '__all' ? '' : value }));
+  const [draft, setDraft] = useState({});
+  const updateDraft = (key, value) => setDraft(current => ({ ...current, [key]: value === '__all' ? '' : value }));
   const active = Object.values(filters).some(Boolean);
   const options = (key, label) => [...new Map(rows.filter(row => row[key]).map(row => [row[key], row[label]])).entries()].sort((a, b) => (a[1] || '').localeCompare(b[1] || '', 'ru'));
-  const select = (key, label, values, extra = []) => <label className="grid min-w-0 gap-2 text-sm font-medium">{label}<Select value={filters[key] || '__all'} onValueChange={value => update(key, value)}><SelectTrigger className="w-full min-w-0" aria-label={`Фильтр: ${label}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all">Все</SelectItem>{[...extra, ...values].map(([value, title]) => <SelectItem key={value} value={value}>{title}</SelectItem>)}</SelectContent></Select></label>;
+  const select = (key, label, values, extra = []) => <label className="grid min-w-0 gap-2 text-sm font-medium">{label}<Select value={draft[key] || '__all'} onValueChange={value => updateDraft(key, value)}><SelectTrigger className="w-full min-w-0" aria-label={`Фильтр: ${label}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__all">Все</SelectItem>{[...extra, ...values].map(([value, title]) => <SelectItem key={value} value={value}>{title}</SelectItem>)}</SelectContent></Select></label>;
+  function changeOpen(next) {
+    if (next) setDraft({ ...filters });
+    onOpenChange(next);
+  }
+  function apply(event) {
+    event.preventDefault();
+    onChange({ ...draft, search: filters.search || '' });
+    onOpenChange(false);
+  }
   return <div className="grid min-w-0 gap-4 px-5 pb-5 lg:px-6">
-    <div className="flex flex-wrap items-center gap-3"><label className="grid min-w-0 flex-1 gap-2 text-sm font-medium">Поиск по картам<Input type="search" placeholder="Карта, банк, владелец, дроповод или статус" value={filters.search || ''} onChange={event => update('search', event.target.value)} /></label><Button type="button" variant="secondary" className="mt-6 md:hidden" aria-expanded={open} aria-controls="card-column-filters" onClick={() => onOpenChange(!open)}><ListFilter className="size-4" />Фильтры</Button></div>
-    <div id="card-column-filters" className={`${open ? 'grid' : 'hidden'} min-w-0 items-start gap-3 sm:grid-cols-2 md:grid xl:grid-cols-5`}>
-      <label className="grid min-w-0 gap-2 text-sm font-medium">Карта<Input placeholder="Маска или последние цифры" value={filters.mask || ''} onChange={event => update('mask', event.target.value)} /></label>
-      {select('bank', 'Банк', options('bank_id', 'name'))}
-      <div className="grid min-w-0 gap-2"><label className="grid gap-2 text-sm font-medium">Владелец<Input placeholder="ФИО владельца" value={filters.owner || ''} onChange={event => update('owner', event.target.value)} /></label>{select('ownerPresence', 'Заполнение владельца', [['unspecified', 'Не указан'], ['specified', 'Указан']])}</div>
-      {select('handler', 'Дроповод', options('drop_handler_id', 'drop_handler_name'), [['unassigned', 'Не назначен']])}
-      {select('status', 'Статус', Object.entries(cardStatusLabels))}
+    <div className="flex min-w-0 items-end gap-2">
+      <label className="grid min-w-0 flex-1 gap-2 text-sm font-medium">Поиск по картам<Input type="search" placeholder="Карта, банк, владелец, дроповод или статус" value={filters.search || ''} onChange={event => onChange(current => ({ ...current, search: event.target.value }))} /></label>
+      <Dialog open={open} onOpenChange={changeOpen}>
+        <DialogTrigger asChild><Button type="button" variant="secondary" className="shrink-0"><Filter aria-hidden="true" className="size-4" />Фильтры</Button></DialogTrigger>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-xl">
+          <DialogHeader><DialogTitle>Фильтры карт</DialogTitle><DialogDescription>Установите условия отбора карт и нажмите «Применить».</DialogDescription></DialogHeader>
+          <form onSubmit={apply} className="grid min-w-0 gap-5">
+            <div className="grid min-w-0 gap-4 sm:grid-cols-2">
+              <label className="grid min-w-0 gap-2 text-sm font-medium">Карта<Input placeholder="Маска или последние цифры" value={draft.mask || ''} onChange={event => updateDraft('mask', event.target.value)} /></label>
+              {select('bank', 'Банк', options('bank_id', 'name'))}
+              <label className="grid min-w-0 gap-2 text-sm font-medium">Владелец<Input placeholder="ФИО владельца" value={draft.owner || ''} onChange={event => updateDraft('owner', event.target.value)} /></label>
+              {select('ownerPresence', 'Заполнение владельца', [['unspecified', 'Не указан'], ['specified', 'Указан']])}
+              {select('handler', 'Дроповод', options('drop_handler_id', 'drop_handler_name'), [['unassigned', 'Не назначен']])}
+              {select('status', 'Статус', Object.entries(cardStatusLabels))}
+            </div>
+            <DialogFooter className="sm:justify-between"><Button type="button" variant="secondary" onClick={() => setDraft({})}>Сбросить</Button><div className="flex gap-2"><Button type="button" variant="secondary" className="flex-1" onClick={() => onOpenChange(false)}>Отмена</Button><Button type="submit" variant="primary" className="flex-1">Применить</Button></div></DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
     <div className="flex flex-wrap items-center justify-between gap-3"><p role="status" className="text-sm text-muted-foreground">Найдено: {total} из {rows.length}</p>{active && <Button type="button" variant="secondary" onClick={() => onChange({})}>Сбросить фильтры</Button>}</div>
   </div>;
