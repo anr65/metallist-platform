@@ -37,18 +37,80 @@ func normalizeCardStatus(status string) string {
 	return strings.ToLower(status)
 }
 
+type telegramCardStatusItem struct {
+	Selector string
+	Status   string
+}
+
+func cardStatusSelectorsValid(fields []string) bool {
+	if len(fields) == 0 || len(fields) > 20 {
+		return false
+	}
+	for _, field := range fields {
+		if !cardStatusSelectorValid(field) {
+			return false
+		}
+	}
+	return true
+}
+
+func telegramCardStatusItems(fields []string, command string) ([]telegramCardStatusItem, error) {
+	status := "blocked"
+	if command == "card_status" {
+		if len(fields) < 2 {
+			return nil, errors.New("укажите карты и статус: Активна, Лимит, Блок или Архив")
+		}
+		status = normalizeCardStatus(fields[len(fields)-1])
+		if _, ok := cardStatusLabels[status]; !ok {
+			return nil, errors.New("неверный статус карты")
+		}
+		fields = fields[:len(fields)-1]
+	}
+	items := []telegramCardStatusItem{}
+	seen := map[string]string{}
+	for i := 0; i < len(fields); i++ {
+		selector := strings.ToLower(fields[i])
+		if !cardStatusSelectorValid(selector) {
+			return nil, errors.New("укажите последние четыре цифры или ID карты, по одной карте в строке")
+		}
+		itemStatus := status
+		if command == "card_status" && i+1 < len(fields) {
+			explicit := normalizeCardStatus(fields[i+1])
+			if _, ok := cardStatusLabels[explicit]; ok {
+				itemStatus = explicit
+				i++
+			}
+		}
+		if previous, ok := seen[selector]; ok {
+			if previous != itemStatus {
+				return nil, errors.New("для одной карты указаны разные статусы")
+			}
+			continue
+		}
+		seen[selector] = itemStatus
+		items = append(items, telegramCardStatusItem{selector, itemStatus})
+		if len(items) > 20 {
+			return nil, errors.New("за одно сообщение можно изменить не более 20 карт")
+		}
+	}
+	if len(items) == 0 {
+		return nil, errors.New("укажите хотя бы одну карту")
+	}
+	return items, nil
+}
+
 func cardStatusInputPrompt(d telegramCardStatusDialog) string {
 	if d.Command == "block_card" {
-		return "Какую карту заблокировать? Отправьте последние 4 цифры или ID карты, например: 1234. /cancel — отмена."
+		return "Какие карты заблокировать? Отправьте последние 4 цифры или ID карт по одной в строке (до 20):\n1234\n0802\n/cancel — отмена."
 	}
 	if d.Selector != "" {
-		return "Выберите статус карты: Активна, Лимит, Блок или Архив. Отправьте только название статуса. /cancel — отмена."
+		return "Выберите статус для выбранных карт: Активна, Лимит, Блок или Архив. Отправьте только название статуса. /cancel — отмена."
 	}
-	return "Отправьте карту и статус одним сообщением, например: 1234 Блок или 1234 Лимит. Статусы: Активна, Лимит, Блок, Архив. Вместо последних 4 цифр можно указать ID карты. /cancel — отмена."
+	return "Отправьте карты по одной в строке (до 20) и статус в конце списка, например:\n1234\n0802 Лимит\nСтатусы: Активна, Лимит, Блок, Архив. Можно указать статус у каждой карты или отправить сначала список, затем статус отдельным сообщением. Вместо последних 4 цифр можно указать ID карты. /cancel — отмена."
 }
 
 func (a *App) beginCardStatusInput(u telegramActor, message *telegramMessage, command, selector string, updateID int64, expected ...telegramCardStatusDialog) error {
-	if selector != "" && !cardStatusSelectorValid(selector) {
+	if selector != "" && !cardStatusSelectorsValid(strings.Fields(selector)) {
 		return errors.New("укажите последние четыре цифры или ID карты")
 	}
 	d := telegramCardStatusDialog{Token: id(), ChatID: message.Chat.ID, LastUpdateID: updateID, Selector: selector, Command: command}
@@ -114,22 +176,22 @@ func (a *App) telegramCardStatusInput(u telegramActor, message *telegramMessage,
 		command = d.Command
 		expected = append(expected, d)
 		if d.Selector != "" {
-			fields = append([]string{d.Selector}, fields...)
+			fields = append(strings.Fields(d.Selector), fields...)
 		}
 	}
 	// A group reply may mention colleagues after the actual parameters.
 	for len(fields) > 0 && strings.HasPrefix(fields[len(fields)-1], "@") {
 		fields = fields[:len(fields)-1]
 	}
-	if len(fields) == 0 || command == "card_status" && len(fields) == 1 && cardStatusSelectorValid(fields[0]) {
+	if len(fields) == 0 || command == "card_status" && cardStatusSelectorsValid(fields) {
 		selector := ""
-		if len(fields) == 1 {
-			selector = fields[0]
+		if len(fields) > 0 {
+			selector = strings.Join(fields, " ")
 		}
 		return a.beginCardStatusInput(u, message, command, selector, updateID, expected...)
 	}
-	if command == "block_card" && len(fields) == 2 && normalizeCardStatus(fields[1]) == "blocked" {
-		fields = fields[:1]
+	if command == "block_card" && len(fields) >= 2 && normalizeCardStatus(fields[len(fields)-1]) == "blocked" {
+		fields = fields[:len(fields)-1]
 	}
 	words := append([]string{"/" + command}, fields...)
 	if err := a.telegramCardStatus(u, words, command, updateID, expected...); err != nil {
@@ -139,14 +201,30 @@ func (a *App) telegramCardStatusInput(u telegramActor, message *telegramMessage,
 }
 
 func (a *App) cardStatusReply(u telegramActor, chat, updateID int64) error {
-	var suffix, status string
 	var prompt, storedChat int64
-	err := a.db.QueryRow(`SELECT c.last4,a.detail->>'status',COALESCE((a.detail->>'prompt_message_id')::bigint,0),COALESCE((a.detail->>'prompt_chat_id')::bigint,0) FROM audit_events a JOIN cards c ON c.id=a.object_id
- WHERE a.actor_id=$1 AND a.channel='telegram' AND a.action='card_status_command' AND a.outcome='success' AND a.detail->>'update_id'=$2 LIMIT 1`, u.ID, fmt.Sprint(updateID)).Scan(&suffix, &status, &prompt, &storedChat)
+	rows, err := a.db.Query(`SELECT c.last4,a.detail->>'status',COALESCE((a.detail->>'prompt_message_id')::bigint,0),COALESCE((a.detail->>'prompt_chat_id')::bigint,0) FROM audit_events a JOIN cards c ON c.id=a.object_id
+ WHERE a.actor_id=$1 AND a.channel='telegram' AND a.action='card_status_command' AND a.outcome='success' AND a.detail->>'update_id'=$2 ORDER BY COALESCE((a.detail->>'batch_index')::int,0),a.object_id`, u.ID, fmt.Sprint(updateID))
 	if err != nil {
 		return err
 	}
-	if err = a.telegramReply(chat, fmt.Sprintf("Карта ••••%s: %s.", suffix, cardStatusLabels[status]), nil); err != nil {
+	replies := []string{}
+	for rows.Next() {
+		var suffix, status string
+		if err = rows.Scan(&suffix, &status, &prompt, &storedChat); err != nil {
+			rows.Close()
+			return err
+		}
+		replies = append(replies, fmt.Sprintf("Карта ••••%s: %s.", suffix, cardStatusLabels[status]))
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	if len(replies) == 0 {
+		return sql.ErrNoRows
+	}
+	if err = a.telegramReply(chat, strings.Join(replies, "\n"), nil); err != nil {
 		return err
 	}
 	if prompt <= 0 || storedChat != chat {
