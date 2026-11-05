@@ -1,3 +1,4 @@
+import { cardNumberError } from './lib/card-number';
 import React, { useEffect, useRef, useState } from 'react';
 import { ListFilter, LoaderCircle, MoreHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,19 +23,10 @@ function Message({ error }) { return error ? <Alert variant="destructive"><Alert
 function DropdownSearchStatus({ search }) { return <div role="status" aria-live="polite" className="text-sm text-muted-foreground">{search.loading && <p className="p-3">Поиск…</p>}{search.error && <div className="p-3">{search.error}<Button type="button" variant="secondary" onClick={search.retry}>Повторить поиск</Button></div>}</div>; }
 
 export function BankSelect({ banks, value, onValueChange }) {
-  const [open, setOpen] = useState(false);
-  const selected = banks.find(bank => bank.id === value);
-  const [query, setQuery] = useState('');
-  useEffect(() => { if (!open) setQuery(selected?.name || ''); }, [value, banks, open]);
-  const search = useDropdownSearch(banks.map(bank => ({ value: bank.id, label: bank.name })), query, open, 'catalog/banks');
-  const matches = banks.filter(bank => search.values.includes(bank.id));
-  return <>
-    <input type="hidden" name="bank_id" value={value} />
-    <Combobox items={matches} value={selected || null} filter={null} open={open} onOpenChange={(next, details) => { setOpen(next); if (!next) setQuery(selected?.name || ''); else if (details.reason !== 'input-change') setQuery(''); }} inputValue={query} onInputValueChange={(next, details) => { setQuery(next); if (details.reason === 'input-change' || details.reason === 'input-clear' || details.reason === 'clear-press') onValueChange(''); }} onValueChange={bank => { if (bank) { onValueChange(bank.id); setQuery(bank.name); setOpen(false); } }} itemToStringLabel={bank => bank.name} itemToStringValue={bank => bank.name} isItemEqualToValue={(bank, chosen) => bank.id === chosen.id}>
-      <ComboboxInput aria-label="Банк НСПК" className="h-11 w-full bg-white/60" placeholder="Найти банк по названию" />
-      <ComboboxContent><DropdownSearchStatus search={search} /><ComboboxEmpty>{search.loading || search.error ? null : query ? 'Банк не найден.' : 'Банков пока нет.'}</ComboboxEmpty><ComboboxList>{bank => <ComboboxItem key={bank.id} value={bank} className="py-2.5">{bank.name}</ComboboxItem>}</ComboboxList></ComboboxContent>
-    </Combobox>
-  </>;
+  return <Select searchSource="catalog/banks" name="bank_id" value={value} onValueChange={onValueChange} required>
+    <SelectTrigger aria-label="Банк НСПК"><SelectValue placeholder="Найти банк по названию" /></SelectTrigger>
+    <SelectContent>{banks.map(bank => <SelectItem key={bank.id} value={bank.id}>{bank.name}</SelectItem>)}</SelectContent>
+  </Select>;
 }
 
 function ManualRegistryCardSelect({ cards, value, onValueChange }) {
@@ -386,18 +378,11 @@ function ContactCombobox({ kind, value, onValueChange, onContactSelect }) {
 }
 
 function CardCombobox({ cards, value, usedCards, onValueChange, searchSource = 'catalog/request_cards' }) {
-  const [open, setOpen] = useState(false);
-  const selected = cards.find(card => card.id === value);
-  const label = card => `${card.bank ? `${card.bank} · ` : ''}${card.mask}`;
-  const [query, setQuery] = useState(selected ? label(selected) : '');
-  useEffect(() => { if (!open) setQuery(selected ? label(selected) : ''); }, [value, cards, open]);
   const available = cards.filter(card => card.id === value || !usedCards.has(card.id));
-  const search = useDropdownSearch(available.map(card => ({ value: card.id, label: label(card) })), query, open, searchSource);
-  const matches = available.filter(card => search.values.includes(card.id));
-  return <Combobox items={matches} value={selected || null} filter={null} open={open} onOpenChange={(next, details) => { setOpen(next); if (!next) setQuery(selected ? label(selected) : ''); else if (details.reason !== 'input-change') setQuery(''); }} inputValue={query} onInputValueChange={(next, details) => { setQuery(next); if (details.reason === 'input-change' || details.reason === 'input-clear' || details.reason === 'clear-press') onValueChange(''); }} onValueChange={card => { if (card) { onValueChange(card.id); setQuery(label(card)); setOpen(false); } }} itemToStringLabel={label} itemToStringValue={label} isItemEqualToValue={(card, chosen) => card.id === chosen.id}>
-    <ComboboxInput aria-label="Карта" className="h-11 w-full bg-white/60" placeholder="Найти карту по маске или банку" />
-    <ComboboxContent><DropdownSearchStatus search={search} /><ComboboxEmpty>{search.loading || search.error ? null : query ? 'Такой карты нет среди доступных.' : 'Доступных карт нет.'}</ComboboxEmpty><ComboboxList>{card => <ComboboxItem key={card.id} value={card} className="py-2.5">{label(card)}</ComboboxItem>}</ComboboxList></ComboboxContent>
-  </Combobox>;
+  return <Select searchSource={searchSource} value={value} onValueChange={onValueChange}>
+    <SelectTrigger aria-label="Карта"><SelectValue placeholder="Найти карту по маске или банку" /></SelectTrigger>
+    <SelectContent>{available.map(card => <SelectItem key={card.id} value={card.id}>{card.bank ? `${card.bank} · ` : ''}{card.mask}</SelectItem>)}</SelectContent>
+  </Select>;
 }
 
 export function CardPANCorrection({ role }) {
@@ -419,6 +404,8 @@ export function CardPANCorrection({ role }) {
     const form = event.currentTarget;
     const data = Object.fromEntries(new FormData(form));
     setBusy(true); setError(''); setMessage('');
+    const panError = cardNumberError(data.pan || '');
+    if (panError) { setError(panError); setBusy(false); return; }
     try {
       const result = await post('/api/card/pan/replace', { card_id: cardID, expected_mask: selected.mask, pan: data.pan, reason: data.reason });
       setMessage(`Номер исправлен. Новая маска: ${result.mask}.`);
@@ -426,13 +413,13 @@ export function CardPANCorrection({ role }) {
       form.reset();
       setCatalog(await get('/api/catalog'));
     } catch (e) { setError(userError(e)); }
-    finally { const panInput = form.querySelector('[name="pan"]'); if (panInput) panInput.value = ''; setBusy(false); }
+    finally { setBusy(false); }
   }
   return <Card className="mt-7 rounded-2xl">
     <CardHeader><CardTitle>Исправить номер карты</CardTitle><CardDescription>Выберите существующую карту и укажите правильный полный номер. Исправление записывается в аудит. Карту, уже использованную в запросе или реестре, изменить нельзя.</CardDescription></CardHeader>
     <CardContent>{catalog ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
       <label className="grid gap-2 text-sm font-medium">Карта<CardCombobox searchSource="catalog/cards" cards={cards} value={cardID} usedCards={new Set()} onValueChange={setCardID} /></label>
-      <label className="grid gap-2 text-sm font-medium">Правильный полный номер<Input name="pan" type="password" inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" placeholder="Номер без пробелов" required /></label>
+      <label className="grid gap-2 text-sm font-medium">Правильный полный номер<Input name="pan" type="text" numberMask={false} inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" placeholder="Номер без пробелов" required /></label>
       <label className="grid gap-2 text-sm font-medium md:col-span-2">Причина исправления<Input name="reason" minLength="5" maxLength="300" required /></label>
       <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" disabled={busy || !selected}>{busy ? 'Сохранение…' : 'Исправить номер'}</Button></div>
     </form> : <><Message error={error} />{!error && <p className="text-muted-foreground">Загрузка карт…</p>}</>}</CardContent>
