@@ -1,3 +1,7 @@
+export function stripCardNumberSpaces(value) {
+  return value.replace(/\s/g, '');
+}
+
 // Keep PAN as text: leading zeroes and all digits must survive form submission.
 export function cardNumberError(pan) {
   if (!/^[0-9]{16,19}$/.test(pan)) return 'Введите полный номер карты: от 16 до 19 цифр без пробелов.';

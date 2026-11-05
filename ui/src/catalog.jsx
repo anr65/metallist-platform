@@ -1,4 +1,4 @@
-import { cardNumberError } from './lib/card-number';
+import { cardNumberError, stripCardNumberSpaces } from './lib/card-number';
 import React, { useEffect, useState } from 'react';
 import { ArrowUpRight, Filter, MoreHorizontal } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -113,7 +113,12 @@ function CatalogFields({ section, record, catalog, bankID, setBankID, custodianK
   if (section === 'cards') return <>
     <CardBalanceFields record={record} cards={catalog.cards || []} />
     <label className="grid gap-2 text-sm font-medium">Банк<BankSelect banks={(catalog.banks || []).filter(x => x.selectable || x.id === record?.bank_id)} value={bankID} onValueChange={setBankID} /></label>
-    {!record && <label className="grid gap-2 text-sm font-medium">Полный номер карты<Input name="pan" type="text" numberMask={false} inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" required /></label>}
+    {!record && <label className="grid gap-2 text-sm font-medium">Полный номер карты<Input name="pan" type="text" numberMask={false} onChange={event => {
+      const input = event.currentTarget;
+      const caret = stripCardNumberSpaces(input.value.slice(0, input.selectionStart ?? input.value.length)).length;
+      input.value = stripCardNumberSpaces(input.value);
+      input.setSelectionRange(caret, caret);
+    }} inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" required /></label>}
     <label className="grid gap-2 text-sm font-medium">Дроповод<Select searchSource="catalog/drop_handlers" name="drop_handler_id" defaultValue={record?.drop_handler_id || (record ? '__none' : undefined)} required={!record}><SelectTrigger><SelectValue placeholder="Выберите дроповода" /></SelectTrigger><SelectContent>{record && <SelectItem value="__none">Не указан</SelectItem>}{(catalog.drop_handlers || []).filter(x => x.active || x.id === record?.drop_handler_id).map(x => <SelectItem key={x.id} value={x.id}>{x.name}{!x.active ? ' (отключён)' : ''}</SelectItem>)}</SelectContent></Select></label>
     {record && <label className="grid gap-2 text-sm font-medium">Статус<Select name="status" defaultValue={record.status}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{Object.entries({active:'Активна',limit:'Лимит',blocked:'Блок',retired:'Архив'}).map(([value,label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>}
     <label className="grid gap-2 text-sm font-medium">ФИО владельца<Input name="owner_label" defaultValue={record?.owner_label || ''} maxLength={200} required /></label>
