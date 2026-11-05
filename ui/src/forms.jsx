@@ -12,6 +12,7 @@ import { Combobox, ComboboxContent, ComboboxEmpty, ComboboxInput, ComboboxItem, 
 import { get, PageState, Status } from './pages';
 import { request as apiRequest, userError } from './api-errors';
 import { formatNumber } from './lib/number-input';
+import { OperationBalancesProvider, BalanceSelect, BalanceHint, BalanceRefresh, useOperationBalances } from './operation-balances';
 import { ServerTablePagination, TablePagination, usePagination } from './pagination';
 
 const todayMoscow = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' });
@@ -66,24 +67,31 @@ export const expenseCategories = [
   ['taxi', 'Такси'], ['material', 'Материал'], ['communication', 'Связь'], ['delivery', 'Доставка'], ['other', 'Прочие расходы'],
 ];
 
-export function MoneyForm({ role, onCreated }) {
-  const [catalog, setCatalog] = useState(null);
+export function MoneyForm(props) {
+  return <OperationBalancesProvider role={props.role}><MoneyFormContent {...props} /></OperationBalancesProvider>;
+}
+
+function MoneyFormContent({ role, onCreated }) {
+  const { catalog, catalogError, refresh } = useOperationBalances();
   const [kind, setKind] = useState('handover');
   const [sourceKind, setSourceKind] = useState('cash');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  useEffect(() => { get('/api/catalog').then(setCatalog).catch(e => setError(userError(e))); }, []);
 
   const [pending, setPending] = useState(null);
   const [draftID, setDraftID] = useState('');
   const [formVersion, setFormVersion] = useState(0);
 
-  function submit(event) {
+  async function submit(event) {
     event.preventDefault();
     setError(''); setMessage(''); setDraftID('');
-    setPending({ ...Object.fromEntries(new FormData(event.currentTarget)), kind,
-      source_kind: kind === 'repayment' || kind === 'expense' ? sourceKind : undefined });
+    const next = { ...Object.fromEntries(new FormData(event.currentTarget)), kind,
+      source_kind: kind === 'repayment' || kind === 'expense' ? sourceKind : undefined };
+    setBusy(true);
+    await refresh();
+    setPending(next);
+    setBusy(false);
   }
 
   async function save(confirm) {
@@ -108,6 +116,7 @@ export function MoneyForm({ role, onCreated }) {
       setPending(null); setDraftID(''); setKind('handover'); setSourceKind('cash');
       setFormVersion(value => value + 1);
       setMessage(pending.kind === 'observation' ? 'Наблюдаемый остаток сохранён.' : confirm ? 'Операция подтверждена.' : 'Черновик сохранён.');
+      await refresh();
       onCreated?.();
     } catch (e) { setError(userError(e)); }
     finally { setBusy(false); }
@@ -120,43 +129,44 @@ export function MoneyForm({ role, onCreated }) {
   const sourceItems = sourceKind === 'card' ? (catalog?.cards || []) : (catalog?.custodians || []);
   const people = catalog?.custodians || [];
   const cards = catalog?.cards || [];
-  const sourceSelect = <label className="grid gap-2 text-sm font-medium md:col-span-2">{sourceKind === 'card' ? 'Карта' : 'Ответственный'}
-    <Select key={`${kind}-${sourceKind}`} name="source_id" required><SelectTrigger><SelectValue placeholder="Выберите источник" /></SelectTrigger><SelectContent>{sourceItems.map(x => <SelectItem key={x.id} value={x.id}>{x.mask || x.name}</SelectItem>)}</SelectContent></Select>
+  const sourceSelect = <label className="grid min-w-0 gap-2 text-sm font-medium md:col-span-2">{sourceKind === 'card' ? 'Карта' : 'Ответственный'}
+    <BalanceSelect key={`${kind}-${sourceKind}`} type={sourceKind === 'card' ? 'card' : 'custodian'} name="source_id" items={sourceItems} placeholder="Выберите источник" />
   </label>;
 
   return <Card className="mb-7 rounded-2xl"><CardHeader><CardTitle>{kind === 'observation' ? 'Фактический остаток карты' : 'Новая операция'}</CardTitle><CardDescription>{kind === 'observation' ? 'Наблюдение используется для сверки и не меняет официальный баланс.' : 'Проверьте операцию перед сохранением черновика или подтверждением.'}</CardDescription></CardHeader><CardContent>{catalog ? <>
     <div className="mb-5 flex flex-wrap gap-2">{kinds.map(([value, label]) => <Button key={value} type="button" variant={kind === value ? 'secondary' : 'outline'} onClick={() => { setKind(value); setError(''); setMessage(''); }}>{label}</Button>)}</div>
-    <form key={`${kind}-${formVersion}`} className="grid gap-5 md:grid-cols-2" onSubmit={submit}>
+    <BalanceRefresh />
+    <form key={`${kind}-${formVersion}`} className="grid items-start gap-5 md:grid-cols-2" onSubmit={submit}>
       {kind === 'withdrawal' && <>
-        <label className="grid gap-2 text-sm font-medium">Карта<Select name="card_id" required><SelectTrigger><SelectValue placeholder="Выберите карту" /></SelectTrigger><SelectContent>{cards.map(x => <SelectItem key={x.id} value={x.id}>{x.mask} · {x.name}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Кто получил наличные<Select name="custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите ответственного" /></SelectTrigger><SelectContent>{people.map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Карта<BalanceSelect type="card" name="card_id" items={cards} placeholder="Выберите карту" /></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Кто получил наличные<BalanceSelect type="custodian" name="custodian_id" items={people} placeholder="Выберите ответственного" /></label>
       </>}
       {kind === 'handover' && <>
-        <label className="grid gap-2 text-sm font-medium">Кто передаёт<Select name="from_custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите ответственного" /></SelectTrigger><SelectContent>{people.map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Кто принимает<Select name="to_custodian_id" defaultValue={people.find(x => x.kind === 'chief' && x.active)?.id} required><SelectTrigger><SelectValue placeholder="Главный администратор" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'chief').map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Кто передаёт<BalanceSelect type="custodian" name="from_custodian_id" items={people} placeholder="Выберите ответственного" /></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Кто принимает<BalanceSelect type="custodian" name="to_custodian_id" items={people.filter(x => x.kind === 'chief')} placeholder="Главный администратор" defaultValue={people.find(x => x.kind === 'chief' && x.active)?.id} /></label>
       </>}
       {kind === 'transfer' && <>
-        <label className="grid gap-2 text-sm font-medium">Отправитель<Select name="from_custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите сборщика" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'collector' && x.active).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
-        <label className="grid gap-2 text-sm font-medium">Получатель<Select name="to_custodian_id" required><SelectTrigger><SelectValue placeholder="Выберите сборщика" /></SelectTrigger><SelectContent>{people.filter(x => x.kind === 'collector' && x.active).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Отправитель<BalanceSelect type="custodian" name="from_custodian_id" items={people.filter(x => x.kind === 'collector' && x.active)} placeholder="Выберите сборщика" /></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Получатель<BalanceSelect type="custodian" name="to_custodian_id" items={people.filter(x => x.kind === 'collector' && x.active)} placeholder="Выберите сборщика" /></label>
       </>}
-      {kind === 'repayment' && <label className="grid gap-2 text-sm font-medium">Мерчант<Select name="merchant_id" required><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(catalog.merchants || []).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label>}
+      {kind === 'repayment' && <label className="grid min-w-0 gap-2 text-sm font-medium">Мерчант<BalanceSelect type="merchant" name="merchant_id" items={(catalog.merchants || [])} placeholder="Выберите мерчанта" /></label>}
       {kind === 'expense' && <>
-        <label className="grid gap-2 text-sm font-medium">Тип расхода<Select name="category" required><SelectTrigger><SelectValue placeholder="Выберите тип" /></SelectTrigger><SelectContent>{expenseCategories.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Тип расхода<Select name="category" required><SelectTrigger><SelectValue placeholder="Выберите тип" /></SelectTrigger><SelectContent>{expenseCategories.map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></label>
       </>}
       {(kind === 'repayment' || kind === 'expense') && <>
-        <label className="grid gap-2 text-sm font-medium">Источник денег<Select value={sourceKind} onValueChange={setSourceKind}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Наличные</SelectItem><SelectItem value="card">Карта</SelectItem></SelectContent></Select></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Источник денег<Select value={sourceKind} onValueChange={setSourceKind}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Наличные</SelectItem><SelectItem value="card">Карта</SelectItem></SelectContent></Select></label>
         {sourceSelect}
       </>}
-      {kind === 'observation' && <label className="grid gap-2 text-sm font-medium md:col-span-2">Карта<Select name="card_id" required><SelectTrigger><SelectValue placeholder="Выберите карту" /></SelectTrigger><SelectContent>{cards.map(x => <SelectItem key={x.id} value={x.id}>{x.mask} · {x.name}</SelectItem>)}</SelectContent></Select></label>}
-      <label className="grid gap-2 text-sm font-medium">{kind === 'handover' ? 'Дата передачи' : 'Дата операции'}<Input name="date" type="date" defaultValue={todayMoscow()} required /></label>
-      <label className="grid gap-2 text-sm font-medium">Сумма, ₽<Input name="amount" inputMode="decimal" placeholder="Например, 25 000,00" required /></label>
-      {kind !== 'observation' && <label className="grid gap-2 text-sm font-medium">Основание или комментарий<Input name="reason" placeholder="При необходимости" /></label>}
+      {kind === 'observation' && <label className="grid gap-2 text-sm font-medium md:col-span-2">Карта<BalanceSelect type="card" name="card_id" items={cards} placeholder="Выберите карту" /></label>}
+      <label className="grid min-w-0 gap-2 text-sm font-medium">{kind === 'handover' ? 'Дата передачи' : 'Дата операции'}<Input name="date" type="date" defaultValue={todayMoscow()} required /></label>
+      <label className="grid min-w-0 gap-2 text-sm font-medium">Сумма, ₽<Input name="amount" inputMode="decimal" placeholder="Например, 25 000,00" required /></label>
+      {kind !== 'observation' && <label className="grid min-w-0 gap-2 text-sm font-medium">Основание или комментарий<Input name="reason" placeholder="При необходимости" /></label>}
       <div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button variant="primary" className="mt-4" disabled={busy}>Подтвердить</Button></div>
     </form>
     <Dialog open={Boolean(pending)} onOpenChange={open => { if (!open && !busy) { setPending(null); setError(''); } }}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Проверьте операцию</DialogTitle><DialogDescription>{kinds.find(([value]) => value === pending?.kind)?.[1]}</DialogDescription></DialogHeader>{pending && <>
       <dl className="grid gap-3 text-sm">
-        <div><dt className="text-muted-foreground">Откуда</dt><dd className="font-medium">{pending.source_kind === 'card' || pending.card_id ? cards.find(x => x.id === (pending.source_id || pending.card_id))?.mask : people.find(x => x.id === (pending.from_custodian_id || pending.source_id))?.name || '—'}</dd></div>
-        <div><dt className="text-muted-foreground">{pending.kind === 'expense' || pending.kind === 'observation' ? 'Назначение' : 'Куда'}</dt><dd className="font-medium">{pending.kind === 'expense' ? expenseCategories.find(([value]) => value === pending.category)?.[1] : pending.kind === 'observation' ? 'Наблюдаемый остаток карты' : pending.merchant_id ? catalog.merchants.find(x => x.id === pending.merchant_id)?.name : people.find(x => x.id === (pending.to_custodian_id || pending.custodian_id))?.name || '—'}</dd></div>
+        <div><dt className="text-muted-foreground">Откуда</dt><dd className="font-medium">{pending.source_kind === 'card' || pending.card_id ? cards.find(x => x.id === (pending.source_id || pending.card_id))?.mask : people.find(x => x.id === (pending.from_custodian_id || pending.source_id))?.name || '—'}</dd><dd className="mt-2"><BalanceHint type={pending.source_kind === 'card' || pending.card_id ? 'card' : 'custodian'} id={pending.from_custodian_id || pending.source_id || pending.card_id} /></dd></div>
+        <div><dt className="text-muted-foreground">{pending.kind === 'expense' || pending.kind === 'observation' ? 'Назначение' : 'Куда'}</dt><dd className="font-medium">{pending.kind === 'expense' ? expenseCategories.find(([value]) => value === pending.category)?.[1] : pending.kind === 'observation' ? 'Наблюдаемый остаток карты' : pending.merchant_id ? catalog.merchants.find(x => x.id === pending.merchant_id)?.name : people.find(x => x.id === (pending.to_custodian_id || pending.custodian_id))?.name || '—'}</dd><dd className="mt-2"><BalanceHint type={pending.merchant_id ? 'merchant' : 'custodian'} id={pending.merchant_id || pending.to_custodian_id || pending.custodian_id} /></dd></div>
         <div><dt className="text-muted-foreground">Сумма</dt><dd className="font-mono text-lg font-medium">{formatNumber(pending.amount)} ₽</dd></div>
         <div><dt className="text-muted-foreground">Дата</dt><dd>{pending.date.split('-').reverse().join('.')}</dd></div>
       </dl>
@@ -166,7 +176,7 @@ export function MoneyForm({ role, onCreated }) {
         {['chief', 'sysadmin'].includes(role) && <Button type="button" variant="primary" disabled={busy} onClick={() => save(true)}>{busy ? 'Выполняется…' : 'Подтвердить'}</Button>}
       </div>
     </>}</DialogContent></Dialog>
-  </> : <p>Загрузка…</p>}</CardContent></Card>;
+  </> : <><Message error={catalogError} /><p>Загрузка…</p></>}</CardContent></Card>;
 }
 
 function RegistryUploadForm({ onUploaded }) { const [data, setData] = useState(null), [merchant, setMerchant] = useState(''), [request, setRequest] = useState('none'), [error, setError] = useState(''), [message, setMessage] = useState(''), [busy, setBusy] = useState(false); useEffect(() => { Promise.all([get('/api/catalog'), get('/api/payment-requests')]).then(([catalog, requests]) => { setData({ catalog, requests }); setMerchant(catalog.merchants?.find(x => x.active)?.id || ''); }).catch(e => setError(userError(e))); }, []); async function submit(e) { e.preventDefault(); const formElement = e.currentTarget; const form = new FormData(formElement); form.set('merchant_id', merchant); form.set('payment_request_id', request === 'none' ? '' : request); setBusy(true); setError(''); setMessage(''); try { const d = await apiRequest(() => fetch('/api/registry/upload', { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF': '1' }, body: form })); formElement.reset(); setMessage(d.invalid_rows ? `Реестр загружен: ${d.invalid_rows} строк требуют исправления. Откройте его ниже.` : 'Реестр загружен. Откройте его ниже и проверьте строки перед подтверждением.'); onUploaded(d.id); } catch (e) { setError(userError(e)); } finally { setBusy(false); } } return <Card className="mb-7 rounded-2xl"><CardHeader><CardTitle>Получен ответный реестр</CardTitle><CardDescription>Поддерживаются XLSX, XLS и CSV. Загрузка не меняет баланс.</CardDescription></CardHeader><CardContent>{data ? <form className="grid gap-5 md:grid-cols-2" onSubmit={submit}><label className="grid gap-2 text-sm font-medium">Мерчант<Select value={merchant} onValueChange={value => { setMerchant(value); setRequest('none'); }}><SelectTrigger><SelectValue placeholder="Выберите мерчанта" /></SelectTrigger><SelectContent>{(data.catalog.merchants || []).filter(x => x.active).map(x => <SelectItem key={x.id} value={x.id}>{x.name}</SelectItem>)}</SelectContent></Select></label><label className="grid gap-2 text-sm font-medium">Запрос на карты<Select value={request} onValueChange={setRequest}><SelectTrigger><SelectValue placeholder="Без связи с запросом" /></SelectTrigger><SelectContent><SelectItem value="none">Без связи с запросом</SelectItem>{data.requests.filter(x => x.merchant_id === merchant).map(x => <SelectItem key={x.id} value={x.id}>{x.external_ref}</SelectItem>)}</SelectContent></Select></label><label className="grid gap-2 text-sm font-medium">Дата фактических оплат<Input name="payment_date" type="date" defaultValue={todayMoscow()} max={todayMoscow()} required /></label><label className="grid gap-2 text-sm font-medium">Файл<Input name="file" type="file" accept=".xlsx,.xls,.csv" required /></label><div className="md:col-span-2"><Message error={error} />{message && <Alert className="mt-3"><AlertDescription>{message}</AlertDescription></Alert>}<Button className="mt-4" type="submit" disabled={busy}>{busy ? 'Загрузка…' : 'Загрузить и проверить'}</Button></div></form> : <p>Загрузка…</p>}</CardContent></Card>; }
