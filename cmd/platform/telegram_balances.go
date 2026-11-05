@@ -21,10 +21,8 @@ func (a *App) telegramCardsBalance(u telegramActor, chatID, updateID int64) erro
 }
 
 func (a *App) telegramCardsBalancePage(u telegramActor, chatID, messageID int64, page int, updateID int64) error {
-	rows, err := a.db.Query(`SELECT c.mask,o.observed_cents
-	FROM cards c LEFT JOIN LATERAL (
-		SELECT observed_cents FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1
-	) o ON true
+	rows, err := a.db.Query(`SELECT c.mask,o.observed_cents,g.balance_card_id::text
+	FROM cards c JOIN card_balance_groups g ON g.card_id=c.id LEFT JOIN shared_card_observations o ON o.card_id=c.id
 	ORDER BY c.status='active' DESC, c.mask, c.id`)
 	if err != nil {
 		return errors.New("Не удалось получить балансы карт")
@@ -34,14 +32,18 @@ func (a *App) telegramCardsBalancePage(u telegramActor, chatID, messageID int64,
 	cards := []telegramCardBalance{}
 	var total int64
 	var observedCount int
+	groups := map[string]bool{}
+	observedGroups := map[string]bool{}
 	for rows.Next() {
-		var mask string
+		var mask, group string
 		var cents *int64
-		if err = rows.Scan(&mask, &cents); err != nil {
+		if err = rows.Scan(&mask, &cents, &group); err != nil {
 			return errors.New("Не удалось прочитать балансы карт")
 		}
 		cards = append(cards, telegramCardBalance{Mask: mask, Observed: cents})
-		if cents != nil {
+		groups[group] = true
+		if cents != nil && !observedGroups[group] {
+			observedGroups[group] = true
 			observedCount++
 			total += *cents
 		}
@@ -57,10 +59,10 @@ func (a *App) telegramCardsBalancePage(u telegramActor, chatID, messageID int64,
 		return errors.New("Эта страница балансов недоступна")
 	}
 	summary := "Фактический итог: не зафиксирован"
-	if observedCount == len(cards) {
+	if observedCount == len(groups) {
 		summary = "Общий фактический баланс: " + telegramMoney(total)
 	} else if observedCount > 0 {
-		summary = fmt.Sprintf("Фактический итог по %d из %d карт: %s", observedCount, len(cards), telegramMoney(total))
+		summary = fmt.Sprintf("Фактический итог по %d из %d карт: %s", observedCount, len(groups), telegramMoney(total))
 	}
 	first := page * telegramBalancePageSize
 	last := first + telegramBalancePageSize

@@ -138,7 +138,7 @@ function MoneyFormContent({ role, onCreated }) {
     <BalanceRefresh />
     <form key={`${kind}-${formVersion}`} className="grid items-start gap-5 md:grid-cols-2" onSubmit={submit}>
       {kind === 'withdrawal' && <>
-        <label className="grid min-w-0 gap-2 text-sm font-medium">Карта<BalanceSelect type="card" name="card_id" items={cards} placeholder="Выберите карту" /></label>
+        <label className="grid min-w-0 gap-2 text-sm font-medium">Пластиковая карта<BalanceSelect type="card" name="card_id" items={cards.filter(card => !card.physical_card_id)} placeholder="Выберите карту" /></label>
         <label className="grid min-w-0 gap-2 text-sm font-medium">Кто получил наличные<BalanceSelect type="custodian" name="custodian_id" items={people} placeholder="Выберите ответственного" /></label>
       </>}
       {kind === 'handover' && <>

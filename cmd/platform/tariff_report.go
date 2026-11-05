@@ -298,7 +298,7 @@ func (a *App) report(w http.ResponseWriter, r *http.Request, u User) {
 	}
 	flowRows.Close()
 	observed := []M{}
-	obsRows, e := a.db.Query("SELECT c.id,c.mask,o.observed_cents,o.observed_at,COALESCE((SELECT SUM(CASE WHEN p.side='debit' THEN p.amount_cents ELSE -p.amount_cents END) FROM postings p WHERE p.account='1100' AND p.card_id=c.id),0) FROM cards c JOIN LATERAL (SELECT observed_cents,observed_at FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1) o ON true ORDER BY c.mask")
+	obsRows, e := a.db.Query("SELECT c.id,c.mask,o.observed_cents,o.observed_at,b.amount_cents FROM cards c JOIN shared_card_balances b ON b.card_id=c.id JOIN shared_card_observations o ON o.card_id=c.id WHERE c.physical_card_id IS NULL AND o.observed_at IS NOT NULL ORDER BY c.mask")
 	if e != nil {
 		fail(w, 500, e)
 		return

@@ -28,8 +28,8 @@ func (a *App) accountingBalances(u telegramActor, sender, chat int64, section st
 	switch section {
 	case "cards":
 		title = "💳 Все карты"
-		rows, err = tx.Query(`SELECT c.id,b.name,c.mask,c.status,COALESCE((SELECT sum(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END) FROM postings WHERE card_id=c.id AND account='1100'),0),o.observed_cents,o.observed_at
- FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN LATERAL(SELECT observed_cents,observed_at FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1)o ON true ORDER BY b.name,c.mask,c.id`)
+		rows, err = tx.Query(`SELECT c.id,b.name,c.mask,c.status,cb.amount_cents,o.observed_cents,o.observed_at
+ FROM cards c JOIN banks b ON b.id=c.bank_id JOIN shared_card_balances cb ON cb.card_id=c.id LEFT JOIN shared_card_observations o ON o.card_id=c.id ORDER BY b.name,c.mask,c.id`)
 		if err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func (a *App) accountingBalances(u telegramActor, sender, chat int64, section st
 		err = tx.QueryRow(`SELECT
  COALESCE((SELECT sum(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END) FROM postings WHERE account='1100'),0),
  COALESCE((SELECT sum(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END) FROM postings WHERE account IN ('1200','1210')),0),
- COALESCE(sum(o.observed_cents),0),count(o.observed_cents),count(*) FROM cards c LEFT JOIN LATERAL(SELECT observed_cents FROM observations WHERE card_id=c.id ORDER BY observed_at DESC,id DESC LIMIT 1)o ON true`).Scan(&cards, &cash, &observed, &count, &total)
+ COALESCE(sum(o.observed_cents),0),count(o.observed_cents),count(*) FROM cards c LEFT JOIN shared_card_observations o ON o.card_id=c.id WHERE c.physical_card_id IS NULL`).Scan(&cards, &cash, &observed, &count, &total)
 		if err != nil {
 			return err
 		}

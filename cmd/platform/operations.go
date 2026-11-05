@@ -484,6 +484,13 @@ func (a *App) eventLinesWithCardOverdraft(tx *sql.Tx, kind string, p M, v int64,
 	switch kind {
 	case "withdrawal":
 		card := str(p, "card_id")
+		var physical sql.NullString
+		if err := tx.QueryRow("SELECT physical_card_id FROM cards WHERE id=$1", card).Scan(&physical); err != nil {
+			return nil, err
+		}
+		if physical.Valid {
+			return nil, errors.New("для снятия выберите привязанную пластиковую карту")
+		}
 		cust := str(p, "custodian_id")
 		a, e := cashAccount(tx, cust)
 		if e != nil {

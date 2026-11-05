@@ -127,6 +127,15 @@ func (a *App) telegramParse(u telegramActor, command, args string) (telegramInte
 	if e != nil {
 		return out, telegramFieldError(command, "card", "invalid_card", e.Error())
 	}
+	if command == "withdraw" {
+		var virtual bool
+		if err := a.db.QueryRow("SELECT physical_card_id IS NOT NULL FROM cards WHERE id=$1", card).Scan(&virtual); err != nil {
+			return out, errors.New("Не удалось проверить тип карты")
+		}
+		if virtual {
+			return out, errors.New("Для снятия укажите последние четыре цифры привязанной пластиковой карты")
+		}
+	}
 	out.CardID, out.Mask = card, mask
 	return out, nil
 }

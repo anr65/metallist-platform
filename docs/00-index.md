@@ -64,6 +64,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Виртуальные карты: выпуск и контроль остатков](operations/virtual-cards-release.md)
+
 - [Telegram: массовая смена статуса карт — выпуск 01.11.2026](operations/telegram-batch-card-status-release.md)
 
 - [Новая главная: статистика за всю историю — 28.10.2026](operations/overview-release-20261028.md)

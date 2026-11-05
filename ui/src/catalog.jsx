@@ -16,7 +16,7 @@ import { cardStatusLabels, filterCards } from './card-filters';
 
 const sections = {
   drop_handlers: { title: 'Дроповоды', data: 'drop_handlers', kind: 'drop_handler', columns: [['Имя', x => x.name], ['Статус', x => x.active ? 'Активен' : 'Отключён']] },
-  cards: { title: 'Карты', data: 'cards', kind: 'card', columns: [['Карта', x => x.mask], ['Банк', x => x.name], ['Владелец', x => x.owner_label], ['Дроповод', x => x.drop_handler_name || '—'], ['Статус', x => cardStatusLabels[x.status] || x.status]] },
+  cards: { title: 'Карты', data: 'cards', kind: 'card', columns: [['Карта', x => <><span>{x.mask}</span><span className="block text-xs text-muted-foreground">{x.physical_card_id ? `Виртуальная → ${x.physical_card_mask}` : 'Пластиковая'}</span></>], ['Банк', x => x.name], ['Владелец', x => x.owner_label], ['Дроповод', x => x.drop_handler_name || '—'], ['Статус', x => cardStatusLabels[x.status] || x.status]] },
   contacts: { title: 'ФИО и телефоны', data: 'payment_contacts', kind: 'payment_contact', columns: [['ФИО', x => x.full_name], ['Телефон', x => x.phone], ['Статус', x => x.active ? 'Активен' : 'Отключён']] },
   banks: { title: 'Банки', data: 'banks', kind: 'bank', columns: [['Код', x => x.code], ['Банк', x => x.name], ['Источник', x => x.source === 'nspk_sbp' ? 'НСПК' : 'Вручную'], ['Доступен', x => x.selectable ? 'Да' : 'Нет']] },
   custodians: { title: 'Ответственные', data: 'custodians', kind: 'custodian', columns: [['Имя', x => x.name], ['Функция', x => ({ chief: 'Главный администратор', collector: 'Сборщик', operator: 'Операционист' })[x.kind] || x.kind], ['Статус', x => x.active ? 'Активен' : 'Отключён']] },
@@ -97,9 +97,20 @@ function CardFilters({ rows, filters, onChange, open, onOpenChange, total }) {
   </div>;
 }
 
+function CardBalanceFields({ record, cards }) {
+  const [type, setType] = useState(record?.physical_card_id ? 'virtual' : 'physical');
+  const [physicalID, setPhysicalID] = useState(record?.physical_card_id || '');
+  const plastics = cards.filter(card => !card.physical_card_id && card.id !== record?.id && (card.status !== 'retired' || card.id === record?.physical_card_id));
+  return <>
+    <label className="grid gap-2 text-sm font-medium">Тип карты<Select value={type} onValueChange={setType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="physical">Пластиковая</SelectItem><SelectItem value="virtual">Виртуальная</SelectItem></SelectContent></Select></label>
+    {type === 'virtual' ? <label className="grid min-w-0 gap-2 text-sm font-medium">Пластиковая карта с общим балансом<Select searchSource="catalog/cards" name="physical_card_id" value={physicalID} onValueChange={setPhysicalID} required><SelectTrigger className="min-w-0"><SelectValue placeholder="Выберите пластиковую карту" /></SelectTrigger><SelectContent>{plastics.map(card => <SelectItem key={card.id} value={card.id}>{card.mask} · {card.name} · {card.owner_label}</SelectItem>)}</SelectContent></Select><span className="text-xs font-normal text-muted-foreground">Пополнение виртуальной и снятие с пластиковой меняют один общий остаток. Привязку можно изменить только до использования карты.</span></label> : <input type="hidden" name="physical_card_id" value="" />}
+  </>;
+}
+
 function CatalogFields({ section, record, catalog, bankID, setBankID, custodianKind, setCustodianKind }) {
   if (section === 'drop_handlers') return <><label className="grid gap-2 text-sm font-medium">Имя<Input name="name" defaultValue={record?.name || ''} maxLength={200} required /></label>{record && <label className="grid gap-2 text-sm font-medium">Статус<Select name="active" defaultValue={String(record.active)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="true">Активен</SelectItem><SelectItem value="false">Отключён</SelectItem></SelectContent></Select></label>}</>;
   if (section === 'cards') return <>
+    <CardBalanceFields record={record} cards={catalog.cards || []} />
     <label className="grid gap-2 text-sm font-medium">Банк<BankSelect banks={(catalog.banks || []).filter(x => x.selectable || x.id === record?.bank_id)} value={bankID} onValueChange={setBankID} /></label>
     {!record && <label className="grid gap-2 text-sm font-medium">Полный номер карты<Input name="pan" type="password" inputMode="numeric" autoComplete="off" pattern="[0-9]{16,19}" required /></label>}
     <label className="grid gap-2 text-sm font-medium">Дроповод<Select name="drop_handler_id" defaultValue={record?.drop_handler_id || (record ? '__none' : undefined)} required={!record}><SelectTrigger><SelectValue placeholder="Выберите дроповода" /></SelectTrigger><SelectContent>{record && <SelectItem value="__none">Не указан</SelectItem>}{(catalog.drop_handlers || []).filter(x => x.active || x.id === record?.drop_handler_id).map(x => <SelectItem key={x.id} value={x.id}>{x.name}{!x.active ? ' (отключён)' : ''}</SelectItem>)}</SelectContent></Select></label>

@@ -78,6 +78,9 @@ func (a *App) catalogUpdate(w http.ResponseWriter, r *http.Request, u User) {
 					err = validateDropHandler(tx, handlerID)
 				}
 			}
+			if _, present := m["physical_card_id"]; present && err == nil {
+				err = setCardBalanceLink(tx, u.ID, recordID, str(m, "physical_card_id"))
+			}
 			if err == nil && str(m, "status") != "" {
 				err = changeCardStatus(tx, u.ID, "web", recordID, str(m, "status"), time.Now())
 			}

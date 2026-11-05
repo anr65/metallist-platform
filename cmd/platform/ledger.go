@@ -143,6 +143,11 @@ func balance(tx *sql.Tx, account, dimension, value string) (int64, error) {
 	default:
 		return 0, errors.New("invalid dimension")
 	}
+	if account == "1100" && dimension == "card" {
+		var v int64
+		err := tx.QueryRow("SELECT amount_cents FROM shared_card_balances WHERE card_id=$1", value).Scan(&v)
+		return v, err
+	}
 	var v int64
 	e := tx.QueryRow("SELECT COALESCE(SUM(CASE WHEN side='debit' THEN amount_cents ELSE -amount_cents END),0) FROM postings WHERE account=$1 AND "+col+"=$2", account, value).Scan(&v)
 	if e != nil {
@@ -194,7 +199,7 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	result := M{}
-	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,c.bank_id,b.name,c.owner_label,c.mask,c.status,c.drop_handler_id,d.name AS drop_handler_name,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN drop_handlers d ON d.id=c.drop_handler_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id, (SELECT count(*) FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending') AS pending_notifications, COALESCE((SELECT last_error FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending' AND n.last_error<>'' ORDER BY n.created_at DESC LIMIT 1),'') AS notification_error FROM users ORDER BY name"}
+	specs := map[string]string{"merchants": "SELECT m.id,m.code,m.name,m.active,m.version,COALESCE(p.status,'awaiting_sample') AS parser_status,COALESCE(t.name,'Ожидает образец') AS parser_name,COALESCE(p.parser_code,'') AS parser_code,COALESCE(rt.rate_bp,-1) AS rate_bp,COALESCE(rt.valid_from::text,'') AS rate_valid_from FROM merchants m LEFT JOIN merchant_import_profiles p ON p.merchant_id=m.id LEFT JOIN registry_parser_types t ON t.code=p.parser_code LEFT JOIN LATERAL (SELECT rate_bp,valid_from FROM tariffs WHERE merchant_id=m.id AND active AND valid_from<=(now() AT TIME ZONE 'Europe/Moscow')::date ORDER BY valid_from DESC,created_at DESC LIMIT 1) rt ON true ORDER BY m.name", "banks": "SELECT id,code,name,selectable,source FROM banks ORDER BY name", "cards": "SELECT c.id,c.bank_id,b.name,c.owner_label,c.mask,c.status,c.physical_card_id,pc.mask AS physical_card_mask,CASE WHEN c.physical_card_id IS NULL THEN 'physical' ELSE 'virtual' END AS card_type,c.drop_handler_id,d.name AS drop_handler_name,c.pan_ciphertext IS NOT NULL AS pan_in_db FROM cards c JOIN banks b ON b.id=c.bank_id LEFT JOIN drop_handlers d ON d.id=c.drop_handler_id LEFT JOIN cards pc ON pc.id=c.physical_card_id ORDER BY b.name,c.mask", "payment_contacts": "SELECT id,full_name,phone,active FROM payment_contacts ORDER BY full_name,phone", "custodians": "SELECT id,name,kind,active FROM custodians ORDER BY name", "tariffs": "SELECT t.id,m.name,t.rate_bp,t.valid_from,t.active FROM tariffs t JOIN merchants m ON m.id=t.merchant_id ORDER BY t.created_at DESC", "users": "SELECT id,login,name,role,active,COALESCE(telegram_id::text,'') AS telegram_id,COALESCE(custodian_id::text,'') AS custodian_id, (SELECT count(*) FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending') AS pending_notifications, COALESCE((SELECT last_error FROM accounting_notifications n WHERE n.user_id=users.id AND n.state='pending' AND n.last_error<>'' ORDER BY n.created_at DESC LIMIT 1),'') AS notification_error FROM users ORDER BY name"}
 	specs["drop_handlers"] = "SELECT id,name,active FROM drop_handlers ORDER BY name,id"
 	specs["request_cards"] = `SELECT c.id,c.mask,b.name AS bank,COALESCE(previous.contact_name,'') AS full_name,COALESCE(previous.contact_phone,'') AS phone,c.pan_ciphertext IS NOT NULL AS pan_in_db
 		FROM cards c JOIN banks b ON b.id=c.bank_id
@@ -388,6 +393,9 @@ func (a *App) catalogCreate(w http.ResponseWriter, r *http.Request, u User) {
 			break
 		}
 		_, e = tx.Exec("INSERT INTO cards(id,bank_id,owner_label,mask,last4,drop_handler_id) VALUES($1,$2,$3,$4,$5,$6)", newID, bankID, ownerLabel, mask, mask[len(mask)-4:], handlerID)
+		if e == nil {
+			e = setCardBalanceLink(tx, u.ID, newID, str(m, "physical_card_id"))
+		}
 		if e == nil {
 			e = txAudit(tx, u.ID, "web", "catalog_create", kind, newID, "success", "", M{"drop_handler_id": handlerID})
 		}
