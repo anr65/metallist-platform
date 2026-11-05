@@ -279,3 +279,26 @@ select:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgba(49,
 .overview-history th { height: auto; min-height: 30px; padding: 8px 4px; font-size: 10px; letter-spacing: 0; text-transform: none; }
 .overview-history td { padding: 0 4px; white-space: normal; }
 @media (max-width: 767px) { .overview-history thead { display: none; } }
+
+/* Card reconciliation: a single chronological register, with local detail disclosure. */
+.card-history-context { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; border-left: 3px solid var(--primary); padding-left: 16px; }
+.card-history-table { table-layout: fixed; }
+.card-history-table th { background: var(--muted); color: var(--foreground); font-size: 12px; white-space: normal; }
+.card-history-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; padding-block: 16px; font-size: 12px; }
+.card-history-table th:nth-child(1) { width: 15%; }
+.card-history-table th:nth-child(2) { width: 16%; }
+.card-history-table th:nth-child(3), .card-history-table th:nth-child(4), .card-history-table th:nth-child(5) { width: 12%; text-align: right; }
+.card-history-number { font-family: GeistMono, monospace; font-variant-numeric: tabular-nums; text-align: right; }
+.card-history-detail-panel dt { color: var(--muted-foreground); }
+.card-history-detail-panel dd { margin-top: 3px; }
+.card-history-detail-panel button { white-space: normal; height: auto; min-height: 44px; }
+@media (max-width: 767px) {
+  .card-history-table, .card-history-table tbody { display: block; width: 100%; }
+  .card-history-table thead { display: none; }
+  .card-history-table tr { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); padding: 12px 20px; gap: 10px 16px; }
+  .card-history-table td { display: block; min-width: 0; padding: 0; text-align: left; }
+  .card-history-table td::before { content: attr(data-label); display: block; color: var(--muted-foreground); font-family: Geist, sans-serif; font-size: 11px; margin-bottom: 5px; }
+  .card-history-table td:nth-child(5), .card-history-table td:nth-child(6), .card-history-table td:nth-child(7) { grid-column: 1 / -1; }
+}
+
+.card-history .page-heading h1 { font-size: clamp(26px, 3vw, 40px); line-height: 1.15; overflow-wrap: anywhere; letter-spacing: -.035em; }

@@ -141,3 +141,5 @@
 - [ADR-0002: Double-entry ledger](decisions/ADR-0002-double-entry-ledger.md)
 - [ADR-0003: Docs as code](decisions/ADR-0003-docs-as-code.md)
 - [ADR-0004: Source → Business → Ledger](decisions/ADR-0004-three-layer-model.md)
+
+- [Релиз истории операций по карте](operations/card-history-release.md).

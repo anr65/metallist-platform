@@ -63,3 +63,9 @@ test('sysadmin has full chief navigation and access management', () => {
   assert.equal(pageForRole('sysadmin','#'+route),route);
  }
 });
+
+test('card history deep links follow balance permissions', () => {
+  const route = 'catalog/cards/11111111-1111-4111-8111-111111111111/operations';
+  for (const role of ['chief', 'sysadmin', 'accountant', 'auditor']) assert.equal(pageForRole(role, `#${route}`), route);
+  for (const role of ['operator', 'collector', 'unknown']) assert.notEqual(pageForRole(role, `#${route}`), route);
+});

@@ -296,6 +296,7 @@ func main() {
 	mux.HandleFunc("/api/report", app.auth(app.report))
 	mux.HandleFunc("/api/overview", app.auth(app.overview))
 	mux.HandleFunc("/api/balances", app.auth(app.balances))
+	mux.HandleFunc("/api/card-history", app.auth(app.cardHistory))
 	mux.HandleFunc("/api/report/approve", app.auth(app.approveReport))
 	mux.HandleFunc("/api/audit", app.auth(app.audit))
 	mux.HandleFunc("/telegram/webhook", app.telegram)
