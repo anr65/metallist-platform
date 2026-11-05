@@ -568,6 +568,9 @@ func (a *App) paymentRequests(w http.ResponseWriter, r *http.Request, u User) {
 		fail(w, 500, e)
 		return
 	}
+	if r.URL.Query().Get("dropdown") == "1" && !r.URL.Query().Has("page") {
+		limit = total
+	}
 	rows, e := a.db.Query(`SELECT p.id,p.merchant_id,m.name,p.external_ref,p.title,p.mode,p.payment_count,p.created_at,p.version,
 		(SELECT COUNT(*) FROM registries r WHERE r.payment_request_id=p.id AND r.status<>'deleted')
 		FROM payment_requests p JOIN merchants m ON m.id=p.merchant_id WHERE p.deleted_at IS NULL ORDER BY p.created_at DESC,p.id DESC LIMIT $1 OFFSET $2`, limit, (page-1)*limit)

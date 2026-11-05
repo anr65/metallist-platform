@@ -256,6 +256,7 @@ func main() {
 	mux.HandleFunc("/api/me", app.auth(app.me))
 	mux.HandleFunc("/api/password", app.auth(app.changePassword))
 	mux.HandleFunc("/api/catalog", app.auth(app.catalog))
+	mux.HandleFunc("/api/dropdown/search", app.auth(app.dropdownSearch))
 	mux.HandleFunc("/api/catalog/create", app.auth(app.catalogCreate))
 	mux.HandleFunc("/api/catalog/update", app.auth(app.catalogUpdate))
 	mux.HandleFunc("/api/merchant/update", app.auth(app.merchantUpdate))

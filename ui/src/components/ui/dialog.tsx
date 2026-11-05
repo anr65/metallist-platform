@@ -49,6 +49,7 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
@@ -58,6 +59,15 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
+        onEscapeKeyDown={event => {
+          // Base UI comboboxes use a separate dismissal layer from Radix dialogs.
+          // Let Escape dismiss the open chooser before its containing form.
+          const target = event.target
+          if (target instanceof Element && target.closest('[role="combobox"][aria-expanded="true"], [data-slot="combobox-content"]')) {
+            event.preventDefault()
+          }
+          onEscapeKeyDown?.(event)
+        }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className

@@ -218,6 +218,9 @@ func (a *App) catalog(w http.ResponseWriter, r *http.Request, u User) {
             FROM postings WHERE account IN ('2100','1300') GROUP BY merchant_id) d ON d.merchant_id=m.id ORDER BY m.name`
 	}
 	for name, q := range specs {
+		if collection := r.URL.Query().Get("dropdown_collection"); collection != "" && collection != name {
+			continue
+		}
 		if u.Role == "collector" && name != "cards" {
 			continue
 		}

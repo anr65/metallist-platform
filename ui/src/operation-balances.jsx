@@ -41,7 +41,7 @@ export function BalanceSelect({ type, name, items, placeholder, defaultValue, la
   const [value, setValue] = useState(defaultValue || '');
   const { allowed, data, catalog, loading, error } = useOperationBalances();
   return <>
-    <Select name={name} value={value} onValueChange={setValue} required>
+    <Select searchSource={type === 'card' ? 'catalog/cards' : type === 'merchant' ? 'catalog/merchants' : 'catalog/custodians'} name={name} defaultValue={defaultValue} value={value} onValueChange={setValue} required>
       <SelectTrigger className="min-w-0"><SelectValue placeholder={placeholder}>{value ? label(items.find(item => item.id === value) || {}) : undefined}</SelectValue></SelectTrigger>
       <SelectContent position="popper" className="max-w-[calc(100vw-2rem)]">{items.map(item => {
         const lines = allowed && !loading && !error ? balanceLines(type, item.id, data, catalog) : [];

@@ -64,6 +64,8 @@
 
 ### Эксплуатация и безопасность
 
+- [Серверный поиск в выпадающих списках: выпуск 05.11.2026](operations/dropdown-search-release.md)
+
 - [Виртуальные карты: выпуск и контроль остатков](operations/virtual-cards-release.md)
 
 - [Telegram: массовая смена статуса карт — выпуск 01.11.2026](operations/telegram-batch-card-status-release.md)
