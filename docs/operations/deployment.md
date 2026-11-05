@@ -240,3 +240,11 @@ backend, схема и финансовые данные не меняются; 
 Выпуск штатным скриптом из точной вершины main, затем сверка local/public
 health и хешей UI. Откат — вернуть предыдущую ссылку и перезапустить сервис;
 backup/restore БД для изменения только UI не требуется.
+
+Выпущено 05.11.2026 в 14:07:12 МСК:
+`30fe4ec59556ab2396c236e2e0aad00d6f40cbee`. Current соответствует release,
+systemd active/running, ExecMainStatus=0, local/public health OK, журнал ошибок
+за время выпуска пуст. Local/public JS совпадает с проверенной сборкой:
+`ecb91d06d35f8e14bcc4dd9c647153285f8c72c08cace63e826c1e8a66229a54`;
+public CSS — `78b986a7bb9a46c55411a4b46a80ffe5454fd45b1e500ca5f8582919026613c6`.
+Миграции и тестовые команды в production не выполнялись. Итог: **GO**.
