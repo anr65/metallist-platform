@@ -25,9 +25,10 @@ import (
 )
 
 type App struct {
-	db       *sql.DB
-	storage  string
-	location *time.Location
+	db                 *sql.DB
+	storage            string
+	location           *time.Location
+	registryReadGrants map[string][]string
 }
 type User struct{ ID, Login, Name, Role string }
 type M map[string]interface{}
@@ -204,7 +205,11 @@ func main() {
 			log.Fatal("ключ не открывает исправленные номера карт")
 		}
 	}
-	app := &App{db, storage, loc}
+	registryReadGrants, e := parseRegistryReadGrants(os.Getenv("REGISTRY_READ_GRANTS"))
+	if e != nil {
+		log.Fatal(e)
+	}
+	app := &App{db: db, storage: storage, location: loc, registryReadGrants: registryReadGrants}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "sync-nspk-banks":

@@ -341,8 +341,31 @@ func (a *App) currentRate(tx *sql.Tx, merchant, paymentDate string) (int, error)
 	return bp, e
 }
 
+const operatorRegistryReadPredicate = "(s.uploader_id=$1 OR (r.status IN ('posted','reversed') AND r.id=ANY($2::uuid[])))"
+
+func parseRegistryReadGrants(value string) (map[string][]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var grants map[string][]string
+	if e := json.Unmarshal([]byte(value), &grants); e != nil {
+		return nil, errors.New("REGISTRY_READ_GRANTS: ожидается объект UUID операциониста → список UUID реестров")
+	}
+	for operator, registries := range grants {
+		if !validID(operator) || strings.ToLower(operator) != operator {
+			return nil, errors.New("REGISTRY_READ_GRANTS: неверный UUID операциониста")
+		}
+		for _, registry := range registries {
+			if !validID(registry) {
+				return nil, errors.New("REGISTRY_READ_GRANTS: неверный UUID реестра")
+			}
+		}
+	}
+	return grants, nil
+}
+
 // registryListQuery keeps visibility restrictions on both filtered lists and details.
-func registryListQuery(r *http.Request, u User) (string, []any, int, error) {
+func (a *App) registryListQuery(r *http.Request, u User) (string, []any, int, error) {
 	values := r.URL.Query()
 	query := ""
 	filters := []string{"r.status<>'deleted'"}
@@ -353,7 +376,8 @@ func registryListQuery(r *http.Request, u User) (string, []any, int, error) {
 	}
 	if u.Role == "operator" {
 		query += " JOIN source_documents s ON s.id=r.source_id"
-		add("s.uploader_id=$%d", u.ID)
+		filters = append(filters, operatorRegistryReadPredicate)
+		args = append(args, u.ID, a.registryReadGrants[u.ID])
 	}
 	if id := strings.TrimSpace(values.Get("id")); id != "" {
 		add("r.id::text=$%d", id)
@@ -400,7 +424,7 @@ func (a *App) registries(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	query := "SELECT r.id,m.name,r.merchant_id,r.external_ref,r.status,r.total_cents,COALESCE(r.commission_cents,0),COALESCE(r.rate_bp,0),r.manual_rate_bp,r.version,r.confirmed_at,COALESCE((SELECT SUM(new_commission_cents-old_commission_cents) FROM tariff_adjustments WHERE registry_id=r.id),0),(SELECT rate_bp FROM tariff_adjustments WHERE registry_id=r.id ORDER BY applied_at DESC,id DESC LIMIT 1),COALESCE(r.payment_request_id::text,''),r.number,COALESCE(r.payment_date::text,''),COALESCE(r.replaces_registry_id::text,'') FROM registries r JOIN merchants m ON m.id=r.merchant_id"
-	suffix, args, page, e := registryListQuery(r, u)
+	suffix, args, page, e := a.registryListQuery(r, u)
 	if e != nil {
 		fail(w, 400, e)
 		return
@@ -485,9 +509,10 @@ func (a *App) registryRows(w http.ResponseWriter, r *http.Request, u User) {
 		return
 	}
 	if u.Role == "operator" {
-		var owned bool
-		e := a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM registries r JOIN source_documents s ON s.id=r.source_id WHERE r.id=$1 AND s.uploader_id=$2 AND r.status<>'deleted')", r.URL.Query().Get("id"), u.ID).Scan(&owned)
-		if e != nil || !owned {
+		var visible bool
+		e := a.db.QueryRow("SELECT EXISTS(SELECT 1 FROM registries r JOIN source_documents s ON s.id=r.source_id WHERE "+
+			operatorRegistryReadPredicate+" AND r.id=$3 AND r.status<>'deleted')", u.ID, a.registryReadGrants[u.ID], r.URL.Query().Get("id")).Scan(&visible)
+		if e != nil || !visible {
 			fail(w, 403, errors.New("реестр не доступен"))
 			return
 		}

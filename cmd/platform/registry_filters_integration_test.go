@@ -9,7 +9,7 @@ import (
 
 func TestRegistryFilteredPagesAndOperatorAccess(t *testing.T) {
 	a := testApp(t)
-	chief, merchant, _, _ := fixtures(t, a)
+	chief, merchant, _, card := fixtures(t, a)
 	operator := User{ID: id(), Role: "operator"}
 	if _, e := a.db.Exec("INSERT INTO users(id,login,name,role,password_hash) VALUES($1,'filters-operator','Operator','operator','x')", operator.ID); e != nil {
 		t.Fatal(e)
@@ -59,5 +59,49 @@ func TestRegistryFilteredPagesAndOperatorAccess(t *testing.T) {
 	found := fetch(chief, "page=1&q=000")
 	if len(found["items"].([]any)) != 1 {
 		t.Fatal("search missed old registry beyond latest 100")
+	}
+	var shared, private string
+	if e := a.db.QueryRow("UPDATE registries SET status='posted' WHERE external_ref='Реестр 018' RETURNING id").Scan(&shared); e != nil {
+		t.Fatal(e)
+	}
+	if e := a.db.QueryRow("SELECT id FROM registries WHERE external_ref='Реестр 019'").Scan(&private); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := a.db.Exec(`INSERT INTO registry_rows(id,registry_id,row_no,raw,card_id,amount_cents)
+		VALUES($1,$2,2,'[]',$3,100)`, id(), shared, card); e != nil {
+		t.Fatal(e)
+	}
+	a.registryReadGrants = map[string][]string{operator.ID: {shared, private}}
+	visible := fetch(operator, "page=1&q=018")
+	items := visible["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != shared {
+		t.Fatal("granted registry is missing from operator search", visible)
+	}
+	detail := httptest.NewRecorder()
+	a.registries(detail, httptest.NewRequest("GET", "/api/registries?id="+shared, nil), operator)
+	var detailItems []M
+	if e := json.Unmarshal(detail.Body.Bytes(), &detailItems); e != nil || detail.Code != 200 || len(detailItems) != 1 || detailItems[0]["id"] != shared {
+		t.Fatal("granted registry detail is missing", detail.Code, detailItems, e)
+	}
+	if hidden := fetch(operator, "page=1&q=019"); len(hidden["items"].([]any)) != 0 {
+		t.Fatal("unposted registry was shared", hidden)
+	}
+	for _, tc := range []struct {
+		user User
+		id   string
+		code int
+	}{
+		{operator, shared, 200},
+		{operator, private, 403},
+		{User{ID: id(), Role: "operator"}, shared, 403},
+	} {
+		w := httptest.NewRecorder()
+		a.registryRows(w, httptest.NewRequest("GET", "/api/registry/rows?id="+tc.id, nil), tc.user)
+		if w.Code != tc.code {
+			t.Fatalf("row access status %d, want %d: %s", w.Code, tc.code, w.Body.String())
+		}
+	}
+	if code, _ := req(t, a.deleteRegistry, operator, M{"id": shared, "version": "1"}); code != 403 {
+		t.Fatal("read access allowed deleting another operator's registry", code)
 	}
 }
