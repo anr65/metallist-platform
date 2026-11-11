@@ -196,7 +196,7 @@ func (a *App) upload(w http.ResponseWriter, r *http.Request, u User) {
 					err = errors.New("request_card_not_found_or_ambiguous")
 				}
 			} else {
-				card, err = a.resolveCard(tx, rows[i].Mask)
+				card, err = a.resolveCard(tx, rows[i].Mask, parserCode != nikitaPayoutsParser)
 			}
 			if err != nil {
 				rows[i].Error = err.Error()
@@ -283,7 +283,7 @@ func nonnegative(s string) (int64, error) {
 	}
 	return amount(s)
 }
-func (a *App) resolveCard(tx *sql.Tx, mask string) (string, error) {
+func (a *App) resolveCard(tx *sql.Tx, mask string, allowLastFour bool) (string, error) {
 	value := strings.TrimSpace(mask)
 	rows, e := tx.Query("SELECT id FROM cards WHERE mask=$1 AND status='active'", value)
 	if e != nil {
@@ -306,7 +306,7 @@ func (a *App) resolveCard(tx *sql.Tx, mask string) (string, error) {
 	if len(ids) == 1 {
 		return ids[0], nil
 	}
-	if len(ids) > 1 {
+	if len(ids) > 1 || !allowLastFour {
 		return "", errors.New("card_not_unique_or_unknown")
 	}
 	match := trailingFour.FindStringSubmatch(value)

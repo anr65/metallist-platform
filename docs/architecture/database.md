@@ -48,6 +48,8 @@
 
 Схема 004 добавляет `registry_parser_types(code, name, version, accepted_extensions, active)` и ровно один `merchant_import_profiles(merchant_id, parser_code, status, updated_at)` на мерчанта. Статус `configured` требует parser, `awaiting_sample` запрещает его. `source_documents.parser_code/parser_version` фиксируют реально применённую версию; последующее изменение профиля не меняет старый документ. Таблицы не создают проводок и не содержат содержимое исходного файла.
 
+Схема 034 регистрирует `nikita_payouts_xlsx_v1` и назначает его единственному мерчанту с именем «Никита», при отсутствии создаёт запись с кодом `NIKITA`. Миграция требует версию 033. Существующая запись сохраняет ID, код, статус активности и тарифы. При неоднозначном имени или занятом коде для новой записи миграция завершается ошибкой. После установки кода приложения профиль используется для загрузки новых реестров.
+
 - `source_documents(id, source_type, external_id, checksum, storage_key, received_at, received_by, metadata)`
 - `import_batches(id, source_document_id, parser_version, status, created_at, approved_by, confirmed_at, applied_at, reversed_by, reversed_at, reversal_reason)`; срок отката считается от `confirmed_at`
 - `import_rows(id, batch_id, sheet_name nullable, row_number, raw_data, normalized_data, source_order_ref nullable, source_rrn nullable, status, error_codes)`; для CSV `sheet_name` пуст, порядковый номер/номер заказа/RRN сохраняются как данные источника, но их глобальная уникальность пока не доказана

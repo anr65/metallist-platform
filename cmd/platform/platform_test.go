@@ -1484,6 +1484,7 @@ func TestAttachedMerchantSamples(t *testing.T) {
 		{"METALLIST_SAMPLE_NARKOMAN", "narkoman_avangard_xls_v1", ".xls", 20, 0, 500_000_000},
 		{"METALLIST_SAMPLE_TOLYA", "tolya_operations_xlsx_v1", ".xlsx", 18, 18, 440_155_900},
 		{"METALLIST_SAMPLE_KATYA", "katya_payouts_xlsx_v1", ".xlsx", 6, 0, 146_337_400},
+		{"METALLIST_SAMPLE_NIKITA", nikitaPayoutsParser, ".xlsx", 3, 0, 49_862_570},
 	}
 	ran := false
 	for _, test := range tests {
@@ -1500,11 +1501,12 @@ func TestAttachedMerchantSamples(t *testing.T) {
 		if e != nil {
 			t.Fatalf("%s: %v", test.parser, e)
 		}
-		var total int64
+		var total, bankFee int64
 		invalid := 0
 		errorsByCode := map[string]int{}
 		for _, row := range rows {
 			total += row.Amount
+			bankFee += row.BankFee
 			if row.Error != "" {
 				invalid++
 				errorsByCode[row.Error]++
@@ -1512,6 +1514,9 @@ func TestAttachedMerchantSamples(t *testing.T) {
 		}
 		if len(rows) != test.count || invalid != test.invalid || total != test.total {
 			t.Fatalf("%s: rows=%d invalid=%d total=%d errors=%v", test.parser, len(rows), invalid, total, errorsByCode)
+		}
+		if test.parser == nikitaPayoutsParser && bankFee != 598_351 {
+			t.Fatalf("%s: bank fee=%d, want 598351", test.parser, bankFee)
 		}
 	}
 	if !ran {

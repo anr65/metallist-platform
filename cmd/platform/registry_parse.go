@@ -63,17 +63,17 @@ func parseRowsWithExclusions(parser, extension string, data []byte) ([]importedR
 
 func readRegistrySheets(parser, extension string, data []byte) ([]spreadsheetSheet, error) {
 	switch parser {
-	case "generic_xlsx_v1", "tolya_operations_xlsx_v1", "katya_payouts_xlsx_v1":
+	case "generic_xlsx_v1", "tolya_operations_xlsx_v1", "katya_payouts_xlsx_v1", nikitaPayoutsParser:
 		if extension != ".xlsx" {
 			return nil, errors.New("для выбранного мерчанта нужен файл XLSX")
 		}
-		return readXLSX(data)
+		return readXLSX(data, parser == nikitaPayoutsParser)
 	case "sveta_cards_xls_v1":
 		if extension == ".xls" {
 			return readLegacyXLS(data)
 		}
 		if extension == ".xlsx" {
-			return readXLSX(data)
+			return readXLSX(data, false)
 		}
 		return nil, errors.New("для Светы нужен файл XLS или XLSX")
 	case "narkoman_avangard_xls_v1":
@@ -127,7 +127,7 @@ func parseAlitenCSV(data []byte) ([]importedRow, error) {
 	return out, nil
 }
 
-func readXLSX(data []byte) ([]spreadsheetSheet, error) {
+func readXLSX(data []byte, rawValues bool) ([]spreadsheetSheet, error) {
 	z, e := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if e != nil {
 		return nil, errors.New("файл не является XLSX")
@@ -154,7 +154,7 @@ func readXLSX(data []byte) ([]spreadsheetSheet, error) {
 	}
 	out := make([]spreadsheetSheet, 0, len(list))
 	for _, name := range list {
-		raw, e := f.GetRows(name, excelize.Options{RawCellValue: false})
+		raw, e := f.GetRows(name, excelize.Options{RawCellValue: rawValues})
 		if e != nil {
 			return nil, e
 		}
@@ -267,6 +267,11 @@ func parseMerchantSheets(parser string, sheets []spreadsheetSheet) ([]importedRo
 			return nil, errors.New("выгрузка Кати должна содержать один лист")
 		}
 		return parseKatyaSheet(sheets[0])
+	case nikitaPayoutsParser:
+		if len(sheets) != 1 {
+			return nil, errors.New("выгрузка Никиты должна содержать один лист")
+		}
+		return parseNikitaSheet(sheets[0])
 	case "sveta_cards_xls_v1":
 		if len(sheets) != 1 {
 			return nil, errors.New("выгрузка Светы должна содержать один лист")
